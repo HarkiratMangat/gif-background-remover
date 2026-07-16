@@ -127,6 +127,11 @@ These are the load-bearing ones; the full reasoning for each lives in the memory
   a version bump), not every message.
 
 ## Not yet done
-No real GIF has been processed since the 2026-07-14 setup session that created this file and
-`references/lessons.md`. Treat the restructured SKILL.md as unverified-in-practice until it's
-actually run once against a real file.
+No real GIF has been processed since the 2026-07-14/16 setup session that created this file and
+`references/lessons.md`. Treat the restructured SKILL.md (now v2.2.2, pushed to GitHub) as
+unverified-in-practice until it's actually run once against a real file. **The version bump and
+GitHub push are NOT the same thing as syncing to the live claude.ai skill** — that sync is
+deliberately still deferred until real GIF validation happens, per Harkirat's explicit call
+(2026-07-16): the repo can be versioned/pushed as the real, current state of the code without that
+implying it's been redistributed to claude.ai yet. See "Live skill sync workflow" above for the
+actual repo→live sync trigger.

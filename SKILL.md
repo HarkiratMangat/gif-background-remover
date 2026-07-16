@@ -5,7 +5,7 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v2.2.1** (previous: v2.2, v2.1, v2, v1). Versioning convention
+**Skill version: v2.2.2** (previous: v2.2.1, v2.2, v2.1, v2, v1). Versioning convention
 (three-part, `v{major}.{minor}.{correction}` — Harkirat's explicit spec, applies
 both to this internal version log AND to whatever gets said in the file handed
 back to him after an edit, so the two never drift):
