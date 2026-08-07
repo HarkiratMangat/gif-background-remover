@@ -5,12 +5,32 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v3.1.0** (previous: v3.0.0, v2.2.2, v2.2.1, v2.2, v2.1, v2,
-v1). This is a **minor** bump: a single confirmed bug fix (edge-cleanup
-erosion inflating small isolated removed regions by 50-70x, discovered on a
-second animated-icon case that didn't even need `--tumble-safe`), with a new
-`--erosion-exempt-max-size` flag. Full case history: `references/lessons.md`
-§11. Doesn't touch the v3.0.0 tumble-safe pathway or its flags.
+**Skill version: v3.2.0** (previous: v3.1.0, v3.0.0, v2.2.2, v2.2.1, v2.2,
+v2.1, v2, v1). This is a **minor** bump: one confirmed bug fix in the script
+(the save message asserted a frame count it never read back — it restated the
+frame list the script intended to write and claimed "durations preserved
+exactly" without opening the output; on a real 170-frame job it reported 170
+while the file held 168), now fixed by reading the written file back. Plus one
+new confirmed finding documented: art with a fade baked in against the
+background renders as a visible dither mesh, distinct from the flat-composite
+speckle case §10 already covered. Full case histories: `references/lessons.md`
+§12 and §13. No new flags — the fade case is handled by the existing
+`--dither-mode none`.
+
+**v3.2.0 is also the first version validated against real GIF jobs since the
+skill was restructured** — three 640x640 gem icons processed end to end and
+accepted 2026-08-07, exercising `--protect-outline-color` across an
+overlapping-elements animation, `--erosion-exempt-max-size` on small isolated
+removed regions, and `--dither-mode none` on baked-in fades. The v3.0.0 and
+v3.1.0 entries below were live-session exports that had not been reconciled
+into the repo before this version; both are folded in here.
+
+v3.1.0 (previous entry, kept for context) was a **minor** bump: a single
+confirmed bug fix (edge-cleanup erosion inflating small isolated removed
+regions by 50-70x, discovered on a second animated-icon case that didn't even
+need `--tumble-safe`), with a new `--erosion-exempt-max-size` flag. Full case
+history: `references/lessons.md` §11. Doesn't touch the v3.0.0 tumble-safe
+pathway or its flags.
 
 v3.0.0 (previous entry, kept for context) was a **major** bump per the tier
 definition below: a new, end-to-end-verified detection/protection pathway
