@@ -68,10 +68,22 @@ whole, not the sum of each commit's own tier, and bump once, to that.
 gets its own provisional version bump**, judged the normal way against
 whatever that session's edit alone falls under (e.g. a notes-only live-session
 fix is a correction, temp-version-wise). That provisional number is NOT
-binding on the repo — reconciling a drop back in (see CLAUDE.md's "Live skill
-sync workflow") means a fresh, holistic judgment on what the REPO's actual
-next version should be, given everything accumulated since the repo's last
-real tag, which may land on a different tier than the temp export used.
+binding on the repo — it gets reconciled later against the repo's own history,
+a fresh holistic judgment on what the REPO's actual next version should be
+given everything accumulated since its last real tag, which may land on a
+different tier than the temp export used.
+
+**If you are running as the standalone skill on claude.ai, you are in an
+isolated sandbox and this is the whole picture you get (stated here 2026-08-07
+because a session cannot read it anywhere else).** You can read these packaged
+files — this `SKILL.md`, `references/`, `scripts/` — frozen at whatever version
+was uploaded. You cannot read the development repo, its `CLAUDE.md`, its git
+history, or any memory folder, and **you cannot write anything to Harkirat's
+machine.** So an export does not travel on its own: produce the
+`gif-background-remover-temp-vX.X.X.skill` file, hand it and the full text of
+anything you changed to Harkirat in the chat, and he moves it across himself.
+Don't describe a finding as "saved," "synced," or "logged" — in that context
+the chat is the only persistence there is.
 
 **"Always hand Harkirat the latest full file" applies specifically to a
 live-skill-only session (claude.ai, no filesystem) — corrected 2026-07-16.**
@@ -232,6 +244,35 @@ large/visible removed region on the same asset (30px worked on the
 motivating case, where noise measured 1-11px and the two real gaps measured
 69px and 137px — verify the equivalent gap on a new asset before reusing 30
 blindly). Full case history: `references/lessons.md` §11.
+
+## Art that FADES toward the background colour — check this on anything with sparkles, glows or twinkles
+Distinct from both sections above, and from the `--dither-mode none` note in
+"Animated/rotating content." That note is about a correct EDGE looking speckly
+once composited on flat paint. This is about a large INTERIOR region of the art
+meshing no matter what you view it over.
+
+GIF has no partial alpha, so an artist's fade-out is flattened against the
+background at authoring time — a fading element literally becomes progressively
+paler versions of the background colour. If a fade stage's solid body colour
+lands inside the feather band (`--tolerance` to `--tolerance x
+--feather-band-multiplier`, Euclidean RGB distance), the script assigns it
+partial alpha and dithers it, and a spatial dither across a solid interior reads
+as a **visible grid/mesh**, not as translucency. Confirmed real case: a sparkle
+whose mid-fade body is `fff2d1`, distance 47.8 from white, inside the default
+15–60 band.
+
+- **Detect it before delivering:** measure how many pixels sit in the band, are
+  more than ~3px from any true background pixel, and aren't protected. A thin
+  edge band is normal; a large interior blob there is the signature.
+- **Fix with `--dither-mode none`** — hard 50% cutoff on the already-defringed
+  alpha. On the real case, faded bodies went from 47–68% opaque to 95–96%.
+  Faintest stages drop out a beat earlier instead of meshing, which is the right
+  trade.
+- **Price it first: `--dither-mode none` changes EVERY edge in the file.** It
+  was nearly free on an icon whose silhouette is mostly straight lines
+  (`edge_hardness` 0.506) — verified by zooming the outer silhouette before and
+  after. On curve-heavy art, measure narrowing `--feather-band-multiplier`
+  instead. Full case history: `references/lessons.md` §12.
 
 ## Workflow: infer first, then confirm — don't just ask the user upfront
 Don't open by asking the user to specify the background color and protected
@@ -438,6 +479,15 @@ hides.
    the raw-bytes ground-truth method for when correctness really matters.
    Compare the resulting list between input and output exactly, not just the
    total.
+   **A lower frame count in the output is not automatically a bug.** Pillow's
+   encoder coalesces consecutive frames that come out byte-identical after
+   quantization and folds their delays into the survivor — confirmed real case:
+   170 frames in, 168 out, because the animation had settled and the last three
+   differed by ≤9 RGB levels on ≤91 of 409,600 pixels. Total playback was
+   identical and nothing was visually lost. **Total playback length changing is
+   the real defect signal; frame count alone is not.** The script's save message
+   now reads the written file back and says which of the two happened, so trust
+   that line rather than the intended frame count (`references/lessons.md` §13).
 4. If a `--compress` tier or standalone `--crop` was used, confirm the crop
    removed the intended blank margin without clipping the design — check the
    `WxH -> W'xH'` line the script prints to stderr. If resize also ran, check

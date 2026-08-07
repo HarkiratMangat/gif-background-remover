@@ -1102,6 +1102,64 @@ def build_protected_masks_robust(rgb_frames, args):
     return result
 
 
+def describe_written_timing(output_path, intended_durations):
+    """
+    Describe the timing of the file that was ACTUALLY written, by reading it
+    back -- never by restating the frame list we meant to write.
+
+    Why this exists (found 2026-08-07, see references/lessons.md §13): the
+    old line here printed `len(durations)` and asserted "durations preserved
+    exactly" without ever opening the output. On a real 170-frame job it
+    reported 170 while the file on disk had 168, because Pillow's GIF
+    encoder coalesces consecutive frames that come out byte-identical after
+    quantization and folds their delays into the survivor. Total playback
+    was genuinely unchanged, so nothing was broken -- but the message was a
+    claim about a file nobody had looked at, which is exactly the kind of
+    unverified assertion the rest of this skill's verification rules exist
+    to prevent.
+
+    Coalescing is not a defect and is not worth suppressing: the dropped
+    frames were visually identical, and refusing the merge would only make
+    the file bigger. What matters is saying what actually happened. A real
+    change in total playback length WOULD be a defect, so that gets an
+    explicit warning rather than a quiet mention.
+    """
+    intended_total = sum(d or 0 for d in intended_durations)
+    try:
+        written = []
+        with Image.open(output_path) as im:
+            i = 0
+            while True:
+                try:
+                    im.seek(i)
+                except EOFError:
+                    break
+                written.append(im.info.get('duration') or 0)
+                i += 1
+    except Exception as exc:
+        # Readback is a reporting nicety, never a reason to fail a job that
+        # already wrote its output successfully.
+        return (f"{len(intended_durations)} frames intended; could not read "
+                f"back the written file to confirm timing ({exc})")
+
+    written_total = sum(written)
+    if written == list(intended_durations):
+        return f"{len(written)} frames, durations preserved exactly"
+
+    if written_total != intended_total:
+        print(f"WARNING: total playback length changed on write "
+              f"({intended_total}ms intended, {written_total}ms written). "
+              f"This is a real timing defect, not encoder frame-coalescing.",
+              file=sys.stderr)
+        return (f"{len(written)} frames written from {len(intended_durations)} "
+                f"intended, total {written_total}ms vs {intended_total}ms intended")
+
+    merged = len(intended_durations) - len(written)
+    return (f"{len(written)} frames written from {len(intended_durations)} "
+            f"intended -- {merged} identical frame(s) coalesced by the encoder, "
+            f"total playback unchanged at {written_total}ms")
+
+
 def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
                           colors=255, quantizer='pil'):
     """
@@ -1929,7 +1987,7 @@ def process(input_path, output_path, args):
     size_bytes = render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
                                        quantizer=args.quantizer)
     out_w, out_h = alpha_frames[0].shape[1], alpha_frames[0].shape[0]
-    print(f"Saved {output_path} ({len(durations)} frames, durations preserved exactly)",
+    print(f"Saved {output_path} ({describe_written_timing(output_path, durations)})",
           file=sys.stderr)
     print(f"Output: {out_w}x{out_h}, {size_bytes/1024:.1f} KB", file=sys.stderr)
 

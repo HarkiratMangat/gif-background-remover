@@ -8,8 +8,9 @@ were tried and reverted — read those before re-attempting them.
 **When to read this file:** before re-diagnosing anything that smells like a past case (flicker or
 a gap in a protected region, erosion eating fine detail, jagged edges surviving a resize, a wrong
 animation-length claim, a "grainy/messy" complaint after compression, a which-tool-or-quantizer
-question). Check the table of contents below for a matching section first — see the memory
-folder's `feedback_check_lessons_before_rediagnosing.md` for the full reasoning on why this matters.
+question). Check the table of contents below for a matching section first. This history is long and
+specific, and several fixes were tried, looked right, and later regressed — re-deriving one from
+scratch risks retrying an approach already known to fail.
 
 ## Table of contents
 1. [Edge-hardness caveat: geometry-heavy false positives](#1-edge-hardness-caveat-geometry-heavy-false-positives)
@@ -23,6 +24,8 @@ folder's `feedback_check_lessons_before_rediagnosing.md` for the full reasoning 
 9. [Verification pitfalls: Pillow's `ImageSequence.Iterator`, bbox-vs-mask, frame-offset drift](#9-verification-pitfalls-pillows-imagesequenceiterator-bbox-vs-mask-frame-offset-drift)
 10. [Animated/rotating content: four related failures on a tumbling icon, seven rounds to fully fix](#10-animatedrotating-content-four-related-failures-on-a-tumbling-icon-seven-rounds-to-fully-fix)
 11. [Small removed regions get inflated by edge-cleanup erosion: a second animated-icon case, five rounds](#11-small-removed-regions-get-inflated-by-edge-cleanup-erosion-a-second-animated-icon-case-five-rounds)
+12. [Art that fades toward the background colour renders as a dither mesh](#12-art-that-fades-toward-the-background-colour-renders-as-a-dither-mesh)
+13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
 
 ---
 
@@ -331,8 +334,9 @@ empirically tested, not just reasoned about abstractly. **Implemented as an expl
   narrower benchmark (quantization MSE) can still lose on the metric that actually matters for the
   full pipeline (final file size on this skill's real content) if the two aren't measuring the same
   thing. Prefer re-testing swaps like this end-to-end on real output before adopting them, even when
-  the underlying algorithm is well-regarded and the component-level numbers look unambiguous. See
-  the memory folder's `feedback_test_naive_alternative_first.md`.
+  the underlying algorithm is well-regarded and the component-level numbers look unambiguous.
+  (Standing rule behind this: test the naive/simpler option end-to-end on real content before
+  committing to a bigger rebuild.)
 
 ## 7. GIF format has no partial transparency
 Every pixel in a GIF frame is binary opaque-or-transparent; there is no such thing as a real
@@ -691,3 +695,108 @@ output after the fact is not.
 classification, just feeding it the complete removable-region alpha and letting it auto-detect
 anything at or below the given size) reproduces the same result as the manually-verified fix.
 Additive/opt-in, default off — confirmed the existing default codepath is unaffected.
+
+---
+
+## 12. Art that fades toward the background colour renders as a dither mesh
+
+**Found 2026-08-07** on `ruby.gif`, a 109-frame 640x640 gem icon with yellow four-pointed
+sparkles. Reported by Harkirat directly, from the delivered file, against a dark backdrop.
+
+### The symptom
+Most sparkles came out solid yellow, but some rendered as a **visible grid/mesh** — a regular
+crosshatch of transparent pixels through the sparkle body — instead of solid colour. The gem
+itself, the sparkle outlines, and the deliberately-removed white sparkle cores were all correct.
+
+### Why this is NOT §10's Bug 5, despite both ending at `--dither-mode none`
+§10's Bug 5 is about a **correct edge** being *composited* onto a flat colour, where the Bayer
+pattern that reads as soft antialiasing over texture reads as speckle over flat paint. The trigger
+is the *viewing background*, and the affected pixels are a thin edge band.
+
+This is different in trigger, location, and cause: **the source art has a fade baked into it.**
+GIF has no partial alpha (§7), so the artist's fade-out was flattened against white at authoring
+time — the sparkle literally *is* progressively lighter cream in later frames. Measured on the
+real file: at peak the sparkle is `fdcb50`; mid-fade its body is a solid `fff2d1`, Euclidean
+distance **47.8** from white. The default band is `--tolerance 15` to `15 x 4.0 = 60`, so that
+solid body colour lands **inside the feather band**, gets assigned alpha ~0.73, and is dithered.
+The affected pixels are the sparkle's whole **interior**, not an edge, and they mesh no matter
+what you composite over.
+
+So the alpha was arguably *right* — a 73%-transparent sparkle is a faithful rendering of a fade
+that no longer has an alpha channel to live in. It just looks wrong, because a spatial dither
+across a solid interior region reads as a mesh rather than as translucency.
+
+### The fix, and what it costs
+`--dither-mode none` — hard 50% cutoff on the already-defringed alpha. Measured before/after on
+the frames that showed it:
+
+| source frame | faded body | opaque with Bayer (v1) | opaque with `none` (v2) |
+|---|---|---|---|
+| 68 | 803px | 651px (81%) | 762px (95%) |
+| 97 | 2966px | 1393px (47%) | **2805px (95%)** |
+| 103 | 2962px | 2016px (68%) | **2845px (96%)** |
+
+The two faintest frames (61, 67) go to 0% opaque in both — below the 50% cutoff the sparkle simply
+disappears a beat earlier instead of meshing, which is the correct trade.
+
+**Check the cost before reaching for it: `--dither-mode none` changes EVERY edge in the file, not
+just the offending region.** It was nearly free here because ruby's silhouette is mostly straight
+lines (`edge_hardness` ratio 0.506) — verified by zooming the outer navy silhouette in both
+versions and finding no new jaggedness, and by confirming 0 near-white fringe pixels in the
+outermost opaque ring. On a curve-heavy icon that trade would be worse, and narrowing
+`--feather-band-multiplier` would be worth measuring first.
+
+### Generalizable takeaway
+**A "solid" colour is only solid relative to the background you're keying against.** Before
+trusting the feather band, check whether any *large interior* region of the art sits inside it —
+`tolerance` to `tolerance x feather-band-multiplier` in Euclidean RGB distance. Feathering is
+designed for thin edge transitions; a wide interior region inside that band is the signature of a
+baked-in fade (or a pale design tint, which is §10 Bug 4's `--protect-band-only` case), and both
+want handling other than "let it dither."
+
+---
+
+## 13. The save message asserted a frame count it never read back
+
+**Found 2026-08-07** while verifying `jewelry.gif` (170 frames) — caught by the verification step,
+not by the script.
+
+### What happened
+The script printed `Saved <path> (170 frames, durations preserved exactly)`. The written file has
+**168**. The line was `print(f"... ({len(durations)} frames, durations preserved exactly)")` — it
+restated the frame list the script *intended* to write and asserted a property of a file it had
+never opened.
+
+### Why the file legitimately has fewer frames
+Pillow's GIF encoder coalesces consecutive frames that come out **byte-identical after
+quantization**, folding their delays into the survivor. Source frames 166–168 differ by at most
+**9 RGB levels on at most 91 of 409,600 pixels** — the animation has settled into its resting pose
+and the residual difference is encoder noise. After palette quantization they are the same frame.
+Total playback was **3600ms before and after**.
+
+**So the coalescing is not a defect and is not worth suppressing.** The dropped frames were
+visually identical; refusing the merge would only make the file bigger. The defect was purely the
+claim.
+
+### The fix
+`describe_written_timing(output_path, intended_durations)` re-opens the written file, reads its
+actual per-frame durations, and reports what is actually true:
+- identical to intended → `"N frames, durations preserved exactly"` (unchanged wording, now earned)
+- fewer frames, same total → `"N frames written from M intended -- K identical frame(s) coalesced
+  by the encoder, total playback unchanged at Xms"`
+- **total playback changed** → an explicit `WARNING:` to stderr, because that *would* be a real
+  timing defect rather than encoder coalescing
+- readback itself fails → says so, and never fails a job that already wrote its output
+
+Verified on two synthetic files that isolate the branches: one whose middle frames drift ≤2 RGB
+levels (reports `4 frames written from 5 intended -- 1 identical frame(s) coalesced ... unchanged
+at 200ms`) and a control with clearly distinct frames (reports `5 frames, durations preserved
+exactly`). The old code printed the identical "preserved exactly" line for both.
+
+### Generalizable takeaway
+**Verification step 3 in SKILL.md tells the reader to compare input and output durations by reading
+the real file — but the script's own success message was doing exactly what that rule forbids.** A
+tool that reports on its own output must read that output back; restating the input is not a check,
+it's a claim wearing a check's clothing, and it is more dangerous than no message at all because it
+actively discourages looking. Worth grepping for the same shape anywhere else a message asserts a
+property of a written file.
