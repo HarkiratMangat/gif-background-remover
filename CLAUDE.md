@@ -117,11 +117,54 @@ and (2) commit messages at push time are genuinely detailed (a summary line + re
 changed and why), not terse one-liners. `references/lessons.md` and SKILL.md's own internal
 version log already carry the "why," same role Diors-Builds' DEVLOG plays there.
 
+## Git workflow — follows Dior's Builds (adopted 2026-08-07, Harkirat's instruction)
+This repo uses dioreo's working agreement, git flow and conventions. They are the standing
+convention here now, not a one-off. Canonical sources live in that repo and its memory folder — do
+not re-derive them from this summary if the detail matters:
+
+| What | Where |
+|---|---|
+| Working agreement (read first) | `~/.claude/projects/-Applications-Claude-Code-Diors-Builds/memory/user_working_agreement.md` |
+| Git lifecycle | `/Applications/Claude Code/Diors-Builds/CLAUDE.md`, git-workflow section |
+| Commit / branch / PR naming | `/Applications/Claude Code/Diors-Builds/docs/reference/commit-and-branch-naming.md` |
+| Full lifecycle + versioning spec | `/Applications/Claude Code/Diors-Builds/docs/superpowers/specs/2026-07-24-git-branch-pr-workflow-design.md` |
+| Model/effort grid | `…-Diors-Builds/memory/reference_priority_tier_system.md` + `feedback_suggest_model_switch.md` |
+
+- **`main` only ever advances through a PR.** Never commit directly to `main`.
+- **Branch commits are free. Push, merge, and tag are each asked, every time** — approval never
+  carries over, not even within one session.
+- **Conventional Commits v1.0.0 as specified**, only the 11 standard types, `<type>(<scope>): <desc>`
+  — colon and exactly one space, imperative, lowercase, no trailing period. Branches are
+  `<type>/<kebab-description>`. Never rename a branch that has an open PR.
+- **Every merge gets a version — the judgement is the SIZE, never whether.**
+- **ONE commit + ONE tag per release.** The version bump is the final pre-merge checkpoint ON the
+  branch, so the tag lands on a commit whose SKILL.md already reads the tagged version. Never a
+  follow-up bump commit on `main` after merging.
+- `gh pr merge --squash --delete-branch` → `git tag -a vX.Y.Z <squash-sha>` → refresh local refs
+  with `git fetch origin main:main`.
+- **Commit trailers carry the real second account:**
+  `Co-Authored-By: diorswrld <310361322+diorswrld@users.noreply.github.com>`, plus the Claude
+  trailer.
+
+**Two adaptations, because dioreo's flow assumes things this repo doesn't have:**
+1. **No `package.json`, and deliberately no `CHANGELOG.md`** (see the section above). Dioreo's
+   "changelog entry + version bump on the branch" step maps to **SKILL.md's own version header** —
+   that is this repo's running-version signal.
+2. **No dev bot.** Dioreo's pre-PR "test on the dev bot" step maps to **running real GIF fixtures
+   and confirming byte-identical output** against known-good files.
+
+⚠️ **`gh pr merge` has been blocked by the auto-mode classifier** (2026-08-07) as an irreversible
+GitHub action. Expect it; hand Harkirat the command rather than trying to route around the denial.
+
 ## Working rules for this repo
 These are the load-bearing ones; the full reasoning for each lives in the memory folder's
 `feedback_*.md` files, linked from `user_working_agreement.md`.
-- **Never commit or push without asking first, every time** — approval doesn't carry over between
-  asks, even within one session.
+- **Git flow follows Dior's Builds (dioreo) — adopted 2026-08-07, standing convention.** See the
+  "Git workflow" section below for the full lifecycle. The gate that matters: **branch commits are
+  free; push, PR-merge, and tag are each asked, every time, and approval never carries over.**
+  ⚠️ This bullet used to read "never commit or push without asking first, every time." That
+  predates the dioreo adoption and was superseded by it — the free-branch-commits half is the
+  change; the asked-every-time half still holds for push/merge/tag.
 - **Check `local/` (especially `local/live-skill-drops/`) at session start** for anything new —
   see "Live skill sync workflow" above.
 - **Document at the time a real finding lands** — SKILL.md, `references/lessons.md`, memory, and
