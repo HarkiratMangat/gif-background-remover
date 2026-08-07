@@ -934,6 +934,43 @@ def build_protected_mask(rgb, args):
         return np.zeros((H, W), dtype=bool)
 
 
+def detect_anomalous_frame_sizes(sizes, window=5, local_ratio_threshold=0.8, gap_ratio_threshold=1.08):
+    """
+    Given a per-frame array of region sizes (pixel counts), flag frames whose
+    size is anomalously low relative to the rest of the sequence, using two
+    detectors that catch different occlusion patterns (see
+    build_protected_masks_robust's docstring for the full history and the
+    real cases each detector was built against):
+    (a) local-neighborhood sharp drop -- catches brief, isolated occlusion;
+    (b) whole-distribution bimodal gap -- catches sustained occlusion
+        spanning many consecutive frames.
+    Returns a boolean array, one entry per input frame, True where anomalous.
+    """
+    n = len(sizes)
+    nonzero = sizes[sizes > 0]
+
+    local_flags = np.zeros(n, dtype=bool)
+    for i in range(n):
+        lo, hi = max(0, i - window), min(n, i + window + 1)
+        neighborhood = [sizes[j] for j in range(lo, hi) if j != i]
+        if not neighborhood:
+            continue
+        if sizes[i] < local_ratio_threshold * np.median(neighborhood):
+            local_flags[i] = True
+
+    gap_flags = np.zeros(n, dtype=bool)
+    sorted_sizes = np.sort(nonzero)
+    if len(sorted_sizes) > 1:
+        gaps = np.diff(sorted_sizes)
+        max_gap_idx = np.argmax(gaps)
+        below, above = sorted_sizes[max_gap_idx], sorted_sizes[max_gap_idx + 1]
+        if below > 0 and above / below >= gap_ratio_threshold:
+            gap_threshold = (below + above) / 2
+            gap_flags = sizes < gap_threshold
+
+    return local_flags | gap_flags
+
+
 def build_protected_masks_robust(rgb_frames, args):
     """
     Compute a protected mask for EVERY frame, but correct for a real,
@@ -1052,33 +1089,7 @@ def build_protected_masks_robust(rgb_frames, args):
             per_color_masks[hex_color] = frame_masks
             continue
 
-        # (a) local-neighborhood sharp-anomaly detector -- catches brief,
-        # isolated occlusion without misfiring on gradual animation.
-        window = 5
-        local_ratio_threshold = 0.8
-        local_flags = np.zeros(n, dtype=bool)
-        for i in range(n):
-            lo, hi = max(0, i - window), min(n, i + window + 1)
-            neighborhood = [sizes[j] for j in range(lo, hi) if j != i]
-            if not neighborhood:
-                continue
-            if sizes[i] < local_ratio_threshold * np.median(neighborhood):
-                local_flags[i] = True
-
-        # (b) whole-distribution bimodal-gap detector -- catches sustained
-        # occlusion spanning many consecutive frames, which (a) alone
-        # can't see since there's no sharp local contrast.
-        gap_flags = np.zeros(n, dtype=bool)
-        sorted_sizes = np.sort(nonzero)
-        if len(sorted_sizes) > 1:
-            gaps = np.diff(sorted_sizes)
-            max_gap_idx = np.argmax(gaps)
-            below, above = sorted_sizes[max_gap_idx], sorted_sizes[max_gap_idx + 1]
-            if below > 0 and above / below >= 1.08:
-                gap_threshold = (below + above) / 2
-                gap_flags = sizes < gap_threshold
-
-        bad_flags = local_flags | gap_flags
+        bad_flags = detect_anomalous_frame_sizes(sizes)
         bad_idxs = [i for i in range(n) if bad_flags[i]]
         good_idxs = [i for i in range(n) if not bad_flags[i] and sizes[i] > 0]
 
