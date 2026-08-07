@@ -5,8 +5,34 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v2.2.2** (previous: v2.2.1, v2.2, v2.1, v2, v1). Versioning convention
-(three-part, `v{major}.{minor}.{correction}` — Harkirat's explicit spec, applies
+**Skill version: v3.1.0** (previous: v3.0.0, v2.2.2, v2.2.1, v2.2, v2.1, v2,
+v1). This is a **minor** bump: a single confirmed bug fix (edge-cleanup
+erosion inflating small isolated removed regions by 50-70x, discovered on a
+second animated-icon case that didn't even need `--tumble-safe`), with a new
+`--erosion-exempt-max-size` flag. Full case history: `references/lessons.md`
+§11. Doesn't touch the v3.0.0 tumble-safe pathway or its flags.
+
+v3.0.0 (previous entry, kept for context) was a **major** bump per the tier
+definition below: a new, end-to-end-verified detection/protection pathway
+for animated content whose foreground shape rotates or translates
+significantly within the canvas (tumbling/falling/spinning icons) — four
+separate, confirmed real bugs found and fixed in one delivery (fixed-position
+regions breaking under tumble; border-touch background detection breaking
+when the foreground grazes the canvas edge; single-frame outline enclosure
+breaking under self-overlapping rotated geometry; allowlist-style feather
+protection missing solid near-background design colors), plus a fifth
+related finding (Bayer dithering reads as noise on flat/solid composite
+backgrounds) and a new `--dither-mode none` option that came out of it. Full
+case history: `references/lessons.md` §10. New flags: `--tumble-safe`,
+`--keep-bg-blob-if-near`, `--hole-size-range`, `--hole-max-aspect`,
+`--protect-band-only`, `--dither-mode`.
+
+All flags added across both v3.0.0 and v3.1.0 are additive/opt-in —
+confirmed the existing default codepath (no new flags) is byte-identical on
+`--analyze` output against the pre-v3.0.0 script on the same test file, so
+nothing already shipped should regress.
+
+Versioning convention (three-part, `v{major}.{minor}.{correction}` — Harkirat's explicit spec, applies
 both to this internal version log AND to whatever gets said in the file handed
 back to him after an edit, so the two never drift):
 - **Major** (v2 -> v3): a reviewed, end-to-end-verified round with multiple
@@ -108,6 +134,104 @@ a real boundary of what this script does. It performs chroma-key style
 background removal, not general image segmentation. Say so plainly rather than
 forcing chroma-key settings onto content that structurally doesn't have a
 keyable background.
+
+## Animated/rotating content — check this SECOND, right after content type
+Everything above is about ART STYLE. This is about ANIMATION STYLE: does the
+foreground shape's position/orientation change significantly across frames
+(rotating, tumbling, falling, spinning, translating across a large fraction
+of the canvas), as opposed to a mostly-static icon with only minor internal
+motion? Eyeball a handful of widely-spaced frames, not just frame 0. **If
+yes, several of this skill's normal default assumptions become actively
+dangerous, not just imprecise.** Confirmed on a real 124-frame tumbling
+calendar/gamepad icon that took seven full rounds to fully fix — full case
+history in `references/lessons.md` §10; this is the lean rule.
+
+- **Never derive a fixed-position region (bbox/circle/rect) from one frame
+  and apply it to other frames.** Any region needing frame-specific handling
+  must be re-derived per frame from position-independent signals (size,
+  shape, bordering color) — extends the existing `--protect-region`
+  geometry-mismatch caution (below) to a new axis: position, not just shape.
+- **Don't rely on border-touching as "is background"** once the foreground
+  can graze the canvas edge — it can sweep real content into "background"
+  and delete it. Use `--tumble-safe`, which defines background as the single
+  largest connected bg-colored component per frame instead. Verify the
+  safety margin yourself on a new asset (largest vs. second-largest
+  component size, across ALL frames) before trusting it blindly.
+- **`--protect-outline-color`'s per-frame enclosure can fail under
+  self-overlapping/rotating geometry** in a way that doesn't trigger the
+  existing flicker/anomaly detection (that detection is for a *different*
+  shape briefly crossing a stable outline, not the outline's own shape
+  rotating — see `references/lessons.md` §10 for why these are genuinely
+  different failure signatures). `--tumble-safe` bypasses single-frame
+  flood-fill enclosure entirely for this case; keep using
+  `--protect-outline-color` for the stable-shape-crossed-by-something-else
+  case it already handles well.
+- **To selectively remove one small bg-colored region while keeping
+  another** (e.g. a real hole/cutout vs. a same-colored decorative detail),
+  add `--keep-bg-blob-if-near <hex[,hex,...]>` (only valid with
+  `--tumble-safe`), narrowed with `--hole-size-range`/`--hole-max-aspect` to
+  the real target's measured size/shape. **The distinguishing color has no
+  default — identify it manually** the same way outline-color verification's
+  fallback already works: zoom in, sample pixels bordering what should stay
+  vs. what should go, use whatever genuinely differs.
+- **If a solid design color might coincidentally sit near the background
+  color** (a pale tint, a shadow/glow shape, a light gradient), add
+  `--protect-band-only <px>` (4px was sufficient on the motivating case) —
+  protects everything except a thin ring around the actual removal, instead
+  of allowlisting specific safe regions, so no future near-background color
+  can be silently mistaken for an antialiasing blend.
+- **If a solid-color composite check (not checkerboard) shows speckle/noise
+  on an otherwise-correct edge, try `--dither-mode none`** before assuming
+  it's a mask bug — Bayer dithering can look like noise, not softness, over
+  a flat background.
+- **Verify against every frame, not a spot-check sample**, and against a
+  SOLID-color composite in addition to checkerboard — see the additions to
+  the Verification section below. Every bug in this case was localized to
+  specific rotation phases or specific colors; a normal spot-check would not
+  reliably have caught any of them.
+
+## Small removed regions can be inflated by edge-cleanup erosion — check this whenever a fix produces one
+This is a separate pitfall from "Animated/rotating content" above, though it
+was found on the same kind of content (an animated icon) and can compound
+with it. It applies any time a fix removes a small, isolated bg-colored
+region — an incidental gap where two independently-moving parts of the SAME
+icon transiently graze each other (confirmed real case: an animated gear
+rotating/bouncing near a static book's page edge, pinching off a tiny gap of
+background at certain frames — nothing to do with a deliberate design hole),
+not just `--tumble-safe`'s `--keep-bg-blob-if-near` case.
+
+`--edge-cleanup-erosion` (default 2px) shrinks the OPAQUE region uniformly by
+a fixed pixel count at every boundary, with no regard for how small the
+removed region on the other side is. That's correct for its intended case (a
+couple of pixels off a large silhouette's outer edge is proportionally
+tiny). For a small, isolated removed region well under the erosion radius's
+own scale, the same operation doesn't trim it proportionally — it consumes
+the thin opaque wall around it instead, INFLATING it. Confirmed directly: a
+single original 1px removed pixel became a 49-70px hole after a normal 2px
+erosion pass — a 50-70x size inflation that turned an imperceptible artifact
+into a visibly distracting "speckle." A naive fix — just raising the minimum
+size before a region counts as removable at all — trades this for the
+opposite failure: the same tiny features now stay solid opaque, which reads
+as its own kind of visible speckle at exactly the points (like where the
+gear teeth and book outline nearly touch) a person is most likely to be
+looking closely. Neither "always remove, let it erode" nor "never remove,
+leave it solid" is correct — the region needs to be removed at its own true,
+tiny, native size, un-inflated.
+
+Use `--erosion-exempt-max-size <px>` for this: it excludes any removed
+region at or below that size from erosion's INPUT entirely (erosion behaves
+exactly as if it were never flagged as removable, identical to how the
+surrounding area is normally treated), then restores it to its own exact
+pre-erosion pixels afterward. This is deliberately not "restore nearby
+reclaimed pixels after the fact" — that was tried first and was measurably
+incomplete (a 1px notch still came out ~40-50px) because erosion's actual
+spillover pattern around a small feature isn't a clean uniform ring,
+especially near other nearby geometry. Pass a rough ceiling comfortably
+above the size of incidental noise and comfortably below any genuinely
+large/visible removed region on the same asset (30px worked on the
+motivating case, where noise measured 1-11px and the two real gaps measured
+69px and 137px — verify the equivalent gap on a new asset before reusing 30
+blindly). Full case history: `references/lessons.md` §11.
 
 ## Workflow: infer first, then confirm — don't just ask the user upfront
 Don't open by asking the user to specify the background color and protected
@@ -258,6 +382,16 @@ its iteration is obvious rather than silently overwriting: first attempt
 Independent from the skill's own version number above.
 
 ## Verification (always do this before delivering the result)
+**For animated/rotating content (see that section above), do two things
+more thoroughly, not skip them:** run the full checks below across EVERY
+frame, not a first/middle/last sample — the bugs in `references/lessons.md`
+§10 were each localized to specific rotation phases and a spot-check missed
+all of them; and composite against a SOLID flat color (e.g. pure green) at
+least once, not just checkerboard — checkerboard camouflages dithering
+noise and unstable partial-alpha artifacts the same way it camouflages soft
+bleed (point 2 below), and both need checking, each catches what the other
+hides.
+
 1. Composite a handful of frames (first, middle, last, plus any frame flagged
    with animation near a protected region) over a dark background —
    `--preview <path.png>` does this automatically, use it instead of a

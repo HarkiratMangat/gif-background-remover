@@ -679,6 +679,188 @@ def estimate_alpha_and_defringe(rgb, bg_rgb, protected, tolerance, band_multipli
     return alpha, recolored.astype(np.uint8), band_mask
 
 
+def largest_bg_component_mask(rgb, bg_rgb, tolerance):
+    """
+    Tumble-safe background detection. Returns a mask of ONLY the single
+    largest connected bg-colored region in this frame, instead of "every
+    bg-colored region touching the canvas border" (color_mask + border-
+    touch, used implicitly wherever the rest of this script treats
+    "touches the edge" as synonymous with "is background").
+
+    Why this exists: border-touch is a safe proxy for "is background"
+    ONLY when the foreground design never itself reaches the canvas
+    edge. That assumption breaks on animated content that rotates or
+    translates within the frame -- confirmed on a real tumbling/falling-
+    calendar icon where, at the peak of its rotation, a genuine corner of
+    the card touched row 639 of a 640px canvas. Border-touch flood-fill
+    swept that entire connected white shape -- 22,169px of real card
+    content, not background -- into "background" and deleted it, purely
+    because it grazed the edge at one point.
+
+    Why "largest component" is a safe replacement rather than just a
+    different guess: true background is not merely large, it's
+    overwhelmingly large relative to any other same-colored region,
+    because it's everything in the canvas that isn't the (much smaller)
+    icon. Verified directly on the motivating case across all 124 frames:
+    the largest bg-colored component was never less than ~3x the size of
+    the second-largest in any single frame, including frames where a
+    genuine second large white region (the card's own interior, up to
+    ~47,000px) coexisted with it. A 3x-plus margin with zero close calls
+    across a full animation is what makes "just take the largest" safe
+    here -- if a future asset's background is comparably sized to (or
+    smaller than) its own foreground bg-colored regions (e.g. a mostly-
+    white illustration where the "background" is only a thin margin),
+    this heuristic is the wrong tool; check the margin the same way
+    before trusting it blindly (print the top 2-3 component sizes per
+    frame and confirm a comfortable, consistent gap).
+    """
+    mask = color_mask(rgb, bg_rgb, tolerance)
+    labeled, num = ndimage.label(mask, structure=STRUCTURE)
+    if num == 0:
+        return np.zeros(rgb.shape[:2], dtype=bool)
+    sizes = ndimage.sum(mask, labeled, range(1, num + 1))
+    largest_label = int(np.argmax(sizes)) + 1
+    return labeled == largest_label
+
+
+def build_tumble_safe_protected_mask(rgb, bg_rgb, tolerance,
+                                      keep_bg_blob_if_near_colors=None,
+                                      near_tolerance=40, near_dilate_px=6,
+                                      hole_size_range=(50, 2000),
+                                      hole_max_aspect=3.0):
+    """
+    Per-frame protected-mask builder for animated/rotating content, as an
+    ALTERNATIVE to build_protected_mask / build_protected_masks_robust
+    (which lean on --protect-outline-color's binary_fill_holes -- see
+    that function's docstring for the "flashing" failure mode it already
+    handles). This targets a DIFFERENT failure signature: not a brief
+    crossing element breaking one outline color's enclosure, but the
+    asset's OWN geometry (self-overlapping card flaps, a shape that
+    tumbles through many orientations) making single-frame flood-fill
+    enclosure unreliable in ways that don't show up as a sharp isolated
+    anomaly against nearby frames -- because the "break" can correlate
+    smoothly with rotation progress rather than spiking briefly. Confirmed
+    real case: a tumbling calendar/gamepad icon where --protect-outline-
+    color's per-frame fill-holes silently failed to fully enclose the
+    white card during several tumble frames, deleting real content in a
+    way that a 40-frame enclosure_ratio sample from --analyze did not
+    catch (see SKILL.md's "Animated/rotating content" section).
+
+    Default behavior (no keep_bg_blob_if_near_colors given): protects
+    EVERYTHING that is not the single largest bg-colored component
+    (see largest_bg_component_mask) -- i.e. "keep all real content,
+    remove only the background", with no risk of deleting a legitimate
+    same-color design element, at the cost of not being able to remove
+    OTHER small bg-colored regions that also need removing (e.g. a
+    hole/cutout in the design itself, distinct from the outer
+    background).
+
+    To selectively remove such regions (confirmed real case: a spiral-
+    binding icon's punch-holes, which are also enclosed-white and same
+    size range as a nearby gamepad's white cross/dot details, but must
+    be removed while the cross/dot must NOT be): pass
+    keep_bg_blob_if_near_colors, a list of RGB triples for whatever
+    color(s) mark "this bg-colored blob is actually decoration, keep
+    it" in THIS SPECIFIC asset -- identified the same way outline-color
+    verification's manual fallback works (zoom into a frame, sample
+    pixels near the region you want to keep vs. the region you want
+    removed, find what's different). A candidate small bg-colored blob
+    is kept ONLY if it borders one of these colors within
+    near_dilate_px; otherwise it's treated as removable, but ONLY if it
+    also falls within hole_size_range and its bounding-box aspect ratio
+    is <= hole_max_aspect (both default to generous ranges, but should
+    be tightened to the real target's measured size/shape on a real
+    asset -- on the motivating case, the true holes measured a tight
+    280-330px across every one of 124 frames with aspect ~1.0-2.0, and
+    narrowing to that range was what kept this from also catching
+    incidental antialiasing-noise islands and unrelated card-fragment
+    slivers elsewhere in the frame). This is inherently per-asset-
+    calibrated, not a universal rule -- there is no substitute for
+    looking at the actual art.
+    """
+    core = largest_bg_component_mask(rgb, bg_rgb, tolerance)
+    mask = color_mask(rgb, bg_rgb, tolerance)
+    labeled, num = ndimage.label(mask, structure=STRUCTURE)
+    if num == 0:
+        return ~core
+
+    sizes = ndimage.sum(mask, labeled, range(1, num + 1))
+    core_label = int(np.argmax(sizes)) + 1
+    removable = core.copy()
+
+    if keep_bg_blob_if_near_colors:
+        target_rgbs = keep_bg_blob_if_near_colors
+        for lab in range(1, num + 1):
+            if lab == core_label:
+                continue
+            comp = (labeled == lab)
+            cnt = comp.sum()
+            if cnt < 20:
+                continue
+            ys, xs = np.where(comp)
+            w = xs.max() - xs.min() + 1
+            h = ys.max() - ys.min() + 1
+            aspect = max(w, h) / max(1, min(w, h))
+            if not (hole_size_range[0] <= cnt <= hole_size_range[1] and aspect <= hole_max_aspect):
+                continue
+            dil = ndimage.binary_dilation(comp, structure=np.ones((3, 3)), iterations=near_dilate_px // 2 + 1)
+            ring = dil & ~comp
+            ring_colors = rgb[ring]
+            near_hit = False
+            for target in target_rgbs:
+                d = np.linalg.norm(ring_colors.astype(float) - np.array(target, dtype=float), axis=-1)
+                if (d < near_tolerance).any():
+                    near_hit = True
+                    break
+            if not near_hit:
+                removable |= comp
+
+    return ~removable
+
+
+def build_band_only_removal_mask(removable_core, band_px):
+    """
+    Given the definitively-removable pixels (background union any
+    verified holes, i.e. the INVERSE of a protected mask), return a
+    protected mask that keeps EVERYTHING except removable_core and a
+    thin band_px-wide ring immediately around it -- for use in place of
+    an allowlist-style protected mask when calling
+    estimate_alpha_and_defringe.
+
+    Why: estimate_alpha_and_defringe (and the feathering path in general)
+    decides a pixel's alpha by its raw color distance to the background
+    color, for any pixel NOT explicitly marked protected. An allowlist
+    protected mask (only mark the specific regions you've verified are
+    safe) leaves every OTHER color in the image subject to that distance
+    check -- which silently breaks for any solid, deliberate design color
+    that happens to sit close to the background color for reasons that
+    have nothing to do with antialiasing (a pale tint, a soft shadow/glow
+    shape, a light gradient fill). Confirmed real case: a flat light-blue
+    "shadow" design shape (RGB ~209,220,251, a distance of 46 from pure
+    white) fell inside the default feathering transition band (tolerance
+    x feather-band-multiplier = 15 x 4 = 60) purely by coincidence, so it
+    was treated as if it were an antialiased blend toward the background
+    and given unstable, partial alpha -- producing a visibly speckled/
+    noisy edge where that shape met the surrounding page, even after
+    dithering was ruled out as the cause (confirmed by testing a hard
+    50%% cutoff with dithering removed entirely -- the noise persisted).
+
+    Inverting the default (protect everything EXCEPT a thin ring around
+    what's actually being removed, rather than an allowlist of what to
+    keep) fixes this generically for any future asset with tinted/shadow
+    elements near the background color, with no per-asset color tuning
+    needed for the protection step itself. band_px should be at least as
+    wide as the real antialiasing fringe in the source art (4px was
+    sufficient on the motivating case; if fringe survives after this,
+    check the source art's actual blend width the same way edge_hardness
+    is checked, and widen band_px to match rather than guessing).
+    """
+    ring = ndimage.binary_dilation(
+        removable_core, structure=np.ones((2 * band_px + 1, 2 * band_px + 1))
+    ) & ~removable_core
+    return ~removable_core & ~ring
+
+
 def compute_alpha_mask(rgb, protected, args):
     """
     Full alpha decision for one frame, combining the hard background mask
@@ -695,7 +877,33 @@ def compute_alpha_mask(rgb, protected, args):
     alpha_f, recolored, band_mask = estimate_alpha_and_defringe(
         rgb, bg_rgb, protected, args.tolerance, args.feather_band_multiplier
     )
-    keep = ordered_dither_mask(alpha_f)
+    dither_mode = getattr(args, 'dither_mode', 'bayer')
+    if dither_mode == 'none':
+        # Hard 50% cutoff on the ALREADY-defringed alpha, instead of a
+        # spatial Bayer pattern. Keeps the color-unmixing benefit (no
+        # whitish fringe ring) but produces a single clean edge instead
+        # of a dithered soft one.
+        #
+        # Why this is an option at all, not just strictly worse: Bayer
+        # dithering is a real, deliberate trick for simulating soft
+        # antialiased edges under GIF's 1-bit alpha limit, and it works
+        # well when the delivered asset ends up composited over varied/
+        # textured backgrounds. But confirmed on a real case: the exact
+        # same dithered edge that looks like reasonable soft antialiasing
+        # in isolation reads as visible "glitchy noise" the moment it's
+        # composited over a SOLID flat color (a green-screen transparency
+        # check, but just as relevant to a solid-color chat bubble or
+        # app background the asset might realistically land on) --
+        # because a spatial dither pattern only reads as "smooth" against
+        # content with its own texture to blend into; against a flat
+        # color it's just visible speckle. 'none' trades a very slightly
+        # harder edge silhouette for zero visible noise on any
+        # background, which is the safer default for small flat-vector
+        # icon/sticker GIFs (this skill's primary target) whenever the
+        # final placement context isn't known to be textured/varied.
+        keep = alpha_f > 0.5
+    else:
+        keep = ordered_dither_mask(alpha_f)
     # Outside the transition band, alpha_f is already exactly 0 or 1 (or 1 if
     # protected), so dithering there is a no-op; this keeps behavior identical
     # to the hard-cutoff path away from edges.
@@ -1044,6 +1252,110 @@ def fit_scale_for_max_dimension(width, height, max_dim):
     if longer <= max_dim:
         return 1.0
     return max_dim / longer
+
+
+def find_tiny_removed_regions(alpha_frames, max_size):
+    """
+    Per-frame: find every connected TRANSPARENT (alpha==0) region at or
+    below max_size pixels, excluding whichever removed region is largest
+    in that frame (assumed to be the true background -- consistent with
+    largest_bg_component_mask's reasoning elsewhere in this file). Returns
+    a list of boolean masks, one per frame, marking exactly those tiny
+    regions' own pixels.
+
+    Built for erode_alpha_edge_exempting_tiny_regions below -- see that
+    function's docstring for why tiny removed regions need to be found
+    and handled separately from normal edge cleanup in the first place.
+    """
+    struct = np.ones((3, 3), dtype=bool)
+    tiny_masks = []
+    for alpha in alpha_frames:
+        removed = (alpha == 0)
+        labeled, num = ndimage.label(removed, structure=struct)
+        tiny = np.zeros(alpha.shape, dtype=bool)
+        if num > 0:
+            sizes = ndimage.sum(removed, labeled, range(1, num + 1))
+            largest_label = int(np.argmax(sizes)) + 1
+            for lab in range(1, num + 1):
+                if lab == largest_label:
+                    continue
+                if sizes[lab - 1] <= max_size:
+                    tiny |= (labeled == lab)
+        tiny_masks.append(tiny)
+    return tiny_masks
+
+
+def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks):
+    """
+    Same contraction as erode_alpha_edge, EXCEPT any pixel inside a given
+    per-frame tiny_masks[i] is excluded from the erosion computation
+    entirely (as if it were fully opaque, i.e. didn't exist as a removed
+    region at all), then punched back to transparent at its own exact
+    original size immediately afterward.
+
+    Why this exists, not just erode_alpha_edge with a smaller iterations
+    value: erode_alpha_edge's contraction is a GLOBAL, uniform shrink of
+    the opaque region by `iterations` pixels in every direction, applied
+    everywhere without regard to the size of what's on the other side of
+    any given boundary. That's the right behavior for its intended case
+    (trimming dither/resample fuzz off a large silhouette's outer edge --
+    a couple of pixels off a large boundary is proportionally tiny). It
+    is NOT the right behavior for a small, ISOLATED removed region well
+    below the erosion radius's own scale: eroding the opaque ring
+    surrounding it by `iterations` pixels doesn't trim it proportionally,
+    it grows it, because the erosion consumes the thin opaque wall around
+    it rather than a thin sliver off a large area on the other side.
+    Confirmed directly on a real asset: a single ORIGINAL 1px enclosed
+    background-colored pixel (a natural, incidental gap where an
+    animated gear's tooth transiently grazed a static book-page outline,
+    not a deliberate design hole) became a 49-70px hole after a normal
+    2px `erode_alpha_edge` pass -- a 50-70x size inflation turning an
+    imperceptible artifact into a visibly distracting one. This was
+    initially patched by only recovering nearby PARTIALLY-restorable
+    pixels post-erosion (dilating the tiny region by the erosion radius
+    and restoring anything reclaimed that wasn't also near a legitimately
+    large removed region) -- that approach was less wrong but still
+    measurably incomplete (a 1px notch still came out ~40-50px after
+    restoration) because erosion's actual spillover pattern around a
+    small feature isn't a clean uniform ring, especially near other
+    nearby geometry (a second small feature, a corner, another edge).
+    Excluding the tiny region from erosion's INPUT entirely, rather than
+    trying to undo erosion's effect on it after the fact, is exact by
+    construction: erosion behaves exactly as if the tiny region were
+    never flagged as removable in the first place (identical result to
+    the surrounding area's normal, correct edge treatment), and the tiny
+    region itself is restored to precisely its own pre-erosion pixels,
+    no more and no less.
+
+    A second, real, generalizable lesson from the same case: the actual
+    UI-facing threshold decision here (how large is "tiny" -- i.e. what
+    max_size to pass to find_tiny_removed_regions) is separate from
+    whether a removed region should exist at all in the first place
+    (that's decided upstream, by whatever produced alpha_frames --
+    --tumble-safe's --keep-bg-blob-if-near, a manual position/color rule,
+    or normal antialiasing-band feathering). Getting ONLY the removal
+    decision right and applying normal erosion regardless still produces
+    a real, visible bug on any sufficiently small removed region,
+    independent of how correctly that region was identified as removable
+    in the first place. Whenever any removal mechanism in this skill
+    (this one included) might produce a removed region under roughly
+    20-30px, route the final erosion pass through this function instead
+    of erode_alpha_edge directly.
+    """
+    if iterations <= 0:
+        return list(alpha_frames)
+    exempted_pre = []
+    for alpha, tiny in zip(alpha_frames, tiny_masks):
+        a = alpha.copy()
+        a[tiny] = 255  # erosion must not see these pixels as removed at all
+        exempted_pre.append(a)
+    eroded = erode_alpha_edge(exempted_pre, iterations=iterations)
+    final = []
+    for alpha_out, tiny in zip(eroded, tiny_masks):
+        a = alpha_out.copy()
+        a[tiny] = 0  # restore each tiny region to its own exact original pixels
+        final.append(a)
+    return final
 
 
 def erode_alpha_edge(alpha_frames, iterations=1):
@@ -1418,7 +1730,23 @@ def process(input_path, output_path, args):
         rgb_frames_raw.append(rgb)
         source_trans_masks.append(source_trans_mask)
 
-    protected_masks = build_protected_masks_robust(rgb_frames_raw, args)
+    if getattr(args, 'tumble_safe', False):
+        bg_rgb = hex_to_rgb(args.bg_color)
+        keep_near = None
+        if getattr(args, 'keep_bg_blob_if_near', None):
+            keep_near = [hex_to_rgb(c.strip()) for c in args.keep_bg_blob_if_near.split(',') if c.strip()]
+        lo, hi = (int(x) for x in args.hole_size_range.split(','))
+        protected_masks = [
+            build_tumble_safe_protected_mask(
+                rgb, bg_rgb, args.tolerance,
+                keep_bg_blob_if_near_colors=keep_near,
+                hole_size_range=(lo, hi),
+                hole_max_aspect=args.hole_max_aspect,
+            )
+            for rgb in rgb_frames_raw
+        ]
+    else:
+        protected_masks = build_protected_masks_robust(rgb_frames_raw, args)
 
     rgb_frames = []
     alpha_frames = []
@@ -1427,6 +1755,9 @@ def process(input_path, output_path, args):
     for i in range(n_frames):
         rgb = rgb_frames_raw[i]
         protected = protected_masks[i]
+        if getattr(args, 'protect_band_only', None) is not None:
+            removable_core = ~protected
+            protected = build_band_only_removal_mask(removable_core, args.protect_band_only)
         alpha, rgb_out = compute_alpha_mask(rgb, protected, args)
 
         source_trans_mask = source_trans_masks[i]
@@ -1480,7 +1811,14 @@ def process(input_path, output_path, args):
                   f"--edge-cleanup-erosion 1 or 0 if this source has fine "
                   f"linework.", file=sys.stderr)
         alpha_frames_pre_erosion = alpha_frames
-        alpha_frames = erode_alpha_edge(alpha_frames, iterations=args.edge_cleanup_erosion)
+        exempt_max = getattr(args, 'erosion_exempt_max_size', None)
+        if exempt_max is not None and exempt_max > 0:
+            tiny_masks = find_tiny_removed_regions(alpha_frames, exempt_max)
+            alpha_frames = erode_alpha_edge_exempting_tiny_regions(
+                alpha_frames, args.edge_cleanup_erosion, tiny_masks
+            )
+        else:
+            alpha_frames = erode_alpha_edge(alpha_frames, iterations=args.edge_cleanup_erosion)
         if args.edge_cleanup_erosion > 0:
             damage = check_erosion_damage(alpha_frames_pre_erosion, alpha_frames)
             if damage:
@@ -1967,6 +2305,124 @@ def main():
                          'escalate frame-stride/scale further within heavy\'s '
                          'settings as a last resort, until it fits (or '
                          'options run out).')
+    p.add_argument('--tumble-safe', action='store_true', default=False,
+                    help='Use for animated content whose foreground shape '
+                         'rotates/translates significantly within the '
+                         'canvas (a tumbling/falling/spinning icon), as '
+                         'opposed to a mostly-static icon with only minor '
+                         'internal motion. Switches background detection '
+                         'from "any bg-colored region touching the canvas '
+                         'border" to "only the single largest bg-colored '
+                         'region" (see largest_bg_component_mask\'s '
+                         'docstring for why the latter is safe and the '
+                         'former isn\'t once the foreground itself can '
+                         'graze the edge), and switches protection from '
+                         '--protect-outline-color\'s per-frame fill-holes '
+                         '(fragile under self-overlapping/rotating '
+                         'geometry -- confirmed real failure, see SKILL.md) '
+                         'to keeping everything that is not that single '
+                         'largest region. Combine with '
+                         '--keep-bg-blob-if-near to selectively remove '
+                         'OTHER small bg-colored regions (e.g. real '
+                         'holes/cutouts) while still protecting everything '
+                         'else. Incompatible with --protect-outline-color '
+                         'and --protect-region (those assume single-frame '
+                         'enclosure geometry generalizes across frames, '
+                         'which is exactly what breaks on this content '
+                         'type) -- use --keep-bg-blob-if-near instead.')
+    p.add_argument('--keep-bg-blob-if-near', default=None,
+                    help='Only meaningful with --tumble-safe. '
+                         'Comma-separated hex colors: a small bg-colored '
+                         'region (other than the main background) is kept '
+                         '(protected) only if it borders one of these '
+                         'colors; otherwise it\'s treated as removable, '
+                         'subject to --hole-size-range/--hole-max-aspect. '
+                         'Identify these colors the same way outline-color '
+                         'verification\'s manual fallback works: zoom into '
+                         'a frame, sample pixels bordering the region you '
+                         'want to KEEP vs. the region you want REMOVED, and '
+                         'use whatever color reliably distinguishes them. '
+                         'This is inherently per-asset -- there is no '
+                         'universal value.')
+    p.add_argument('--hole-size-range', default='50,2000',
+                    help='Only meaningful with --keep-bg-blob-if-near. '
+                         '"min,max" pixel-count range for a bg-colored '
+                         'region to be eligible for removal. Narrow this '
+                         'to the real target\'s measured size across '
+                         'several frames (default is deliberately generous '
+                         'and, alone, is NOT enough to avoid false '
+                         'positives on real art -- see '
+                         'build_tumble_safe_protected_mask\'s docstring).')
+    p.add_argument('--hole-max-aspect', type=float, default=3.0,
+                    help='Only meaningful with --keep-bg-blob-if-near. '
+                         'Maximum bounding-box aspect ratio '
+                         '(max(w,h)/min(w,h)) for a bg-colored region to '
+                         'be eligible for removal -- excludes thin slivers '
+                         '(fold lines, incidental antialiasing islands) '
+                         'that are small enough to fall in --hole-size-'
+                         'range by coincidence but are the wrong shape to '
+                         'be the real target.')
+    p.add_argument('--protect-band-only', type=int, default=None,
+                    help='Pixel width of the transition ring to feather/ '
+                         'defringe around the removable core (background '
+                         'union any --tumble-safe holes), with EVERYTHING '
+                         'else in the frame force-protected regardless of '
+                         'its own color -- the inverse of the normal '
+                         'allowlist-style protected mask. Use when the '
+                         'source art has ANY solid design color (a pale '
+                         'tint, a soft shadow/glow shape, a light gradient '
+                         'fill) that might coincidentally sit within the '
+                         'feathering transition band of the background '
+                         'color -- confirmed real case where an allowlist '
+                         'protected mask let exactly this happen (see '
+                         'build_band_only_removal_mask\'s docstring). '
+                         '4px was sufficient on the motivating case; widen '
+                         'if fringe survives, matching the real '
+                         'antialiasing blend width in the source art.')
+    p.add_argument('--dither-mode', choices=['bayer', 'none'], default='bayer',
+                    help='How feathered edges resolve to GIF\'s 1-bit '
+                         'alpha. "bayer" (default) uses a spatial dither '
+                         'pattern to simulate a soft edge -- looks good '
+                         'over varied/textured backgrounds but can read as '
+                         'visible noise/speckle over a SOLID flat color '
+                         '(confirmed real case, including in a green-'
+                         'screen transparency check specifically). "none" '
+                         'uses a hard 50%% cutoff on the already-defringed '
+                         'alpha instead -- a very slightly harder edge, '
+                         'but zero visible noise on any background. Prefer '
+                         '"none" for small flat-vector icon/sticker '
+                         'content (this skill\'s primary target) unless '
+                         'you specifically know the final placement '
+                         'context is textured/varied. Verify your choice '
+                         'against BOTH a checkerboard AND a solid-color '
+                         'composite before delivering -- checkerboard can '
+                         'visually camouflage bleed/noise that a solid '
+                         'color exposes immediately.')
+    p.add_argument('--erosion-exempt-max-size', type=int, default=None,
+                    help='Exempt any removed (transparent) connected region '
+                         'at or below this many pixels from '
+                         '--edge-cleanup-erosion, instead of letting it '
+                         'erode like every other edge. Normal erosion '
+                         'shrinks the OPAQUE region around a boundary by a '
+                         'fixed pixel count regardless of what\'s on the '
+                         'transparent side -- proportionally fine for a '
+                         'large silhouette\'s outer edge, but for a small '
+                         'ISOLATED removed region well under the erosion '
+                         'radius\'s own scale, it consumes the thin opaque '
+                         'wall around it instead, inflating it rather than '
+                         'trimming it. Confirmed real case: a single '
+                         'original 1px removed pixel became a 49-70px hole '
+                         'after a normal 2px erosion pass. Use this whenever '
+                         'a removal mechanism (--tumble-safe\'s '
+                         '--keep-bg-blob-if-near, or any other source of '
+                         'small removed regions) might produce something '
+                         'under roughly 20-30px -- pass that rough ceiling '
+                         'here. Exempted regions are restored to their exact '
+                         'pre-erosion pixels, not just left unshrunk, so '
+                         'they stay at their true native size rather than '
+                         'either extreme (a leftover solid opaque fleck if '
+                         'skipped from removal entirely, or an inflated '
+                         'transparent one if left to normal erosion).')
     p.add_argument('--preview', default=None,
                     help='Path to save a PNG contact sheet of sampled frames '
                          'composited over a checkerboard, for quick visual '
@@ -2001,6 +2457,13 @@ def main():
 
     if args.protect_outline_color and args.protect_region:
         p.error('Use only one of --protect-outline-color or --protect-region')
+    if args.tumble_safe and (args.protect_outline_color or args.protect_region):
+        p.error('--tumble-safe replaces --protect-outline-color/--protect-region '
+                 '(their single-frame enclosure geometry does not generalize '
+                 'across frames of tumbling/rotating content) -- use '
+                 '--keep-bg-blob-if-near instead')
+    if args.keep_bg_blob_if_near and not args.tumble_safe:
+        p.error('--keep-bg-blob-if-near only applies with --tumble-safe')
 
     apply_pixel_art_preset(args)
     process(args.input_gif, args.output_gif, args)
