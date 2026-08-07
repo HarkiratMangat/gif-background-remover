@@ -321,6 +321,11 @@ def analyze(input_path, max_samples=40, tolerance=15):
     bg_rgb = detect_bg_color(rgb0)
     H, W, _ = rgb0.shape
 
+    all_rgb_frames = []
+    for i in range(n_frames):
+        im.seek(i)
+        all_rgb_frames.append(np.array(im.convert('RGB')))
+
     if n_frames <= max_samples:
         sample_idxs = list(range(n_frames))
     else:
@@ -330,8 +335,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
     rep_frame_for_color = {}  # remember a frame index/rgb to sample outline color later
 
     for i in sample_idxs:
-        im.seek(i)
-        rgb = np.array(im.convert('RGB'))
+        rgb = all_rgb_frames[i]
         bg_mask = color_mask(rgb, bg_rgb, tolerance)
         labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
         border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
@@ -356,8 +360,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
 
         frames_hit = 0
         for i in sample_idxs:
-            im.seek(i)
-            rgb = np.array(im.convert('RGB'))
+            rgb = all_rgb_frames[i]
             bg_mask = color_mask(rgb, bg_rgb, tolerance)
             labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
             border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
