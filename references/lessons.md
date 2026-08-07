@@ -8,8 +8,9 @@ were tried and reverted — read those before re-attempting them.
 **When to read this file:** before re-diagnosing anything that smells like a past case (flicker or
 a gap in a protected region, erosion eating fine detail, jagged edges surviving a resize, a wrong
 animation-length claim, a "grainy/messy" complaint after compression, a which-tool-or-quantizer
-question). Check the table of contents below for a matching section first — see the memory
-folder's `feedback_check_lessons_before_rediagnosing.md` for the full reasoning on why this matters.
+question). Check the table of contents below for a matching section first. This history is long and
+specific, and several fixes were tried, looked right, and later regressed — re-deriving one from
+scratch risks retrying an approach already known to fail.
 
 ## Table of contents
 1. [Edge-hardness caveat: geometry-heavy false positives](#1-edge-hardness-caveat-geometry-heavy-false-positives)
@@ -21,6 +22,10 @@ folder's `feedback_check_lessons_before_rediagnosing.md` for the full reasoning 
 7. [GIF format has no partial transparency](#7-gif-format-has-no-partial-transparency)
 8. [gifski as a compression-tier alternative (not yet integrated)](#8-gifski-as-a-compression-tier-alternative-not-yet-integrated)
 9. [Verification pitfalls: Pillow's `ImageSequence.Iterator`, bbox-vs-mask, frame-offset drift](#9-verification-pitfalls-pillows-imagesequenceiterator-bbox-vs-mask-frame-offset-drift)
+10. [Animated/rotating content: four related failures on a tumbling icon, seven rounds to fully fix](#10-animatedrotating-content-four-related-failures-on-a-tumbling-icon-seven-rounds-to-fully-fix)
+11. [Small removed regions get inflated by edge-cleanup erosion: a second animated-icon case, five rounds](#11-small-removed-regions-get-inflated-by-edge-cleanup-erosion-a-second-animated-icon-case-five-rounds)
+12. [Art that fades toward the background colour renders as a dither mesh](#12-art-that-fades-toward-the-background-colour-renders-as-a-dither-mesh)
+13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
 
 ---
 
@@ -329,8 +334,9 @@ empirically tested, not just reasoned about abstractly. **Implemented as an expl
   narrower benchmark (quantization MSE) can still lose on the metric that actually matters for the
   full pipeline (final file size on this skill's real content) if the two aren't measuring the same
   thing. Prefer re-testing swaps like this end-to-end on real output before adopting them, even when
-  the underlying algorithm is well-regarded and the component-level numbers look unambiguous. See
-  the memory folder's `feedback_test_naive_alternative_first.md`.
+  the underlying algorithm is well-regarded and the component-level numbers look unambiguous.
+  (Standing rule behind this: test the naive/simpler option end-to-end on real content before
+  committing to a bigger rebuild.)
 
 ## 7. GIF format has no partial transparency
 Every pixel in a GIF frame is binary opaque-or-transparent; there is no such thing as a real
@@ -427,3 +433,370 @@ comparison — a real case had an incorrectly-assumed crop offset (derived from 
 foreground detection instead of the TRUE union-of-all-frames crop this script actually uses)
 produce a spurious "artifact" in one location while masking a real one elsewhere. Re-derive the
 offset from the script's own logged crop coordinates.
+
+## 10. Animated/rotating content: four related failures on a tumbling icon, seven rounds to fully fix
+SKILL.md's rule: check whether the foreground shape rotates/translates significantly within the
+canvas before choosing a strategy; if so, several default assumptions below become actively
+dangerous, not just imprecise. This section is the evidence trail — four distinct, confirmed bugs
+from the same real asset, each only surfacing after the previous one was fixed, taking seven full
+delivery-and-rejection rounds (v1 through v7) before the asset was actually correct.
+
+**The real case:** a 640x640, 124-frame calendar/gamepad icon GIF where the whole card
+tumbles/rotates through a wide range of orientations (not a subtle wobble — real rotation,
+occasionally flipping to show a second card layer behind it), while a purple gamepad with a white
+cross and four white dots sits on the card's face, and the card's header has four navy
+"spiral-binding" loops each with a small white gap inside. Three different things needed different
+treatment (gamepad cross/dots stay opaque; the four spiral-hole gaps go transparent; everything
+else white goes transparent) while all of it tumbles together in lockstep.
+
+### Bug 1 (v1): a fixed-position region derived from one frame doesn't hold for other frames
+`--analyze`'s `bbox_xyxy`/`suggested_protect_region` are correct for the sampled frames they came
+from, but nothing stops using those as a FIXED rectangle applied uniformly across all frames — a
+natural move when a region is a bad `--protect-region` fit (non-circular, no verified outline
+color; see §2's existing caution, which warns about the wrong GEOMETRY at one position but not
+about the position itself being wrong elsewhere). Confirmed real result: visibly destroyed frames
+mid-animation — chunks of the gamepad and card cut out — because by the time the tumbling icon
+reached other frames, the fixed pixel rectangle now overlapped completely different content.
+
+**Fix:** re-derive any frame-specific region independently, per frame, from intrinsic properties
+that don't depend on position — size range, bounding-box aspect ratio, and immediate bordering
+color(s) — never from one frame's absolute coordinates.
+
+### Bug 2 (v3): border-touching stops being a safe proxy for "background" once the foreground can graze the edge
+A natural definition of "background" is "whatever bg-colored region touches the canvas border"
+(flood-fill from the edges) — safe ONLY when the foreground design never itself reaches the canvas
+edge. Confirmed real failure: at the peak of the tumble, a genuine corner of the card touched row
+639 of the 640px canvas, and border-touch flood-fill correctly identified that as
+"border-connected" and swept the ENTIRE connected white shape — 22,169px of real card content, not
+background — into "background," deleting it. This is a topology problem, not a color/edge-blend
+problem this skill already handles well: a large chunk of real content became graph-connected to
+the true background purely by touching the border at one point.
+
+**Fix:** for animated content where the foreground might reach the edge, define background as the
+SINGLE LARGEST connected bg-colored component per frame, not "any bg-colored region touching the
+border." Confirmed safe specifically because true background is overwhelmingly large relative to
+any other same-colored region — verified directly across all 124 frames of the motivating case, the
+largest bg-colored component was never less than ~3x the size of the second-largest, even in frames
+where a second genuinely large white region (the card's own visible interior, up to ~47,000px)
+coexisted with it. **This margin needs re-verifying on any new asset before trusting it** (print the
+top 2-3 component sizes per frame) — an asset whose true background is only a thin margin,
+comparable in size to its own foreground bg-colored regions, is the case where this heuristic is
+the wrong tool.
+
+### Bug 3 (v2, and again after v3's fix): single-frame outline enclosure can fail under self-overlapping/rotating geometry, past what §3's existing anomaly detector catches
+§3 above already documents real, hard-won infrastructure for one enclosure-failure mode: a
+DIFFERENT animated element briefly crossing and breaking a stable outline's closure (the
+"flashing" bug, with local-anomaly + whole-distribution-gap detection, and real history of two
+reverted approaches that produced "ghost" artifacts on rotating icons specifically — read that
+section in full before touching this area again, it already encodes hard lessons). **This case's
+failure was different enough to slip past that existing detector.** Rather than a stable shape
+being briefly crossed by something else, the asset's OWN geometry — a card tumbling through
+orientations, at times self-overlapping its second layer — made single-frame `binary_fill_holes`
+enclosure unreliable in a way that correlated smoothly with rotation progress rather than spiking
+as a sharp, isolated anomaly against nearby frames. It silently deleted real card content across a
+meaningful span of frames without ever reading as "flashing," and a 40-frame `--analyze` sample
+(`enclosure_ratio: 1.0`) did not catch it either, because the specific sampled frames happened to
+be fine even though frames in between weren't.
+
+**Fix:** for this failure signature specifically, don't lean on `--protect-outline-color` at all —
+bypass single-frame flood-fill enclosure as a concept in favor of bug 2's largest-component
+background definition, plus bug 4's mechanism below for anything needing selective removal. **This
+does NOT replace §3's existing anomaly detection** — that remains the right tool for its own
+documented failure mode (a distinct crossing element). Use this section's approach when the SHAPE
+ITSELF is what's moving/rotating/self-overlapping; keep using `--protect-outline-color` (with its
+existing anomaly correction) for a stable shape being briefly crossed by something else.
+
+### Bug 4 (v5, discovered fixing an unrelated fringe issue after bugs 1-3 were resolved): allowlist-style feathering protection misses solid near-background design colors
+Not specific to animated content — would affect a perfectly static icon too — but found in the
+same investigation, one step later. The motivating icon has a flat, deliberate, pale blue-lavender
+"shadow" design shape (RGB ~209,220,251). That color's distance from pure white background (~46)
+happens to fall INSIDE the default feathering transition band (`tolerance x
+feather-band-multiplier` = 15 x 4 = 60) — purely by coincidence, not because it's an antialiasing
+blend. Because the protected mask in use at the time was allowlist-style (only the specific
+regions already verified as needing protection were marked protected — the page/gamepad interior),
+this shadow shape wasn't on the list, so it went through the normal distance-based alpha estimate
+and came out with unstable, partial alpha — a visibly speckled/noisy edge where the shape met the
+surrounding page.
+
+**Initially, wrongly, suspected to be a Bayer-dithering artifact** — ruled out by testing a hard
+50% cutoff with dithering removed entirely; the noise persisted unchanged, which is what correctly
+redirected the investigation to the alpha estimate itself rather than the dithering step. Don't
+skip that isolation step next time a "noisy/glitchy" report comes in — assuming it's dithering
+because dithering is the obvious suspect cost a full round here.
+
+**Fix (v6/v7):** inverted the protected-mask default. Instead of allowlisting specific verified-
+safe regions (leaving every OTHER color subject to the raw distance-to-background check), protect
+EVERYTHING in the frame except the verified-removable core (background union any identified holes)
+and a thin ~4px ring immediately around it. This generically prevents ANY solid design color — not
+just this specific pale blue — from being mistaken for an antialiasing blend, with zero per-asset
+color tuning needed for the protection step itself. Confirmed: zero isolated speckles across all
+124 frames after this change (down from a real, visible pattern before it), and the pale shadow
+shape stays fully solid in every frame.
+
+### Bug 5 (found in the same investigation, not its own delivery round): Bayer dithering reads as noise on flat backgrounds
+Surfaced while ruling out dithering as bug 4's cause — not the cause there, but a real, separate,
+worth-keeping finding. This skill's default feathering resolves partial alpha to GIF's 1-bit alpha
+via a spatial Bayer dither pattern, meant to simulate a soft edge — reasonable for content
+composited over varied/textured backgrounds. **Confirmed directly: the exact same dithered edge,
+composited over a SOLID flat color, reads as visible glitchy noise, not smoothness** — a spatial
+dither pattern only looks smooth against content with its own texture to blend into. This matters
+beyond the literal green-screen check used here: a flat/solid color is also how the delivered
+asset may realistically be placed in the wild (a solid-color chat bubble, a flat app background),
+not just a debugging artifact of the verification method.
+
+**Fix:** added a hard-cutoff alternative (50% threshold on the already-defringed alpha) in place of
+the Bayer pattern — keeps the color-unmixing benefit from bug 4's fix, trades a very slightly
+harder edge silhouette for zero visible noise on any background. Worth defaulting to for small
+flat-vector icon/sticker content (this skill's primary target) whenever the final placement context
+isn't known to be textured/varied.
+
+### Generalizable takeaways
+- A fixed pixel-space region derived from one frame is only valid for that frame — extends §2's
+  existing circle/rect-shape-mismatch caution to a new axis (position, not just geometry).
+- Border-touching is a safe proxy for "background" only when the foreground provably never reaches
+  the canvas edge — verify the size-margin assumption directly (across ALL frames) before relying
+  on it, the same way `edge_hardness` gets checked before trusting antialiasing defaults.
+- §3's existing flicker-detection infrastructure is built for a DIFFERENT failure signature (a
+  stable shape briefly crossed by another element) — it is not guaranteed to catch enclosure
+  failure that correlates smoothly with the shape's OWN rotation. Don't assume it covers this case
+  just because both produce "content that should be protected went transparent."
+- Disambiguating two same-colored, similarly-sized regions (one to remove, one to keep) has no
+  universal automatic rule — required manually sampling bordering colors on the real art, the same
+  manual-inspection philosophy §2's outline-color fallback already established for a different
+  problem. Expect to recalibrate size range, aspect limit, and distinguishing color per asset, not
+  reuse fixed numbers.
+- When a "noisy/glitchy" artifact is reported, isolate dithering from the alpha computation itself
+  before assuming which one is at fault — they produce visually similar speckled results but need
+  different fixes, and guessing wrong (as happened here initially) costs a full round.
+- Verify against ALL frames for this content type, not a spot-check sample. Every one of the four
+  bugs above was localized to specific rotation phases or specific design colors; a first/middle/
+  last spot-check (this skill's normal verification habit, sufficient for most content) would not
+  reliably have caught any of them.
+- Verify against a solid-color composite, not just checkerboard, at least once. Checkerboard
+  (already flagged in the Verification section as camouflaging soft bleed) also camouflages
+  dithering noise and unstable partial-alpha artifacts — both bugs 4 and 5 above were only clearly
+  visible against a solid color.
+
+### What shipped
+`--tumble-safe` (largest-connected-component background detection, replacing
+`--protect-outline-color`/`--protect-region` for this content type), `--keep-bg-blob-if-near
+<hex,...>` (per-frame, color-bordering-based hole disambiguation, gated by `--hole-size-range`/
+`--hole-max-aspect`), `--protect-band-only <px>` (invert-by-default protection), and
+`--dither-mode {bayer,none}`. All four are additive/opt-in — default behavior for non-tumbling
+content is unchanged, confirmed via a byte-identical `--analyze` diff against the pre-change script
+on the same test file. See SKILL.md's "Animated/rotating content" section for the lean actionable
+rule and decision summary.
+
+## 11. Small removed regions get inflated by edge-cleanup erosion: a second animated-icon case, five rounds
+SKILL.md's rule: any time a fix removes a small, isolated bg-colored region, route the final
+erosion pass through `--erosion-exempt-max-size` instead of letting it hit normal
+`--edge-cleanup-erosion`. This section is the evidence trail — a different asset from §10's
+tumbling calendar, a different failure mechanism, five rounds (open-book-gear-transparent.gif
+through -v5.gif) to fully resolve.
+
+**The real case:** a 640x640, 50-frame open-book-with-gear icon. An orange gear (rotating and
+bouncing vertically) sits above an open book whose pages are enclosed white, verified by
+`--protect-outline-color` across all 50 frames with zero enclosure failures (unlike §10's case,
+this asset's outline enclosure was completely reliable — a useful reminder that §10's failure mode
+is real but not universal, and checking is still worth doing even when it turns out fine). The
+gear's rotation/bounce means it transiently grazes the book's top-edge outline at certain frames,
+pinching off tiny gaps of true background between the gear's teeth and the book's curve — nothing
+to do with §10's tumble/rotation bugs, and this asset didn't need `--tumble-safe` at all.
+
+### Round 1 (v1, baseline `--protect-outline-color` delivery): visible white gaps at the gear/book boundary
+User-reported (not internally discovered): two frames had a clearly visible white gap where the
+gear's teeth met the book's page-top curve — 69px and 137px respectively, large enough to read as
+an obvious defect. `--protect-outline-color` correctly (by its own logic) treated these as enclosed
+white and protected them, since they genuinely are bordered by navy on both the gear and book side.
+The defect is about design intent, not about the mechanism working incorrectly.
+
+### Round 2 (v2): blanket small-size removal broke unrelated content elsewhere in the frame
+Fix: any enclosed white component under 800px (comfortably below the smallest legitimate protected
+region, the gear's ~2252px center circle, confirmed by scanning size across all 50 frames) was
+treated as removable. This over-generalized: the book's pages have wavy purple/blue decorative
+lines, and where two nearby line-strokes' antialiasing curves happen to nearly touch, they can pinch
+off their own tiny (1-5px) incidental background pocket — completely unrelated to the gear, just an
+artifact of the line art's own geometry. The blanket rule removed these too, producing scattered
+1-5px transparent "particles" inside the book pages in frames far from the gear (measured y≈352-357,
+vs. the real gear-boundary notches at y≈228-317 — a clean ~35px separation once actually measured).
+
+**Fix:** added a position constraint (y-center < 340) so only small enclosed regions actually near
+the gear are eligible for removal. Verified: page-interior specks now stay opaque, real gear-notches
+still transparent.
+
+### Round 3 (v3, confirmed independently by the user re-testing the delivered file, not a self-caught bug): erosion inflated the smallest notches into visible "speckles"
+This is the same content-independent mechanism documented as its own general lesson above/in
+SKILL.md's "Small removed regions can be inflated by edge-cleanup erosion" section — restated here
+briefly since it's the specific case that surfaced it. Several of the gear-boundary notches were
+themselves tiny (1-11px) before any cleanup, since the exact overlap between the gear's teeth and
+the book's curve varies continuously with the gear's rotation/bounce phase, and most frames only
+produce a marginal, barely-there gap. The standard 2px `--edge-cleanup-erosion` pass, applied
+uniformly with no regard for how small the removed region on the other side of a boundary is,
+inflated a confirmed real 1px removed pixel (frame 6) into a 49-70px hole — a 50-70x size increase,
+turning an imperceptible rendering quirk into a visibly distracting speckle. **The user caught this
+on their own re-check of the delivered file** (not something the standard verification checklist —
+full-frame structural checks, solid-color composite — flagged, because those checks confirm
+correctness of WHAT got removed, not whether an already-correct removal got inflated afterward by a
+later pipeline stage). Worth internalizing: passing every structural check doesn't rule out a bug
+introduced by a downstream step those checks don't specifically probe.
+
+### Round 4 (v4): raising the size floor traded one visible defect for its mirror image
+First attempt at a fix: require a candidate notch to be at least 30px (comfortably above the 1-11px
+noise range, comfortably below the two real 69px/137px gaps) before it's even considered removable.
+This stopped the erosion inflation (nothing under 30px was touched at all), but the sub-30px slivers
+now stayed fully opaque white instead — visible as small white specks at exactly the points (gear
+teeth nearly touching the book outline) a person looks most closely at. **The user caught this too,
+on the very next re-check**, correctly identifying it as a new, different artifact from round 3's
+(transparent specks vs. opaque specks) rather than assuming it was the same bug recurring.
+
+### Round 5 (v5): exclude tiny regions from erosion's INPUT, not just its size threshold
+The actual fix, and the one that shipped: rather than choosing between "remove and let it erode" and
+"don't remove at all," exclude any tiny (<30px) removable region from the erosion computation
+entirely — mark it as if it were fully opaque/protected for that computation only, so erosion
+produces exactly the result it would have if the tiny region had never been flagged as removable in
+the first place (identical to how the surrounding area is normally, correctly treated) — then punch
+each tiny region back to transparent at its own exact pre-erosion pixels afterward. An intermediate
+attempt (dilate each tiny region by the erosion radius and restore whatever erosion reclaimed there,
+provided it wasn't also near a legitimately large removed region) was tried first and was measurably
+incomplete — a 1px notch still came out ~40-50px post-restore — because erosion's real spillover
+pattern around a small feature isn't a clean, independent ring, especially with other nearby geometry
+(a second small feature close by, a corner, another edge) also contributing to the same local erosion
+result. Excluding the region from erosion's input is exact by construction; trying to undo erosion's
+output after the fact is not.
+
+### Generalizable takeaways
+- A blanket size-based removal rule needs a second, independent constraint (position, color,
+  whatever the asset actually offers) the moment there's more than one source of small
+  same-colored enclosed regions in the frame — extends §10's bug-1 lesson (position-independent
+  per-frame re-derivation) with a concrete case of getting the DISAMBIGUATION signal itself wrong on
+  the first attempt, not just the removal mechanism.
+- Passing the standard verification checklist (full-frame structural checks, solid-color composite)
+  does not rule out a bug introduced by a LATER pipeline stage (here, erosion) that those checks
+  don't specifically probe. The checks confirm the removal decision was right; they don't by
+  themselves confirm nothing downstream altered its size.
+- When a person reports "still broken" after a fix, don't assume it's the same bug persisting —
+  round 4's opaque-speck complaint was a genuinely different defect from round 3's transparent-speck
+  complaint, caused by the fix itself, not a failure of the fix to apply. Confirm which failure mode
+  is actually present (in this case: check the actual pixel/component sizes) before re-diagnosing.
+- Undoing a global transformation's effect on a small region, after the fact, by trying to identify
+  and reverse just its local spillover, is fragile the moment other nearby geometry is also
+  contributing to the same local result. Excluding the region from the transformation's input
+  entirely is exact; patching its output is not — worth defaulting to the former whenever the
+  transformation (here, erosion) supports being scoped that way.
+- A file mismatch (someone re-testing an old delivered version, not the latest one) is a real,
+  mundane possibility worth checking for directly (file hash, filename in what they show you)
+  BEFORE assuming a fix didn't work — but confirmed here it isn't always the explanation: round 3 and
+  4's reports were both against the actual current file and were both real, distinct bugs. Check,
+  don't assume either way.
+
+### What shipped
+`find_tiny_removed_regions` + `erode_alpha_edge_exempting_tiny_regions`, wired to a new
+`--erosion-exempt-max-size <px>` flag. Confirmed the fully-automated version (no manual pre-
+classification, just feeding it the complete removable-region alpha and letting it auto-detect
+anything at or below the given size) reproduces the same result as the manually-verified fix.
+Additive/opt-in, default off — confirmed the existing default codepath is unaffected.
+
+---
+
+## 12. Art that fades toward the background colour renders as a dither mesh
+
+**Found 2026-08-07** on `ruby.gif`, a 109-frame 640x640 gem icon with yellow four-pointed
+sparkles. Reported by Harkirat directly, from the delivered file, against a dark backdrop.
+
+### The symptom
+Most sparkles came out solid yellow, but some rendered as a **visible grid/mesh** — a regular
+crosshatch of transparent pixels through the sparkle body — instead of solid colour. The gem
+itself, the sparkle outlines, and the deliberately-removed white sparkle cores were all correct.
+
+### Why this is NOT §10's Bug 5, despite both ending at `--dither-mode none`
+§10's Bug 5 is about a **correct edge** being *composited* onto a flat colour, where the Bayer
+pattern that reads as soft antialiasing over texture reads as speckle over flat paint. The trigger
+is the *viewing background*, and the affected pixels are a thin edge band.
+
+This is different in trigger, location, and cause: **the source art has a fade baked into it.**
+GIF has no partial alpha (§7), so the artist's fade-out was flattened against white at authoring
+time — the sparkle literally *is* progressively lighter cream in later frames. Measured on the
+real file: at peak the sparkle is `fdcb50`; mid-fade its body is a solid `fff2d1`, Euclidean
+distance **47.8** from white. The default band is `--tolerance 15` to `15 x 4.0 = 60`, so that
+solid body colour lands **inside the feather band**, gets assigned alpha ~0.73, and is dithered.
+The affected pixels are the sparkle's whole **interior**, not an edge, and they mesh no matter
+what you composite over.
+
+So the alpha was arguably *right* — a 73%-transparent sparkle is a faithful rendering of a fade
+that no longer has an alpha channel to live in. It just looks wrong, because a spatial dither
+across a solid interior region reads as a mesh rather than as translucency.
+
+### The fix, and what it costs
+`--dither-mode none` — hard 50% cutoff on the already-defringed alpha. Measured before/after on
+the frames that showed it:
+
+| source frame | faded body | opaque with Bayer (v1) | opaque with `none` (v2) |
+|---|---|---|---|
+| 68 | 803px | 651px (81%) | 762px (95%) |
+| 97 | 2966px | 1393px (47%) | **2805px (95%)** |
+| 103 | 2962px | 2016px (68%) | **2845px (96%)** |
+
+The two faintest frames (61, 67) go to 0% opaque in both — below the 50% cutoff the sparkle simply
+disappears a beat earlier instead of meshing, which is the correct trade.
+
+**Check the cost before reaching for it: `--dither-mode none` changes EVERY edge in the file, not
+just the offending region.** It was nearly free here because ruby's silhouette is mostly straight
+lines (`edge_hardness` ratio 0.506) — verified by zooming the outer navy silhouette in both
+versions and finding no new jaggedness, and by confirming 0 near-white fringe pixels in the
+outermost opaque ring. On a curve-heavy icon that trade would be worse, and narrowing
+`--feather-band-multiplier` would be worth measuring first.
+
+### Generalizable takeaway
+**A "solid" colour is only solid relative to the background you're keying against.** Before
+trusting the feather band, check whether any *large interior* region of the art sits inside it —
+`tolerance` to `tolerance x feather-band-multiplier` in Euclidean RGB distance. Feathering is
+designed for thin edge transitions; a wide interior region inside that band is the signature of a
+baked-in fade (or a pale design tint, which is §10 Bug 4's `--protect-band-only` case), and both
+want handling other than "let it dither."
+
+---
+
+## 13. The save message asserted a frame count it never read back
+
+**Found 2026-08-07** while verifying `jewelry.gif` (170 frames) — caught by the verification step,
+not by the script.
+
+### What happened
+The script printed `Saved <path> (170 frames, durations preserved exactly)`. The written file has
+**168**. The line was `print(f"... ({len(durations)} frames, durations preserved exactly)")` — it
+restated the frame list the script *intended* to write and asserted a property of a file it had
+never opened.
+
+### Why the file legitimately has fewer frames
+Pillow's GIF encoder coalesces consecutive frames that come out **byte-identical after
+quantization**, folding their delays into the survivor. Source frames 166–168 differ by at most
+**9 RGB levels on at most 91 of 409,600 pixels** — the animation has settled into its resting pose
+and the residual difference is encoder noise. After palette quantization they are the same frame.
+Total playback was **3600ms before and after**.
+
+**So the coalescing is not a defect and is not worth suppressing.** The dropped frames were
+visually identical; refusing the merge would only make the file bigger. The defect was purely the
+claim.
+
+### The fix
+`describe_written_timing(output_path, intended_durations)` re-opens the written file, reads its
+actual per-frame durations, and reports what is actually true:
+- identical to intended → `"N frames, durations preserved exactly"` (unchanged wording, now earned)
+- fewer frames, same total → `"N frames written from M intended -- K identical frame(s) coalesced
+  by the encoder, total playback unchanged at Xms"`
+- **total playback changed** → an explicit `WARNING:` to stderr, because that *would* be a real
+  timing defect rather than encoder coalescing
+- readback itself fails → says so, and never fails a job that already wrote its output
+
+Verified on two synthetic files that isolate the branches: one whose middle frames drift ≤2 RGB
+levels (reports `4 frames written from 5 intended -- 1 identical frame(s) coalesced ... unchanged
+at 200ms`) and a control with clearly distinct frames (reports `5 frames, durations preserved
+exactly`). The old code printed the identical "preserved exactly" line for both.
+
+### Generalizable takeaway
+**Verification step 3 in SKILL.md tells the reader to compare input and output durations by reading
+the real file — but the script's own success message was doing exactly what that rule forbids.** A
+tool that reports on its own output must read that output back; restating the input is not a check,
+it's a claim wearing a check's clothing, and it is more dangerous than no message at all because it
+actively discourages looking. Worth grepping for the same shape anywhere else a message asserts a
+property of a written file.

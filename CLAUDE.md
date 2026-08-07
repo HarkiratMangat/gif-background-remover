@@ -45,15 +45,33 @@ collaboration layer on top of both.
 This repo is the dev copy. The live skill on claude.ai only gets updated at a repo session's
 version-bump/push point (a one-directional sync, repo → live, same moment as any other "push").
 
-A live-skill-only session (claude.ai, no access to this repo or this Mac's filesystem) can still
-produce a real discovery, fix, or edit. That doesn't get saved back into the live skill directly —
-instead: log the issue/finding to a notepad during that session, implement whatever edit is needed
-and use it live if relevant, then export the resulting skill as
-`gif-background-remover-temp-vX.X.X.skill` (plus a companion notes file if there's a notepad worth
-keeping) and get it onto this Mac, in `local/live-skill-drops/`. **Don't assume drops only arrive
-by Harkirat manually dragging a file in** — they might land there via terminal/CLI, or via Claude
-itself writing directly to the folder in some other session/context. Check the folder itself, not
-for a particular arrival mechanism.
+### What a claude.ai live-skill session can and cannot see (corrected 2026-08-07)
+**A claude.ai session runs in its own isolated Linux sandbox. It has no reach into this Mac at
+all — not to read, and not to write.** Earlier wording here got this wrong in both directions and
+sent at least one session looking for things that cannot exist; treat the boundary as absolute:
+
+- **It CAN read** `SKILL.md`, `references/`, and `scripts/` — but only the copies bundled inside
+  the `.skill` package that was uploaded to claude.ai, frozen at whatever version that upload was.
+  Not this repo's working copy, and not anything committed since.
+- **It CANNOT read** this repo's `CLAUDE.md`, the `~/.claude/projects/.../memory/` folder, `.git`
+  history, or `local/`. None of those are in the package.
+- **It CANNOT write anywhere on this Mac** — not `local/live-skill-drops/`, not the repo, nothing.
+
+**The load-bearing consequence: any convention a live session must actually follow has to live
+inside the packaged files (`SKILL.md` or `references/`), because that is the only thing it ever
+sees.** A rule that exists only in this `CLAUDE.md` or in the memory folder is invisible to every
+live session by construction. When adding a rule, decide which side of that line it belongs on.
+
+A live-skill-only session can still produce a real discovery, fix, or edit. That doesn't get saved
+back into the live skill directly — instead: log the issue/finding to a notepad during that
+session, implement whatever edit is needed and use it live if relevant, then export the resulting
+skill as `gif-background-remover-temp-vX.X.X.skill` (plus a companion notes file if there's a
+notepad worth keeping).
+
+**That export reaches this Mac exactly one way: Harkirat downloads it out of the claude.ai session
+and puts it in `local/live-skill-drops/` himself.** There is no automated path and no other agent
+that can place it there. Still check the folder itself rather than waiting to be told a drop
+arrived — he may well have dropped one in without mentioning it.
 
 **At the start of every Claude Code session on this repo, check `local/live-skill-drops/` for
 anything not yet in `local/live-skill-drops/reconciled/`, and ALWAYS report the result to
@@ -73,8 +91,11 @@ unambiguous.
 `package_skill.py` directly against this directory — it walks the entire tree with no gitignore
 awareness and would silently bundle `.git` (full repo history), `.remember` (session logs), and
 `local/` (old `.skill` backups, live-skill-drops) into the new package. Stage a clean copy first
-(`SKILL.md` + `references/` + `scripts/` only) and package from that. Deliberately deferred until
-after a first real GIF validates this restructure, so packaging doesn't need to happen twice.
+(`SKILL.md` + `references/` + `scripts/` only) and package from that.
+
+Those three staged paths are also exactly what a live session will be able to read (see the
+sandbox-boundary note above) — so treat the staging step as the moment to ask "is everything a
+live session needs actually inside these three?", not just "is anything private leaking out?"
 
 ## Skill versioning (already defined in SKILL.md itself — don't duplicate the logic here)
 Three-part `v{major}.{minor}.{correction}`, defined at the top of SKILL.md, including the
@@ -126,12 +147,17 @@ These are the load-bearing ones; the full reasoning for each lives in the memory
 - **Mark chat chapters at real phase shifts** (setup → a specific GIF job → a bug investigation →
   a version bump), not every message.
 
-## Not yet done
-No real GIF has been processed since the 2026-07-14/16 setup session that created this file and
-`references/lessons.md`. Treat the restructured SKILL.md (now v2.2.2, pushed to GitHub) as
-unverified-in-practice until it's actually run once against a real file. **The version bump and
-GitHub push are NOT the same thing as syncing to the live claude.ai skill** — that sync is
-deliberately still deferred until real GIF validation happens, per Harkirat's explicit call
-(2026-07-16): the repo can be versioned/pushed as the real, current state of the code without that
-implying it's been redistributed to claude.ai yet. See "Live skill sync workflow" above for the
-actual repo→live sync trigger.
+## Validation status
+**Validated in practice on 2026-08-07** — the first real GIF jobs since the 2026-07-14/16 setup
+session. Three 640x640 white-background gem icons (`ruby`, `jewelry`, `gemstone`) were processed
+end to end with the v3.1.0 drop's script and accepted by Harkirat. What that exercised:
+`--protect-outline-color` enclosure verified per-frame across an overlapping-elements animation,
+`--erosion-exempt-max-size` on small isolated removed regions, and `--dither-mode none` on
+art with a fade baked in against the background. Two real findings came out of it —
+`references/lessons.md` §12 and §13.
+
+**A version bump and a GitHub push are still NOT the same thing as syncing to the live claude.ai
+skill.** The repo can be versioned/pushed as the real, current state of the code without that
+implying it's been redistributed to claude.ai (Harkirat's explicit call, 2026-07-16). The repo→live
+sync is a separate, manual upload step — see "Live skill sync workflow" above, and note the
+sandbox-boundary section there for why the packaged files are the only thing a live session sees.
