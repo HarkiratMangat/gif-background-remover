@@ -5,19 +5,33 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v3.3.0** (previous: v3.2.0, v3.1.0, v3.0.0, v2.2.2, v2.2.1,
-v2.2, v2.1, v2, v1). This is a **minor** bump: `--analyze` gained five new
-checks (tumble/edge-grazing margin, all-frame outline-color enclosure
-verification, outline-fill background-leak detection, feather-band interior
-region detection covering both §10 Bug 4 and §12's signature, and a small
-removed-region size histogram), plus two new modes — `--recommend` (runs
-`--analyze` and emits a ready-to-confirm command line with evidence) and
-`--verify <input.gif> <output.gif>` (runs the mechanical half of the
-Verification checklist below: leftover background, protected-region
-coverage, edge fringe, small-region inflation, duration/frame-count). All
-additive and opt-in; the default processing codepath is unchanged (verified
-byte-identical against v3.2.0's output on all three real fixtures used to
-build this). No existing flag's behavior changed.
+**Skill version: v3.3.1** (previous: v3.3.0, v3.2.0, v3.1.0, v3.0.0, v2.2.2,
+v2.2.1, v2.2, v2.1, v2, v1). This is a **correction**: pure prose compression
+against v3.3.0's own new fields, no behavior change. Every manual-check
+paragraph in "Animated/rotating content," the erosion-exempt and fade-detect
+sections, and the Verification checklist that Phase 1 (v3.3.0) made
+mechanically checkable now points at the actual `--analyze`/`--recommend`/
+`--verify` field instead of re-describing how to do it by hand; genuinely
+manual/visual checks and unverified-case fallbacks were left alone.
+`candidate_regions`' `outline_enclosure_all_frames`/`outline_background_leak`
+fields (shipped in v3.3.0, never documented) are now documented, and "Run the
+real processing" now states the exact three-condition gate `--recommend`
+already applies before trusting `outline_color_verified`. `references/
+lessons.md` gained a symptom→section lookup table.
+
+**v3.3.0** (previous entry, kept for context) was a **minor** bump:
+`--analyze` gained five new checks (tumble/edge-grazing margin, all-frame
+outline-color enclosure verification, outline-fill background-leak
+detection, feather-band interior region detection covering both §10 Bug 4
+and §12's signature, and a small removed-region size histogram), plus two
+new modes — `--recommend` (runs `--analyze` and emits a ready-to-confirm
+command line with evidence) and `--verify <input.gif> <output.gif>` (runs
+the mechanical half of the Verification checklist below: leftover
+background, protected-region coverage, edge fringe, small-region inflation,
+duration/frame-count). All additive and opt-in; the default processing
+codepath is unchanged (verified byte-identical against v3.2.0's output on
+all three real fixtures used to build this). No existing flag's behavior
+changed.
 
 **v3.2.0** (previous entry, kept for context) was a **minor** bump: one
 confirmed bug fix in the script
@@ -200,18 +214,22 @@ history in `references/lessons.md` §10; this is the lean rule.
 - **Don't rely on border-touching as "is background"** once the foreground
   can graze the canvas edge — it can sweep real content into "background"
   and delete it. Use `--tumble-safe`, which defines background as the single
-  largest connected bg-colored component per frame instead. Verify the
-  safety margin yourself on a new asset (largest vs. second-largest
-  component size, across ALL frames) before trusting it blindly.
+  largest connected bg-colored component per frame instead. `--analyze`'s
+  `tumble_risk` field now measures this automatically across every frame
+  (`worst_margin_ratio`, `likely_tumble_risk`) — check it on a new asset
+  instead of eyeballing frames by hand.
 - **`--protect-outline-color`'s per-frame enclosure can fail under
   self-overlapping/rotating geometry** in a way that doesn't trigger the
   existing flicker/anomaly detection (that detection is for a *different*
   shape briefly crossing a stable outline, not the outline's own shape
   rotating — see `references/lessons.md` §10 for why these are genuinely
-  different failure signatures). `--tumble-safe` bypasses single-frame
-  flood-fill enclosure entirely for this case; keep using
-  `--protect-outline-color` for the stable-shape-crossed-by-something-else
-  case it already handles well.
+  different failure signatures). Each candidate region's
+  `outline_enclosure_all_frames.anomalous_frame_count` now checks this
+  across every frame automatically — nonzero means the outline's own shape
+  is breaking enclosure somewhere, the exact signature this bullet
+  describes. `--tumble-safe` bypasses single-frame flood-fill enclosure
+  entirely for this case; keep using `--protect-outline-color` for the
+  stable-shape-crossed-by-something-else case it already handles well.
 - **To selectively remove one small bg-colored region while keeping
   another** (e.g. a real hole/cutout vs. a same-colored decorative detail),
   add `--keep-bg-blob-if-near <hex[,hex,...]>` (only valid with
@@ -230,11 +248,14 @@ history in `references/lessons.md` §10; this is the lean rule.
   on an otherwise-correct edge, try `--dither-mode none`** before assuming
   it's a mask bug — Bayer dithering can look like noise, not softness, over
   a flat background.
-- **Verify against every frame, not a spot-check sample**, and against a
-  SOLID-color composite in addition to checkerboard — see the additions to
-  the Verification section below. Every bug in this case was localized to
-  specific rotation phases or specific colors; a normal spot-check would not
-  reliably have caught any of them.
+- **Verify against every frame, not a spot-check sample.** `tumble_risk`,
+  `outline_enclosure_all_frames`, and `band_interior_regions` all scan every
+  frame automatically now (not a sample) — see "Run analysis first" below.
+  Still manually composite against a SOLID-color background in addition to
+  checkerboard (see the Verification section) — that part stays visual.
+  Every bug in this case was localized to specific rotation phases or
+  specific colors; a normal spot-check would not reliably have caught any
+  of them.
 
 ## Small removed regions can be inflated by edge-cleanup erosion — check this whenever a fix produces one
 This is a separate pitfall from "Animated/rotating content" above, though it
@@ -276,8 +297,10 @@ especially near other nearby geometry. Pass a rough ceiling comfortably
 above the size of incidental noise and comfortably below any genuinely
 large/visible removed region on the same asset (30px worked on the
 motivating case, where noise measured 1-11px and the two real gaps measured
-69px and 137px — verify the equivalent gap on a new asset before reusing 30
-blindly). Full case history: `references/lessons.md` §11.
+69px and 137px). `--analyze`'s
+`small_removed_regions.suggested_erosion_exempt_max_size` now computes this
+ceiling from the real region-size histogram on a new asset instead of
+reusing 30 blindly. Full case history: `references/lessons.md` §11.
 
 ## Art that FADES toward the background colour — check this on anything with sparkles, glows or twinkles
 Distinct from both sections above, and from the `--dither-mode none` note in
@@ -295,9 +318,11 @@ as a **visible grid/mesh**, not as translucency. Confirmed real case: a sparkle
 whose mid-fade body is `fff2d1`, distance 47.8 from white, inside the default
 15–60 band.
 
-- **Detect it before delivering:** measure how many pixels sit in the band, are
-  more than ~3px from any true background pixel, and aren't protected. A thin
-  edge band is normal; a large interior blob there is the signature.
+- **Detect it before delivering:** `--analyze`'s `band_interior_regions`
+  measures this automatically — grouped across every frame and classified
+  `gradient_fade` vs `solid_tint`, with a plain-language `recommendation`
+  per region. A thin edge band is normal; an interior `gradient_fade`
+  region is the signature.
 - **Fix with `--dither-mode none`** — hard 50% cutoff on the already-defringed
   alpha. On the real case, faded bodies went from 47–68% opaque to 95–96%.
   Faintest stages drop out a beat earlier instead of meshing, which is the right
@@ -337,6 +362,16 @@ Returns JSON with:
     simulated (built its mask, ran `binary_fill_holes`, confirmed it truly
     encloses the region) rather than guessed. Treat `candidate_outline_color`
     as unusable when `false`.
+  - `outline_enclosure_all_frames` — the same simulation re-run across EVERY
+    frame, not just the one it was first verified on.
+    `anomalous_frame_count == 0` means the outline holds everywhere;
+    nonzero is the rotating/self-overlapping-geometry failure described
+    above under "Animated/rotating content" — treat
+    `outline_color_verified: true` with a nonzero count here as NOT safe to
+    use unreviewed.
+  - `outline_background_leak` — `over_protects_background: true` means this
+    outline color's flood-fill also swallows real background somewhere, not
+    just the intended interior — don't use it even if otherwise verified.
   - `circularity_ratio` (0-1) and `circle_region_safe` — how well a plain
     circle approximates the region's true shape. Low values mean
     scalloped/pointed/star-shaped outlines, where `--protect-region circle:...`
@@ -389,8 +424,11 @@ almost never matches a real icon interior's true (usually irregular) shape —
 two real, initially-unnoticed bleeds/gaps from exactly this are documented in
 `references/lessons.md` §2. Concretely:
 - **Always try `--protect-outline-color` first** using the analyzed
-  `candidate_outline_color` IF `outline_color_verified` is `true` — that's a
-  real simulated check, safe to use directly.
+  `candidate_outline_color` IF `outline_color_verified` is `true` AND
+  `outline_enclosure_all_frames.anomalous_frame_count == 0` AND
+  `outline_background_leak.over_protects_background` is `false` — that's
+  the exact gate `--recommend` applies before suggesting the flag, safe to
+  use directly when all three hold.
 - **If `outline_color_verified` is `false`**: don't fall back to
   `--protect-region` yet. Open the source frame yourself and identify the true
   enclosing outline color by eye — sample a pixel a short distance outward
@@ -474,81 +512,72 @@ It does NOT replace the visual checks (soft-vs-jagged edges, a
 need a human/agent's eyes, below.
 
 **For animated/rotating content (see that section above), do two things
-more thoroughly, not skip them:** run the full checks below across EVERY
-frame, not a first/middle/last sample — the bugs in `references/lessons.md`
-§10 were each localized to specific rotation phases and a spot-check missed
-all of them; and composite against a SOLID flat color (e.g. pure green) at
-least once, not just checkerboard — checkerboard camouflages dithering
-noise and unstable partial-alpha artifacts the same way it camouflages soft
-bleed (point 2 below), and both need checking, each catches what the other
+more thoroughly, not skip them:** `--verify` already checks every frame
+automatically (not a first/middle/last sample) for the fields below — the
+bugs in `references/lessons.md` §10 were each localized to specific
+rotation phases, which only a full-frame check reliably catches. Still
+manually composite against a SOLID flat color (e.g. pure green) at least
+once, not just checkerboard — checkerboard camouflages dithering noise and
+unstable partial-alpha artifacts the same way it camouflages soft bleed
+(point 2 below), and both need checking, each catches what the other
 hides.
 
-1. Composite a handful of frames (first, middle, last, plus any frame flagged
-   with animation near a protected region) over a dark background —
-   `--preview <path.png>` does this automatically, use it instead of a
-   one-off compositing script. Check:
-   - The intended background is fully transparent everywhere it should be.
-   - The protected interior region is fully opaque with no holes.
-   - Edges look soft/dithered, not jagged (zoom into a diagonal/curved edge).
-   - **Zoom into a straight edge too, at high magnification, and check the
-     outermost opaque ring is the TRUE art color, not a lighter/tinted
-     fringe.** Background color-unmixing doesn't perfectly recover every
-     antialiased boundary pixel — the default `--edge-cleanup-erosion 2`
-     exists specifically to prevent this; if still visible, pull actual pixel
-     values at the edge rather than eyeballing a thumbnail before cranking
-     erosion further.
-   - **If the source canvas is small (roughly under 200px on its shorter
-     side), check fine details (thin strokes, small dots, small gaps)
-     survived the default erosion** — `--edge-cleanup-erosion`'s default of
-     2px is a FIXED pixel count, not scaled to resolution, so a detail that's
-     comfortable on a 640px icon can be nearly erased on a 128px one. The
-     script warns to stderr when this situation is detected — don't ignore
-     it; redo with `--edge-cleanup-erosion 1` or `0` if a detail got eaten.
+1. `--verify`'s `leftover_background_opaque_px`, `protected_region_coverage`,
+   and `edge_fringe_check.looks_fringed` now mechanically cover: background
+   fully transparent everywhere it should be, the protected interior region
+   fully opaque with no holes, and the outermost opaque ring being the TRUE
+   art color rather than a lighter/tinted fringe left by imperfect
+   color-unmixing (the default `--edge-cleanup-erosion 2` exists to prevent
+   this; if `looks_fringed` is still true, pull actual edge pixel values
+   rather than cranking erosion blind). What's left to check by eye: composite
+   a handful of frames (first, middle, last, plus any frame flagged near a
+   protected region) over a dark background — `--preview <path.png>` does
+   this automatically — and check edges look soft/dithered, not jagged
+   (zoom into a diagonal/curved edge). **If the source canvas is small
+   (roughly under 200px on its shorter side), also check fine details (thin
+   strokes, small dots, small gaps) survived the default erosion** —
+   `--edge-cleanup-erosion`'s 2px default is a FIXED pixel count, not scaled
+   to resolution, so a detail comfortable on a 640px icon can be nearly
+   erased on a 128px one. The script warns to stderr when this situation is
+   detected — don't ignore it; redo with `--edge-cleanup-erosion 1` or `0`
+   if a detail got eaten.
 2. **If you used `--protect-region` (circle or rect) anywhere, specifically
    look for a bulge, halo, disc, or straight edge that doesn't follow the
    artwork's own silhouette** — the signature of a mismatched protect-region,
    easy to miss on a quick glance (see `references/lessons.md` §2 for two
-   real cases that slipped past an initial check). For each `--protect-region`
-   use, do at least one of:
-   - Composite over a plain dark background (not checkerboard — it can
-     camouflage a soft-edged bleed) and check the protected area's outline
-     traces the actual art.
-   - Or mechanically: take the output's alpha channel, check every opaque
-     pixel is part of a single connected component matching the visible art,
-     and doesn't extend past where the source art's own outline color exists
-     nearby. Walk outward from the protect-region's center at several angles
-     in the ORIGINAL source frame to find where the real outline starts;
-     compare against the radius used. Disagreement of more than a few pixels
-     in any direction → switch to `--protect-outline-color`.
-3. **Confirm every frame's duration in the output matches the source
-   exactly, read the RIGHT way.** GIFs frequently use variable per-frame
-   timing (e.g. mostly 20ms/frame with the first frame at 140ms) — don't
-   assume a constant. Read `.info['duration']` immediately after each
-   `.seek(i)`, never after materializing a frame list first — see
-   `references/lessons.md` §9 for the exact Pillow footgun this avoids and
-   the raw-bytes ground-truth method for when correctness really matters.
-   Compare the resulting list between input and output exactly, not just the
-   total.
-   **A lower frame count in the output is not automatically a bug.** Pillow's
-   encoder coalesces consecutive frames that come out byte-identical after
-   quantization and folds their delays into the survivor — confirmed real case:
-   170 frames in, 168 out, because the animation had settled and the last three
-   differed by ≤9 RGB levels on ≤91 of 409,600 pixels. Total playback was
-   identical and nothing was visually lost. **Total playback length changing is
-   the real defect signal; frame count alone is not.** The script's save message
-   now reads the written file back and says which of the two happened, so trust
-   that line rather than the intended frame count (`references/lessons.md` §13).
+   real cases that slipped past an initial check). `--verify`'s
+   `leftover_background_opaque_px` and `protected_region_coverage` now catch
+   most of this mechanically; also composite over a plain dark background
+   (not checkerboard, which can camouflage a soft-edged bleed) and check the
+   protected area's outline traces the actual art. Disagreement of more than
+   a few pixels in any direction → switch to `--protect-outline-color`.
+3. **Duration/frame-count**: `--verify`'s `timing` field (via
+   `describe_written_timing`) and `frame_alignment` cover this mechanically
+   now — trust its verdict over comparing frame counts by eye. **A lower
+   output frame count is not automatically a bug**: Pillow's encoder
+   coalesces consecutive frames that come out byte-identical after
+   quantization and folds their delays into the survivor (confirmed real
+   case: 170 in, 168 out, nothing visually lost). Total playback length
+   changing is the real defect signal, frame count alone is not — the
+   `timing` field's verdict already reflects this distinction. Full
+   Pillow-duration-read footgun and raw-bytes ground-truth method:
+   `references/lessons.md` §9 and §13.
 4. If a `--compress` tier or standalone `--crop` was used, confirm the crop
    removed the intended blank margin without clipping the design — check the
    `WxH -> W'xH'` line the script prints to stderr. If resize also ran, check
-   final dimensions match the expected max-side target.
+   final dimensions match the expected max-side target. (`--verify` skips its
+   pixel-position checks entirely when input/output dimensions differ — see
+   its `note` field — so this one stays manual.)
 5. **When investigating a reported flicker/gap complaint, use the actual
-   geometric interior mask, not a bounding-box sample** — a bbox-based check
-   can show false-positive "flickering" that isn't real. See
-   `references/lessons.md` §9 for a real case this caught. If the mask check
-   confirms the flicker is real (not a measurement artifact), the root cause
-   and fix live in §3, not §9 — start by sampling the outline color itself on
-   a good frame vs. a bad one: fading toward background → widen
+   geometric interior mask, not a bounding-box sample** — `--verify`'s own
+   `protected_region_coverage` already does this internally (a real
+   per-frame enclosed-region footprint, not a bbox rectangle), so a
+   `looks_unprotected` finding from `--verify` is trustworthy as-is; this
+   matters if you're hand-rolling a check instead. See
+   `references/lessons.md` §9 for a real case a bbox-based check
+   false-positived on. If the flicker is real, the root cause and fix live
+   in §3, not §9 — start by sampling the outline color itself on a good
+   frame vs. a bad one: fading toward background → widen
    `--outline-tolerance` first; replaced by an unrelated solid color →
    occlusion, the built-in detection/substitution is the right tool.
 6. If anything fails verification, adjust `--tolerance` / `--outline-tolerance`

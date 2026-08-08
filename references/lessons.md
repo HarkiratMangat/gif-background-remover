@@ -27,6 +27,23 @@ scratch risks retrying an approach already known to fail.
 12. [Art that fades toward the background colour renders as a dither mesh](#12-art-that-fades-toward-the-background-colour-renders-as-a-dither-mesh)
 13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
 
+**Symptom → section**, for scanning without reading the full ToC titles:
+
+| If you're seeing... | Go to |
+|---|---|
+| Pixel art misdetected as antialiased (or vice versa) | §1 |
+| A bulge/halo/gap that doesn't follow the art's silhouette | §2 |
+| Flicker or a hole in a protected region | §3 (real bug) or §9 (bbox-vs-mask measurement artifact — check which first) |
+| A shape totally erased / near-zero survival | §4 |
+| Blurry or degraded fine detail after resize/compress | §5 |
+| Choosing between compression tools/quantizers | §6, §8 |
+| Confused why alpha looks all-or-nothing | §7 |
+| A reported animation length that seems wrong | §9, §13 |
+| Anything on tumbling/rotating/translating content | §10 |
+| A small removed region looks like an inflated speckle | §11 |
+| A grid/mesh pattern over what should be solid color | §12 (interior fade) vs §10 Bug 5 (edge over flat paint — different trigger, see §12's own note) |
+| Lower output frame count than input | §13 |
+
 ---
 
 ## 1. Edge-hardness caveat: geometry-heavy false positives
