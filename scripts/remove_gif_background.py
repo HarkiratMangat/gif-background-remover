@@ -1641,9 +1641,11 @@ def verify(input_path, output_path, tolerance=15):
         x0, y0, x1, y1 = r['bbox_xyxy']
         opacities = []
         for i in range(n):
+            region_bg_mask = color_mask(in_rgb[i][y0:y1 + 1, x0:x1 + 1], bg_rgb, tolerance)
+            if not region_bg_mask.any():
+                continue
             region_alpha = out_alpha[i][y0:y1 + 1, x0:x1 + 1]
-            if region_alpha.size:
-                opacities.append(float((region_alpha > 0).mean()))
+            opacities.append(float((region_alpha[region_bg_mask] > 0).mean()))
         mean_opacity = sum(opacities) / len(opacities) if opacities else 0.0
         protected_coverage.append({
             'region_id': r['id'],
