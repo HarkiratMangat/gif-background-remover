@@ -564,6 +564,125 @@ def analyze(input_path, max_samples=40, tolerance=15):
     }
 
 
+def recommend(input_path):
+    """
+    Run analyze() and translate its report into a suggested command line
+    plus the evidence behind each flag, per the decision tree SKILL.md's
+    "Workflow: infer first, then confirm" and "Run the real processing"
+    sections already document. Collapses "write five analyses, reason
+    across them, pick flags" down to "read a recommendation, sanity-check
+    it, confirm with the user."
+    """
+    report = analyze(input_path)
+    evidence = []
+    region_notes = []
+    flags = []
+
+    if report['edge_hardness']['appears_hard_edged']:
+        flags.append('--pixel-art')
+        evidence.append(
+            f"Hard-edged art detected (edge_hardness ratio "
+            f"{report['edge_hardness']['ratio']}) -- recommending --pixel-art.")
+
+    tumble = report.get('tumble_risk', {})
+    tumble_safe = bool(tumble.get('likely_tumble_risk'))
+    if tumble_safe:
+        flags.append('--tumble-safe')
+        evidence.append(
+            f"Foreground/background size margin drops to "
+            f"{tumble['worst_margin_ratio']}x on frame "
+            f"{tumble['worst_margin_frame_index']} (below the 3x safety threshold) -- "
+            f"recommending --tumble-safe instead of "
+            f"--protect-outline-color/--protect-region.")
+
+    outline_colors = []
+    if not tumble_safe:
+        for region in report['candidate_regions']:
+            rid = region['id']
+            if not region['likely_intentional_design']:
+                region_notes.append(
+                    f"Region {rid}: enclosure_ratio {region['enclosure_ratio']} looks "
+                    f"incidental, leaving as background.")
+                continue
+
+            all_frames = region.get('outline_enclosure_all_frames')
+            leak = region.get('outline_background_leak')
+            if (region['outline_color_verified'] and all_frames
+                    and all_frames['anomalous_frame_count'] == 0
+                    and not (leak and leak['over_protects_background'])):
+                outline_colors.append(region['candidate_outline_color'])
+                region_notes.append(
+                    f"Region {rid}: outline {region['candidate_outline_color']} verified "
+                    f"across {all_frames['frames_checked']} frames "
+                    f"({all_frames['enclosure_ratio_all_frames'] * 100:.0f}% enclosed) -- "
+                    f"recommending --protect-outline-color.")
+            elif leak and leak['over_protects_background']:
+                region_notes.append(
+                    f"Region {rid}: outline {region['candidate_outline_color']} fills into "
+                    f"{leak['leaked_pixel_count']}px of real background on frame "
+                    f"{leak['leak_frame_index']} -- needs manual outline-color "
+                    f"identification, not auto-recommended.")
+            elif not region['outline_color_verified']:
+                if region['circle_region_safe']:
+                    flags.append(region['suggested_protect_region'])
+                    region_notes.append(
+                        f"Region {rid}: no verified outline color, but shape is circular "
+                        f"(circularity {region['circularity_ratio']}) -- falling back to "
+                        f"--protect-region {region['suggested_protect_region']}.")
+                else:
+                    region_notes.append(
+                        f"Region {rid}: no verified outline color AND shape isn't circular "
+                        f"(circularity {region['circularity_ratio']}) -- needs manual "
+                        f"identification, not auto-recommended.")
+
+    if outline_colors:
+        flags.append(f"--protect-outline-color {','.join(outline_colors)}")
+
+    band_regions = report.get('band_interior_regions', [])
+    if any(r['classification'] == 'gradient_fade' for r in band_regions):
+        flags.append('--dither-mode none')
+        evidence.append(
+            "Band-interior region(s) show a gradient-fade signature (color distance from "
+            "background varies across the frames it appears in) -- recommending "
+            "--dither-mode none instead of the default Bayer dither.")
+    tint_widths = [int(r['recommendation'].split()[-1]) for r in band_regions
+                   if r['classification'] == 'solid_tint']
+    if tint_widths and not outline_colors:
+        flags.append(f'--protect-band-only {max(tint_widths)}')
+        evidence.append(
+            "Band-interior region(s) show a uniform solid-tint signature (constant across "
+            "frames) -- recommending --protect-band-only to keep them fully opaque instead "
+            "of allowlist-only protection.")
+    elif tint_widths and outline_colors:
+        evidence.append(
+            f"{len(tint_widths)} solid-tint band-interior region(s) observed, but a "
+            f"verified --protect-outline-color is already recommended -- not adding "
+            f"--protect-band-only too, since combining it with an outline-verified "
+            f"protected mask shrinks protection right at the outline's own edge "
+            f"(confirmed against build_band_only_removal_mask's actual mask math). If "
+            f"these tints fall outside the verified outline's interior, they need manual "
+            f"review.")
+
+    small = report.get('small_removed_regions', {})
+    if small.get('suggested_erosion_exempt_max_size'):
+        flags.append(f"--erosion-exempt-max-size {small['suggested_erosion_exempt_max_size']}")
+        evidence.append(
+            f"{small['count']} small removed region(s) observed, largest "
+            f"{small['max_small_region_px']}px -- recommending --erosion-exempt-max-size "
+            f"{small['suggested_erosion_exempt_max_size']} to protect them from erosion "
+            f"inflation.")
+
+    suggested = f"python3 scripts/remove_gif_background.py {input_path} <output.gif>"
+    if flags:
+        suggested += " " + " ".join(flags)
+
+    return {
+        'suggested_command': suggested,
+        'evidence': evidence + region_notes,
+        'analysis': report,
+    }
+
+
 def color_mask(rgb, target, tolerance):
     diff = np.abs(rgb.astype(int) - np.array(target).astype(int))
     return np.all(diff <= tolerance, axis=-1)
@@ -2738,6 +2857,10 @@ def main():
                          'of the detected background color and candidate regions that may '
                          'need protecting, with a recommendation for each based on how '
                          'consistently each region is enclosed across frames.')
+    p.add_argument('--recommend', action='store_true',
+                    help='Do not process the GIF. Run --analyze internally and print a '
+                         'JSON report with a suggested command line and the evidence '
+                         'behind each recommended flag.')
     args = p.parse_args()
 
     if args.analyze:
@@ -2745,6 +2868,13 @@ def main():
             p.error('input_gif is required when using --analyze')
         report = analyze(args.input_gif)
         print(json.dumps(report, indent=2))
+        return
+
+    if args.recommend:
+        if not args.input_gif:
+            p.error('input_gif is required when using --recommend')
+        rec = recommend(args.input_gif)
+        print(json.dumps(rec, indent=2))
         return
 
     if args.batch:
