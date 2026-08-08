@@ -360,12 +360,21 @@ def analyze(input_path, max_samples=40, tolerance=15):
             # bbox center drifted 25-32px between consecutive detections as
             # the design rotated. 40px still keeps this fixture's two
             # genuinely distinct physical regions separate (their bbox
-            # centers are 200+px apart). Known remaining limitation (not
-            # fully fixed here, see the review): this still doesn't know
+            # centers are 200+px apart). Known remaining limitations (not
+            # fully fixed here, see the review): (1) this still doesn't know
             # which of these groups is actually the SAME area a verified
             # --protect-outline-color already covers -- that needs analyze()
             # to compute candidate regions before this loop runs, which is a
-            # larger reordering left as a follow-up.
+            # larger reordering left as a follow-up; (2) groups store no
+            # frame index, only a distances list, so widening this threshold
+            # also makes it more likely (though not observed on the fixtures
+            # this was tuned against, whose distinct regions are far apart)
+            # that two DIFFERENT regions detected in the SAME frame merge
+            # into one group if their bboxes happen to be close -- which
+            # would inflate distance_span_across_frames with a same-frame,
+            # different-color difference rather than a real temporal one,
+            # risking a false gradient_fade classification. Both need the
+            # same fix: track frame index per detection, not just position.
             grp = next((g for g in band_interior_groups
                         if abs((g['bbox_xyxy'][0] + g['bbox_xyxy'][2]) / 2 - cx_r) < 40
                         and abs((g['bbox_xyxy'][1] + g['bbox_xyxy'][3]) / 2 - cy_r) < 40), None)
@@ -385,8 +394,15 @@ def analyze(input_path, max_samples=40, tolerance=15):
 
     band_interior_regions = []
     for g in band_interior_groups:
-        if len(g['distances']) < 2:
-            continue  # single-frame blip, not a stable enough signal to report
+        # Only drop a single-observation group when there were multiple
+        # frames available to have produced a second one -- on a genuinely
+        # single-frame GIF (n_frames == 1) every real group necessarily has
+        # exactly one observation, and dropping those would silently empty
+        # band_interior_regions for every 1-frame input. Confirmed as a real
+        # regression this guard fixes, caught by the review of the fix that
+        # introduced this filter.
+        if len(g['distances']) < 2 and n_frames > 1:
+            continue  # single-frame blip amid a real animation, not stable enough to report
         dist_span = round(max(g['distances']) - min(g['distances']), 1)
         is_fade = dist_span >= 6.0
         band_interior_regions.append({
