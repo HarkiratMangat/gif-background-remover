@@ -634,6 +634,13 @@ def recommend(input_path):
                         f"Region {rid}: no verified outline color AND shape isn't circular "
                         f"(circularity {region['circularity_ratio']}) -- needs manual "
                         f"identification, not auto-recommended.")
+            else:
+                region_notes.append(
+                    f"Region {rid}: outline {region['candidate_outline_color']} verified on "
+                    f"the first sampled frame, but {all_frames['anomalous_frame_count']} of "
+                    f"{all_frames['frames_checked']} frames show a break in enclosure (not a "
+                    f"background leak) -- needs manual review before trusting "
+                    f"--protect-outline-color for this region.")
 
     if outline_colors:
         flags.append(f"--protect-outline-color {','.join(outline_colors)}")
@@ -670,7 +677,14 @@ def recommend(input_path):
             f"{small['count']} small removed region(s) observed, largest "
             f"{small['max_small_region_px']}px -- recommending --erosion-exempt-max-size "
             f"{small['suggested_erosion_exempt_max_size']} to protect them from erosion "
-            f"inflation.")
+            f"inflation. (Regions above ~500px are excluded from this measurement as "
+            f"presumed candidate/design regions, not incidental gaps -- if a deliberately "
+            f"small removed region larger than that genuinely exists, measure it manually.)")
+    elif len(report['candidate_regions']) > 0:
+        evidence.append(
+            "No small removed regions found under the ~500px heuristic ceiling -- if this "
+            "GIF has a deliberately small removed region larger than that, "
+            "--erosion-exempt-max-size may still be needed and should be measured manually.")
 
     suggested = f"python3 scripts/remove_gif_background.py {input_path} <output.gif>"
     if flags:
