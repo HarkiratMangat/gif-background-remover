@@ -63,6 +63,7 @@ import contextlib
 import copy
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -312,6 +313,18 @@ def analyze(input_path, max_samples=40, tolerance=15):
     OCCASIONALLY (likely incidental — an animated element temporarily
     cutting off a pocket of real background). Returns a JSON-serializable
     report; does not modify anything.
+
+    Also runs three whole-GIF checks independent of any specific candidate
+    region, each a top-level field on the returned report: `tumble_risk`
+    (does the foreground ever graze the canvas edge, motivating
+    --tumble-safe), `band_interior_regions` (solid design tints or baked-in
+    fades sitting inside the feathering transition band, motivating
+    --protect-band-only or --dither-mode none), and `small_removed_regions`
+    (a size histogram of small removed regions, motivating
+    --erosion-exempt-max-size). See each check's own function docstring
+    (measure_bg_component_margin, detect_band_interior_regions,
+    collect_small_removed_region_sizes) for what real bug each one exists
+    to catch.
     """
     im = Image.open(input_path)
     n_frames = im.n_frames
@@ -321,17 +334,135 @@ def analyze(input_path, max_samples=40, tolerance=15):
     bg_rgb = detect_bg_color(rgb0)
     H, W, _ = rgb0.shape
 
+    all_rgb_frames = []
+    for i in range(n_frames):
+        im.seek(i)
+        all_rgb_frames.append(np.array(im.convert('RGB')))
+
+    # Tumble margin and the small-region histogram both scan every frame
+    # and both start from the identical color_mask(rgb, bg_rgb, tolerance)
+    # -- computed once per frame and shared, instead of each check
+    # recomputing it independently. Confirmed via the final whole-branch
+    # review that scanning every frame (necessary, see each check's own
+    # docstring for the real false negatives it fixes) made --analyze
+    # measurably slower; this removes one of the concrete redundant
+    # per-frame costs without reverting to sampling, which would reopen
+    # the exact false-negative bugs these checks exist to close.
+    worst_margin = None
+    worst_margin_frame = None
+    all_small_sizes = []
+    for i in range(n_frames):
+        frame_bg_mask = color_mask(all_rgb_frames[i], bg_rgb, tolerance)
+        m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
+        if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
+            worst_margin = m['margin_ratio']
+            worst_margin_frame = i
+        all_small_sizes.extend(collect_small_removed_region_sizes(
+            all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask))
+    tumble_risk = {
+        'worst_margin_ratio': worst_margin,
+        'worst_margin_frame_index': worst_margin_frame,
+        'likely_tumble_risk': worst_margin is not None and worst_margin < 3.0,
+    }
+
     if n_frames <= max_samples:
         sample_idxs = list(range(n_frames))
     else:
         sample_idxs = sorted(set(np.linspace(0, n_frames - 1, max_samples).astype(int).tolist()))
 
+    # Group detections of the same spatial region across frames (by bbox-
+    # center proximity) so classification can use CROSS-FRAME distance
+    # variance, not within-frame variance -- see detect_band_interior_
+    # regions's docstring for why within-frame spread can't see a real fade.
+    band_interior_groups = []
+    for i in range(n_frames):
+        for region in detect_band_interior_regions(all_rgb_frames[i], bg_rgb, tolerance):
+            cx_r = (region['bbox_xyxy'][0] + region['bbox_xyxy'][2]) / 2
+            cy_r = (region['bbox_xyxy'][1] + region['bbox_xyxy'][3]) / 2
+            # 40px, not 15 -- confirmed too tight on real moving/rotating art
+            # during the final whole-branch review: a single physical region
+            # on jewelry.gif fragmented into ~15 separate groups because its
+            # bbox center drifted 25-32px between consecutive detections as
+            # the design rotated. 40px still keeps this fixture's two
+            # genuinely distinct physical regions separate (their bbox
+            # centers are 200+px apart). Known remaining limitations (not
+            # fully fixed here, see the review): (1) this still doesn't know
+            # which of these groups is actually the SAME area a verified
+            # --protect-outline-color already covers -- that needs analyze()
+            # to compute candidate regions before this loop runs, which is a
+            # larger reordering left as a follow-up; (2) groups store no
+            # frame index, only a distances list, so widening this threshold
+            # also makes it more likely (though not observed on the fixtures
+            # this was tuned against, whose distinct regions are far apart)
+            # that two DIFFERENT regions detected in the SAME frame merge
+            # into one group if their bboxes happen to be close -- which
+            # would inflate distance_span_across_frames with a same-frame,
+            # different-color difference rather than a real temporal one,
+            # risking a false gradient_fade classification. Both need the
+            # same fix: track frame index per detection, not just position.
+            grp = next((g for g in band_interior_groups
+                        if abs((g['bbox_xyxy'][0] + g['bbox_xyxy'][2]) / 2 - cx_r) < 40
+                        and abs((g['bbox_xyxy'][1] + g['bbox_xyxy'][3]) / 2 - cy_r) < 40), None)
+            if grp is None:
+                band_interior_groups.append({
+                    'pixel_count': region['pixel_count'],
+                    'bbox_xyxy': region['bbox_xyxy'],
+                    'mean_color': region['mean_color'],
+                    'distances': [region['mean_distance_from_bg']],
+                })
+            else:
+                grp['distances'].append(region['mean_distance_from_bg'])
+                if region['pixel_count'] > grp['pixel_count']:
+                    grp['pixel_count'] = region['pixel_count']
+                    grp['bbox_xyxy'] = region['bbox_xyxy']
+                    grp['mean_color'] = region['mean_color']
+
+    band_interior_regions = []
+    for g in band_interior_groups:
+        # Only drop a single-observation group when there were multiple
+        # frames available to have produced a second one -- on a genuinely
+        # single-frame GIF (n_frames == 1) every real group necessarily has
+        # exactly one observation, and dropping those would silently empty
+        # band_interior_regions for every 1-frame input. Confirmed as a real
+        # regression this guard fixes, caught by the review of the fix that
+        # introduced this filter.
+        if len(g['distances']) < 2 and n_frames > 1:
+            continue  # single-frame blip amid a real animation, not stable enough to report
+        dist_span = round(max(g['distances']) - min(g['distances']), 1)
+        is_fade = dist_span >= 6.0
+        band_interior_regions.append({
+            'pixel_count': g['pixel_count'],
+            'bbox_xyxy': g['bbox_xyxy'],
+            'mean_color': g['mean_color'],
+            'mean_distance_from_bg': round(sum(g['distances']) / len(g['distances']), 1),
+            'distance_span_across_frames': dist_span,
+            'frames_seen': len(g['distances']),
+            'classification': 'gradient_fade' if is_fade else 'solid_tint',
+            # band_only_width is the real numeric field callers should read;
+            # recommendation is human-readable text for evidence display
+            # only -- confirmed during the final whole-branch review that
+            # parsing the width back out of this string
+            # (int(recommendation.split()[-1])) was a fragile pattern with
+            # a duplicated magic constant. 4 = edge_margin_px (3, this
+            # function's own default) + 1, matching build_band_only_
+            # removal_mask's own docstring guidance that the ring should be
+            # at least as wide as the real antialiasing fringe.
+            'band_only_width': None if is_fade else 4,
+            'recommendation': '--dither-mode none' if is_fade else '--protect-band-only 4',
+        })
+
+    small_removed_regions = {
+        'sizes_sample': sorted(all_small_sizes, reverse=True)[:20],
+        'count': len(all_small_sizes),
+        'max_small_region_px': max(all_small_sizes) if all_small_sizes else 0,
+        'suggested_erosion_exempt_max_size': int(max(all_small_sizes) * 1.1) + 1 if all_small_sizes else 0,
+    }
+
     union_mask = np.zeros((H, W), dtype=bool)
     rep_frame_for_color = {}  # remember a frame index/rgb to sample outline color later
 
     for i in sample_idxs:
-        im.seek(i)
-        rgb = np.array(im.convert('RGB'))
+        rgb = all_rgb_frames[i]
         bg_mask = color_mask(rgb, bg_rgb, tolerance)
         labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
         border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
@@ -356,8 +487,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
 
         frames_hit = 0
         for i in sample_idxs:
-            im.seek(i)
-            rgb = np.array(im.convert('RGB'))
+            rgb = all_rgb_frames[i]
             bg_mask = color_mask(rgb, bg_rgb, tolerance)
             labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
             border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
@@ -423,6 +553,14 @@ def analyze(input_path, max_samples=40, tolerance=15):
         outline_color, outline_filled_area, outline_shape = find_verified_outline_color(
             true_footprint_frame_rgb, bg_rgb, true_footprint, tolerance)
 
+        outline_enclosure_all_frames = None
+        outline_background_leak = None
+        if outline_color is not None:
+            outline_enclosure_all_frames = verify_outline_enclosure_all_frames(
+                all_rgb_frames, outline_color, true_footprint)
+            outline_background_leak = detect_outline_background_leak(
+                all_rgb_frames, bg_rgb, tolerance, outline_color)
+
         # Circularity check: how well would a bounding CIRCLE (i.e.
         # --protect-region circle:...) approximate the true protected
         # shape? Measured as the IoU between the true shape (the verified
@@ -468,6 +606,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'likely_intentional_design': ratio >= 0.9,
             'candidate_outline_color': outline_color,
             'outline_color_verified': outline_color is not None,
+            'outline_enclosure_all_frames': outline_enclosure_all_frames,
+            'outline_background_leak': outline_background_leak,
             'circularity_ratio': round(circularity, 2),
             'circle_region_safe': circularity >= 0.85,
             'note': note,
@@ -479,7 +619,143 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'detected_bg_color': rgb_to_hex(bg_rgb),
         'source_has_pre_existing_transparency': 'transparency' in im.info,
         'edge_hardness': measure_edge_hardness(rgb0, bg_rgb, tolerance),
+        'tumble_risk': tumble_risk,
+        'band_interior_regions': band_interior_regions,
+        'small_removed_regions': small_removed_regions,
         'candidate_regions': results,
+    }
+
+
+def recommend(input_path, tolerance=15):
+    """
+    Run analyze() and translate its report into a suggested command line
+    plus the evidence behind each flag, per the decision tree SKILL.md's
+    "Workflow: infer first, then confirm" and "Run the real processing"
+    sections already document. Collapses "write five analyses, reason
+    across them, pick flags" down to "read a recommendation, sanity-check
+    it, confirm with the user."
+    """
+    report = analyze(input_path, tolerance=tolerance)
+    evidence = []
+    region_notes = []
+    flags = []
+
+    if report['edge_hardness']['appears_hard_edged']:
+        flags.append('--pixel-art')
+        evidence.append(
+            f"Hard-edged art detected (edge_hardness ratio "
+            f"{report['edge_hardness']['ratio']}) -- recommending --pixel-art.")
+
+    tumble = report.get('tumble_risk', {})
+    tumble_safe = bool(tumble.get('likely_tumble_risk'))
+    if tumble_safe:
+        flags.append('--tumble-safe')
+        evidence.append(
+            f"Foreground/background size margin drops to "
+            f"{tumble['worst_margin_ratio']}x on frame "
+            f"{tumble['worst_margin_frame_index']} (below the 3x safety threshold) -- "
+            f"recommending --tumble-safe instead of "
+            f"--protect-outline-color/--protect-region.")
+
+    outline_colors = []
+    if not tumble_safe:
+        for region in report['candidate_regions']:
+            rid = region['id']
+            if not region['likely_intentional_design']:
+                region_notes.append(
+                    f"Region {rid}: enclosure_ratio {region['enclosure_ratio']} looks "
+                    f"incidental, leaving as background.")
+                continue
+
+            all_frames = region.get('outline_enclosure_all_frames')
+            leak = region.get('outline_background_leak')
+            if (region['outline_color_verified'] and all_frames
+                    and all_frames['anomalous_frame_count'] == 0
+                    and not (leak and leak['over_protects_background'])):
+                outline_colors.append(region['candidate_outline_color'])
+                region_notes.append(
+                    f"Region {rid}: outline {region['candidate_outline_color']} verified "
+                    f"across {all_frames['frames_checked']} frames "
+                    f"({all_frames['enclosure_ratio_all_frames'] * 100:.0f}% enclosed) -- "
+                    f"recommending --protect-outline-color.")
+            elif leak and leak['over_protects_background']:
+                region_notes.append(
+                    f"Region {rid}: outline {region['candidate_outline_color']} fills into "
+                    f"{leak['leaked_pixel_count']}px of real background on frame "
+                    f"{leak['leak_frame_index']} -- needs manual outline-color "
+                    f"identification, not auto-recommended.")
+            elif not region['outline_color_verified']:
+                if region['circle_region_safe']:
+                    flags.append(f"--protect-region {region['suggested_protect_region']}")
+                    region_notes.append(
+                        f"Region {rid}: no verified outline color, but shape is circular "
+                        f"(circularity {region['circularity_ratio']}) -- falling back to "
+                        f"--protect-region {region['suggested_protect_region']}.")
+                else:
+                    region_notes.append(
+                        f"Region {rid}: no verified outline color AND shape isn't circular "
+                        f"(circularity {region['circularity_ratio']}) -- needs manual "
+                        f"identification, not auto-recommended.")
+            else:
+                region_notes.append(
+                    f"Region {rid}: outline {region['candidate_outline_color']} verified on "
+                    f"the first sampled frame, but {all_frames['anomalous_frame_count']} of "
+                    f"{all_frames['frames_checked']} frames show a break in enclosure (not a "
+                    f"background leak) -- needs manual review before trusting "
+                    f"--protect-outline-color for this region.")
+
+    if outline_colors:
+        flags.append(f"--protect-outline-color {','.join(dict.fromkeys(outline_colors))}")
+
+    band_regions = report.get('band_interior_regions', [])
+    if any(r['classification'] == 'gradient_fade' for r in band_regions):
+        flags.append('--dither-mode none')
+        evidence.append(
+            "Band-interior region(s) show a gradient-fade signature (color distance from "
+            "background varies across the frames it appears in) -- recommending "
+            "--dither-mode none instead of the default Bayer dither.")
+    tint_widths = [r['band_only_width'] for r in band_regions
+                   if r['classification'] == 'solid_tint']
+    if tint_widths and not outline_colors:
+        flags.append(f'--protect-band-only {max(tint_widths)}')
+        evidence.append(
+            "Band-interior region(s) show a uniform solid-tint signature (constant across "
+            "frames) -- recommending --protect-band-only to keep them fully opaque instead "
+            "of allowlist-only protection.")
+    elif tint_widths and outline_colors:
+        evidence.append(
+            f"{len(tint_widths)} solid-tint band-interior region(s) observed, but a "
+            f"verified --protect-outline-color is already recommended -- not adding "
+            f"--protect-band-only too, since combining it with an outline-verified "
+            f"protected mask shrinks protection right at the outline's own edge "
+            f"(confirmed against build_band_only_removal_mask's actual mask math). If "
+            f"these tints fall outside the verified outline's interior, they need manual "
+            f"review.")
+
+    small = report.get('small_removed_regions', {})
+    if small.get('suggested_erosion_exempt_max_size'):
+        flags.append(f"--erosion-exempt-max-size {small['suggested_erosion_exempt_max_size']}")
+        evidence.append(
+            f"{small['count']} small removed region(s) observed, largest "
+            f"{small['max_small_region_px']}px -- recommending --erosion-exempt-max-size "
+            f"{small['suggested_erosion_exempt_max_size']} to protect them from erosion "
+            f"inflation. (Regions above ~500px are excluded from this measurement as "
+            f"presumed candidate/design regions, not incidental gaps -- if a deliberately "
+            f"small removed region larger than that genuinely exists, measure it manually.)")
+    elif len(report['candidate_regions']) > 0:
+        evidence.append(
+            "No small removed regions found under the ~500px heuristic ceiling -- if this "
+            "GIF has a deliberately small removed region larger than that, "
+            "--erosion-exempt-max-size may still be needed and should be measured manually.")
+
+    suggested = f"python3 scripts/remove_gif_background.py {shlex.quote(input_path)} <output.gif>"
+    if flags:
+        suggested += " " + " ".join(flags)
+
+    return {
+        'suggested_command': suggested,
+        'evidence': evidence + region_notes,
+        'analysis': report,
     }
 
 
@@ -554,6 +830,72 @@ def find_verified_outline_color(rgb, bg_rgb, comp_footprint, tolerance,
     return best_color, best_area, best_shape
 
 
+def verify_outline_enclosure_all_frames(all_rgb_frames, outline_hex, comp_footprint, outline_tolerance=40):
+    """
+    Re-run the same enclosure test find_verified_outline_color uses (build
+    the outline color's mask, binary_fill_holes it, check containment of
+    comp_footprint) across EVERY frame, not just the single first-sampled
+    frame outline_color_verified checks. Confirmed real gap this closes: a
+    color that binary_fill_holes-verifies on frame 0 can still fail to
+    enclose the region on other frames if the outline itself gets crossed by
+    another animated element (see build_protected_masks_robust's docstring
+    for the exact mechanism) -- exactly the scenario
+    detect_anomalous_frame_sizes exists to flag.
+    """
+    outline_rgb = hex_to_rgb(outline_hex)
+    sizes = []
+    containments = []
+    footprint_total = max(int(comp_footprint.sum()), 1)
+    for rgb in all_rgb_frames:
+        omask = color_mask(rgb, outline_rgb, outline_tolerance)
+        filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE) if omask.any() else omask
+        sizes.append(int(filled.sum()))
+        containments.append(float((comp_footprint & filled).sum()) / footprint_total)
+
+    bad_flags = detect_anomalous_frame_sizes(np.array(sizes))
+    frames_enclosed = sum(1 for c in containments if c >= 0.95)
+    anomalous = [i for i, b in enumerate(bad_flags) if b]
+    return {
+        'frames_checked': len(all_rgb_frames),
+        'frames_enclosed': frames_enclosed,
+        'enclosure_ratio_all_frames': round(frames_enclosed / max(len(all_rgb_frames), 1), 3),
+        'anomalous_frame_indices': anomalous[:20],
+        'anomalous_frame_count': len(anomalous),
+    }
+
+
+def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_hex, outline_tolerance=40):
+    """
+    Opposite failure direction from verify_outline_enclosure_all_frames: not
+    "does the outline fail to enclose the intended region" but "does the
+    outline's filled shape leak outward and swallow real background". This
+    happens when the outline isn't fully closed in some frame and
+    binary_fill_holes fills straight through the gap into the actual
+    background rather than stopping at the intended boundary. Flags any
+    frame where the filled shape overlaps the frame's own largest
+    background-colored component (the actual background, per
+    largest_bg_component_mask).
+    """
+    outline_rgb = hex_to_rgb(outline_hex)
+    max_leak = 0
+    leak_frame = None
+    for i, rgb in enumerate(all_rgb_frames):
+        omask = color_mask(rgb, outline_rgb, outline_tolerance)
+        if not omask.any():
+            continue
+        filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE)
+        core_bg = largest_bg_component_mask(rgb, bg_rgb, tolerance)
+        leaked = int((filled & core_bg).sum())
+        if leaked > max_leak:
+            max_leak = leaked
+            leak_frame = i
+    return {
+        'leaked_pixel_count': max_leak,
+        'leak_frame_index': leak_frame,
+        'over_protects_background': max_leak > 20,
+    }
+
+
 def circularity_iou(shape_mask, cx, cy, radius):
     """
     How well does a circle of the given center/radius approximate
@@ -609,6 +951,84 @@ def parse_protect_regions(spec, shape):
             continue
         union |= parse_protect_region(one_spec, (H, W))
     return union
+
+
+def apply_remove_regions(rgb_frames, alpha_frames, remove_mask, feather_px=1.5):
+    """
+    Force full removal (alpha -> 0) inside remove_mask, overriding whatever
+    --protect-outline-color / --protect-region already decided -- the
+    inverse of --protect-region. For carving out a small feature (e.g. a
+    decorative hole/grommet) that shares its enclosing outline color with a
+    DIFFERENT feature the user wants kept, so outline-color protection
+    can't tell them apart on its own (confirmed real case, both features
+    enclosed by the same navy ring color: a badge's highlight star, keep;
+    a pin/grommet hole, remove -- see references/lessons.md SS15).
+
+    Confirmed real bug this guards against: naively zeroing alpha inside
+    remove_mask without touching RGB leaves the ORIGINAL pixel color
+    (frequently an antialiased blend from the source art's own edge, e.g.
+    a white-into-navy blend) sitting at partial alpha across the feather
+    band. Composited over anything, that reads as a visible colored
+    fringe/halo hugging the removed region's boundary -- not a mask/shape
+    bug, a color bug, and easy to miss unless checked over a SOLID
+    composite (checkerboard hides it). Fixed here by recoloring every
+    touched pixel to the LOCAL kept color -- sampled fresh per frame from
+    the thin ring of pixels just outside remove_mask, so it tracks
+    per-frame shading/lighting changes -- before tapering alpha down, so a
+    fading pixel always reads as "local surrounding color fading to
+    transparent," never a ghost of whatever got removed. This is the same
+    fringe failure mode --feather's own de-fringe step exists to prevent
+    on the primary background-removal edge; this function brings the same
+    protection to a manually-specified removal region, which the main
+    feathering path doesn't touch.
+
+    remove_mask is a single static (H, W) bool mask applied IDENTICALLY to
+    every frame, same as --protect-region -- it does not track a moving
+    target. If the region to remove changes position/size across frames
+    (tumbling/rotating content, or a feature whose apparent size shifts
+    frame to frame), this flag alone is not sufficient; that requires
+    deriving the mask per frame from position-independent signals before
+    calling this function once per frame with each frame's own mask (see
+    the "Animated/rotating content" section and lessons.md SS15 for a real
+    worked case -- notably including how a per-frame RE-MEASURED radius
+    can itself be corrupted by an unrelated bright overlay, e.g. a shine
+    sweep, transiently passing through the same screen area; a fixed
+    radius measured only from unaffected frames was the confirmed fix
+    there, not a smarter per-frame measurement).
+    """
+    if remove_mask is None or not remove_mask.any():
+        return rgb_frames, alpha_frames
+
+    dist_outside = ndimage.distance_transform_edt(~remove_mask)
+    # 1.0 at/inside the mask boundary, tapering linearly to 0.0 by
+    # feather_px outside it -- the region OUTSIDE remove_mask that still
+    # gets touched at all is exactly this feather band.
+    taper = np.clip(1.0 - dist_outside / max(feather_px, 1e-6), 0.0, 1.0)
+    taper[remove_mask] = 1.0
+    touched = taper > 0
+
+    # Sample the local kept color from a thin ring just outside the mask
+    # (not the whole frame, and not a single global color) so shading/
+    # lighting/shine gradients across the design are respected per frame.
+    ring = (dist_outside > 0) & (dist_outside <= feather_px + 2.0)
+
+    out_rgb, out_alpha = [], []
+    for rgb, alpha in zip(rgb_frames, alpha_frames):
+        rgb2 = rgb.copy()
+        if ring.any():
+            local_color = rgb[ring].reshape(-1, 3).mean(axis=0)
+        else:
+            # No ring pixels (mask touches frame edge, or feather_px is
+            # tiny relative to pixel grid) -- fall back to whatever color
+            # already borders the mask directly.
+            border = ndimage.binary_dilation(remove_mask, iterations=1) & ~remove_mask
+            local_color = rgb[border].reshape(-1, 3).mean(axis=0) if border.any() else np.zeros(3)
+        for c in range(3):
+            rgb2[:, :, c] = np.where(touched, local_color[c], rgb2[:, :, c]).astype(np.uint8)
+        alpha2 = alpha.astype(np.float64) * (1.0 - taper)
+        out_rgb.append(rgb2)
+        out_alpha.append(np.clip(alpha2, 0, 255).astype(np.uint8))
+    return out_rgb, out_alpha
 
 
 BAYER4 = np.array([
@@ -679,6 +1099,52 @@ def estimate_alpha_and_defringe(rgb, bg_rgb, protected, tolerance, band_multipli
     return alpha, recolored.astype(np.uint8), band_mask
 
 
+def detect_band_interior_regions(rgb, bg_rgb, tolerance, band_multiplier=4.0, min_size=30, edge_margin_px=3):
+    """
+    Find solid-colored interior regions that fall inside the feathering
+    transition band [tolerance, tolerance*band_multiplier] purely by color
+    coincidence, not because they're a real antialiased edge. SKILL.md's own
+    prose check (the "Art that FADES toward the background colour" section)
+    already describes exactly this signature: band-distance pixels more than
+    ~edge_margin_px from any true background pixel, in a blob bigger than a
+    thin edge fringe. Two distinct real root causes converge on this same
+    signature (references/lessons.md SS10 Bug 4 and SS12). This function only
+    finds regions in ONE frame; the caller (analyze()) groups detections of
+    the same spatial region across frames and classifies solid-tint vs.
+    gradient-fade from how much mean_distance_from_bg varies ACROSS those
+    frames -- a within-frame color-distance spread was tried first and
+    confirmed wrong: a fade is temporal (the same spot changes color across
+    the animation), so a single mid-fade frame looks spatially uniform and a
+    within-frame spread metric can never see it. Confirmed on the real
+    fff2d1 sparkle case (lessons.md SS12): within-frame spread was ~0.0 even
+    though the region is a genuine fade.
+    """
+    bg = np.array(bg_rgb, dtype=float)
+    dist = np.linalg.norm(rgb.astype(float) - bg, axis=-1)
+    band_lo, band_hi = float(tolerance), float(tolerance) * band_multiplier
+    band = (dist > band_lo) & (dist <= band_hi)
+    true_bg = dist <= band_lo
+    near_bg = ndimage.binary_dilation(true_bg, iterations=edge_margin_px)
+    interior_band = band & ~near_bg
+
+    labeled, num = ndimage.label(interior_band, structure=STRUCTURE)
+    regions = []
+    for lab in range(1, num + 1):
+        comp = labeled == lab
+        size = int(comp.sum())
+        if size < min_size:
+            continue
+        ys, xs = np.where(comp)
+        comp_dist = dist[comp]
+        regions.append({
+            'pixel_count': size,
+            'bbox_xyxy': [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+            'mean_color': rgb_to_hex(rgb[comp].mean(axis=0)),
+            'mean_distance_from_bg': round(float(comp_dist.mean()), 1),
+        })
+    return regions
+
+
 def largest_bg_component_mask(rgb, bg_rgb, tolerance):
     """
     Tumble-safe background detection. Returns a mask of ONLY the single
@@ -721,6 +1187,60 @@ def largest_bg_component_mask(rgb, bg_rgb, tolerance):
     sizes = ndimage.sum(mask, labeled, range(1, num + 1))
     largest_label = int(np.argmax(sizes)) + 1
     return labeled == largest_label
+
+
+def measure_bg_component_margin(rgb, bg_rgb, tolerance, mask=None):
+    """
+    Per-frame safety check for the assumption largest_bg_component_mask relies
+    on (see its docstring): true background should be overwhelmingly larger
+    than any other same-colored region, not just the largest by any margin.
+    Returns the largest and second-largest bg-colored component sizes and
+    their ratio, so callers can flag frames where that margin gets
+    uncomfortably close -- the confirmed-safe case measured a margin that
+    never dropped below ~3x across a full animation.
+
+    Only compares the largest against other BORDER-TOUCHING components, not
+    every same-colored component -- an enclosed (non-border-touching)
+    component is a candidate design region (exactly what --protect-outline-
+    color/--protect-region would target), not a tumble-detection risk, which
+    is specifically about the border-touch heuristic breaking down (see
+    largest_bg_component_mask's docstring). Without this exclusion, a large
+    enclosed candidate region can read as a false "close margin" and wrongly
+    trigger a --tumble-safe recommendation that then skips
+    --protect-outline-color entirely for every region -- confirmed as a real
+    latent risk (not yet observed on the 3 fixtures this was built against,
+    but directly analogous to the false positive collect_small_removed_
+    region_sizes needed its own size ceiling to avoid, see that function's
+    docstring) during the final whole-branch review of this feature.
+
+    Accepts an optional pre-computed `mask` (color_mask(rgb, bg_rgb,
+    tolerance)) so a caller iterating every frame for multiple checks
+    (analyze() does, for this and collect_small_removed_region_sizes) can
+    compute it once and share it -- confirmed via the final whole-branch
+    review that escalating these checks from a 40-frame sample to every
+    frame (needed to fix real false negatives, see analyze()'s own call
+    sites) made --analyze measurably slower, and this redundant per-frame
+    color_mask call was one concrete, safe-to-remove piece of that cost.
+    """
+    mask = color_mask(rgb, bg_rgb, tolerance) if mask is None else mask
+    labeled, num = ndimage.label(mask, structure=STRUCTURE)
+    if num == 0:
+        return {'largest_px': 0, 'second_largest_px': 0, 'margin_ratio': None}
+    border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
+    border_labels.discard(0)
+    sizes_by_label = {lab: int(s) for lab, s in
+                       zip(range(1, num + 1), ndimage.sum(mask, labeled, range(1, num + 1)))}
+    largest_label = max(sizes_by_label, key=sizes_by_label.get)
+    largest = sizes_by_label[largest_label]
+    border_sizes = sorted((sizes_by_label[lab] for lab in border_labels if lab != largest_label),
+                           reverse=True)
+    second = border_sizes[0] if border_sizes else 0
+    margin = (largest / second) if second > 0 else None
+    return {
+        'largest_px': largest,
+        'second_largest_px': second,
+        'margin_ratio': round(margin, 2) if margin is not None else None,
+    }
 
 
 def build_tumble_safe_protected_mask(rgb, bg_rgb, tolerance,
@@ -934,6 +1454,43 @@ def build_protected_mask(rgb, args):
         return np.zeros((H, W), dtype=bool)
 
 
+def detect_anomalous_frame_sizes(sizes, window=5, local_ratio_threshold=0.8, gap_ratio_threshold=1.08):
+    """
+    Given a per-frame array of region sizes (pixel counts), flag frames whose
+    size is anomalously low relative to the rest of the sequence, using two
+    detectors that catch different occlusion patterns (see
+    build_protected_masks_robust's docstring for the full history and the
+    real cases each detector was built against):
+    (a) local-neighborhood sharp drop -- catches brief, isolated occlusion;
+    (b) whole-distribution bimodal gap -- catches sustained occlusion
+        spanning many consecutive frames.
+    Returns a boolean array, one entry per input frame, True where anomalous.
+    """
+    n = len(sizes)
+    nonzero = sizes[sizes > 0]
+
+    local_flags = np.zeros(n, dtype=bool)
+    for i in range(n):
+        lo, hi = max(0, i - window), min(n, i + window + 1)
+        neighborhood = [sizes[j] for j in range(lo, hi) if j != i]
+        if not neighborhood:
+            continue
+        if sizes[i] < local_ratio_threshold * np.median(neighborhood):
+            local_flags[i] = True
+
+    gap_flags = np.zeros(n, dtype=bool)
+    sorted_sizes = np.sort(nonzero)
+    if len(sorted_sizes) > 1:
+        gaps = np.diff(sorted_sizes)
+        max_gap_idx = np.argmax(gaps)
+        below, above = sorted_sizes[max_gap_idx], sorted_sizes[max_gap_idx + 1]
+        if below > 0 and above / below >= gap_ratio_threshold:
+            gap_threshold = (below + above) / 2
+            gap_flags = sizes < gap_threshold
+
+    return local_flags | gap_flags
+
+
 def build_protected_masks_robust(rgb_frames, args):
     """
     Compute a protected mask for EVERY frame, but correct for a real,
@@ -1052,33 +1609,7 @@ def build_protected_masks_robust(rgb_frames, args):
             per_color_masks[hex_color] = frame_masks
             continue
 
-        # (a) local-neighborhood sharp-anomaly detector -- catches brief,
-        # isolated occlusion without misfiring on gradual animation.
-        window = 5
-        local_ratio_threshold = 0.8
-        local_flags = np.zeros(n, dtype=bool)
-        for i in range(n):
-            lo, hi = max(0, i - window), min(n, i + window + 1)
-            neighborhood = [sizes[j] for j in range(lo, hi) if j != i]
-            if not neighborhood:
-                continue
-            if sizes[i] < local_ratio_threshold * np.median(neighborhood):
-                local_flags[i] = True
-
-        # (b) whole-distribution bimodal-gap detector -- catches sustained
-        # occlusion spanning many consecutive frames, which (a) alone
-        # can't see since there's no sharp local contrast.
-        gap_flags = np.zeros(n, dtype=bool)
-        sorted_sizes = np.sort(nonzero)
-        if len(sorted_sizes) > 1:
-            gaps = np.diff(sorted_sizes)
-            max_gap_idx = np.argmax(gaps)
-            below, above = sorted_sizes[max_gap_idx], sorted_sizes[max_gap_idx + 1]
-            if below > 0 and above / below >= 1.08:
-                gap_threshold = (below + above) / 2
-                gap_flags = sizes < gap_threshold
-
-        bad_flags = local_flags | gap_flags
+        bad_flags = detect_anomalous_frame_sizes(sizes)
         bad_idxs = [i for i in range(n) if bad_flags[i]]
         good_idxs = [i for i in range(n) if not bad_flags[i] and sizes[i] > 0]
 
@@ -1158,6 +1689,328 @@ def describe_written_timing(output_path, intended_durations):
     return (f"{len(written)} frames written from {len(intended_durations)} "
             f"intended -- {merged} identical frame(s) coalesced by the encoder, "
             f"total playback unchanged at {written_total}ms")
+
+
+def load_gif_rgba_frames(path):
+    """
+    Read every frame of a GIF as (rgb, alpha, duration). Works for both an
+    unprocessed source (alpha will be all-255, since a source GIF's own
+    transparency handling is a separate concern -- see
+    get_source_transparency_mask) and an already-processed output (alpha
+    reflects its real transparency index).
+    """
+    im = Image.open(path)
+    n = im.n_frames
+    rgb_frames, alpha_frames, durations = [], [], []
+    for i in range(n):
+        im.seek(i)
+        durations.append(im.info.get('duration', 100))
+        arr = np.array(im.convert('RGBA'))
+        # .copy(): a bare slice is a VIEW into arr, so without copying,
+        # every element of rgb_frames/alpha_frames keeps its own frame's
+        # full RGBA buffer alive for the whole call (verify() holds three
+        # complete GIF decodes at once -- input, output, and the alpha
+        # channel from each -- so this is a real, not theoretical, memory
+        # cost on a large animation). Copying lets the RGBA array itself be
+        # garbage collected once split.
+        rgb_frames.append(arr[:, :, :3].copy())
+        alpha_frames.append(arr[:, :, 3].copy())
+    return rgb_frames, alpha_frames, durations
+
+
+def align_input_to_output_frames(in_durations, out_durations):
+    """
+    Map each output frame index to the input frame index it actually
+    corresponds to, accounting for Pillow's GIF-encoder frame coalescing:
+    consecutive frames that come out byte-identical after quantization get
+    merged, with their delays folded into the one frame the encoder keeps
+    (see describe_written_timing's docstring / references/lessons.md SS13
+    for the real confirmed case this handles -- 170 frames in, 168 out).
+    Pillow keeps the FIRST frame of each identical run and extends its own
+    delay to cover the run, so each output frame maps to the first input
+    frame of the run that collapsed into it.
+
+    Matches runs by accumulating input durations until they sum to each
+    output duration in turn, in order -- both duration lists are exact
+    integers read from real GIF frame data, so this is an exact match, not
+    a fuzzy one. Returns a list the same length as out_durations (input
+    frame index per output frame), or None if the durations don't
+    reconcile at all (a real timing defect describe_written_timing already
+    flags separately -- this function isn't the place to also report that).
+    """
+    mapping = []
+    in_idx = 0
+    for out_dur in out_durations:
+        if in_idx >= len(in_durations):
+            return None
+        start_idx = in_idx
+        acc = in_durations[in_idx]
+        in_idx += 1
+        while acc < out_dur and in_idx < len(in_durations):
+            acc += in_durations[in_idx]
+            in_idx += 1
+        if acc != out_dur:
+            return None
+        mapping.append(start_idx)
+    if in_idx != len(in_durations):
+        return None
+    return mapping
+
+
+def verify(input_path, output_path, tolerance=15):
+    """
+    Mechanical half of SKILL.md's "Verification" checklist: leftover
+    background, protected-region coverage, edge fringe, small removed-
+    region inflation (see erode_alpha_edge_exempting_tiny_regions's
+    docstring for the real bug this last check targets), and duration/
+    frame-count (delegated straight to describe_written_timing). Does NOT
+    judge whether an edge "looks" soft/jagged or whether a --protect-region
+    bulge follows the art's own silhouette -- those genuinely need a
+    human/agent's eyes and stay in SKILL.md as a visual check.
+
+    CORRECTED DURING TASK 10 IMPLEMENTATION (real, data-confirmed design
+    flaws in the original draft, caught by an implementer running the
+    negative-validation test rather than trusting the design on paper):
+    the original leftover_background_opaque_px had no way to distinguish
+    a correctly-protected bg-colored interior (--protect-outline-color
+    working as intended) from genuinely leftover unremoved background --
+    both look IDENTICAL from raw color alone (bg-colored in input, opaque
+    in output). And the original small_region_inflation match had no
+    pixel-overlap sanity check on top of its centroid-distance search, so
+    it could match a tiny input region to a large, unrelated, irregularly-
+    shaped background blob whose CENTROID (not its actual pixels)
+    coincidentally landed nearby -- confirmed as a real false positive on
+    jewelry.gif. Both are fixed below by having verify() call analyze()
+    on the input and reuse its own candidate-region detection (which
+    already knows how to tell "large enclosed likely-intentional region"
+    from "true background") -- this also adds protected_region_coverage,
+    a check for the actual failure mode the negative-validation test was
+    exercising (a region that should have stayed protected but didn't),
+    which nothing in the original design could see at all.
+    """
+    in_rgb, _, in_durations = load_gif_rgba_frames(input_path)
+    out_rgb, out_alpha, out_durations = load_gif_rgba_frames(output_path)
+
+    report = {'input_path': input_path, 'output_path': output_path}
+
+    if in_rgb[0].shape != out_rgb[0].shape:
+        report['dimensions_match'] = False
+        ih, iw = in_rgb[0].shape[:2]
+        oh, ow = out_rgb[0].shape[:2]
+        report['input_dims'] = [iw, ih]
+        report['output_dims'] = [ow, oh]
+        report['note'] = ('Input/output canvas size differs (crop/resize likely used) -- '
+                           'pixel-position checks are skipped; only the timing check ran.')
+        report['timing'] = describe_written_timing(output_path, in_durations)
+        return report
+
+    report['dimensions_match'] = True
+
+    # Align input frames to output frames by DURATION, not raw index --
+    # the encoder can coalesce consecutive identical frames (real confirmed
+    # case: 170 in, 168 out, see describe_written_timing's docstring), and
+    # naive index pairing would silently compare mismatched animation
+    # frames past the first coalesced run. Rebinding in_rgb to the aligned
+    # list means every loop below that already indexes in_rgb[i]/out_*[i]
+    # for i in range(n) is correct without further changes.
+    mapping = align_input_to_output_frames(in_durations, out_durations)
+    if mapping is not None:
+        in_rgb = [in_rgb[j] for j in mapping]
+        report['frame_alignment'] = 'exact'
+    else:
+        m = min(len(in_rgb), len(out_rgb))
+        in_rgb, out_rgb, out_alpha = in_rgb[:m], out_rgb[:m], out_alpha[:m]
+        report['frame_alignment'] = ('index_fallback -- durations did not reconcile into a '
+                                      'clean coalescing pattern; comparing by raw index, '
+                                      'which may compare mismatched frames past any divergence')
+
+    n = len(in_rgb)
+    bg_rgb = detect_bg_color(in_rgb[0], warn=False)
+
+    # Reuse analyze()'s own candidate-region detection so the checks below
+    # can tell "background-colored input pixel that's a legitimate
+    # protected interior" from "background-colored input pixel that's
+    # really just background" -- see the docstring above for why this is
+    # necessary, not optional polish.
+    input_analysis = analyze(input_path, tolerance=tolerance)
+    protected_regions = [r for r in input_analysis['candidate_regions']
+                          if r['likely_intentional_design']]
+    H, W = in_rgb[0].shape[:2]
+    # A modest bbox union, dilated a few px, scoping WHERE a real candidate
+    # region could be -- used only to restrict the per-frame enclosed-mask
+    # computation below to known candidate areas, not as the exclusion mask
+    # itself (see the fix note just below for why a bare rectangle isn't
+    # precise enough on its own).
+    bbox_scope = np.zeros((H, W), dtype=bool)
+    for r in protected_regions:
+        x0, y0, x1, y1 = r['bbox_xyxy']
+        bbox_scope[y0:y1 + 1, x0:x1 + 1] = True
+    bbox_scope = ndimage.binary_dilation(bbox_scope, iterations=5) if protected_regions else bbox_scope
+
+    leftover_bg_counts = []
+    fringed_pixel_fractions = []
+    bg_masks = []
+    for i in range(n):
+        bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
+        bg_masks.append(bg_mask)
+
+        # Real per-frame enclosed-region footprint, not a static bbox
+        # rectangle -- confirmed during the final whole-branch review that
+        # a bare rectangle blanks out its whole area regardless of the
+        # actual (often irregular) candidate shape, which could mask a
+        # genuine leftover-background bug that happens to fall in the
+        # rectangle's corners. Same border-touching-exclusion technique
+        # analyze() itself uses to find these regions in the first place,
+        # scoped to bbox_scope so a coincidentally enclosed area elsewhere
+        # in THIS frame that has nothing to do with a known candidate
+        # region isn't also swept in.
+        labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
+        border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
+        border_labels.discard(0)
+        enclosed = bg_mask & ~np.isin(labeled, list(border_labels)) & bbox_scope
+
+        still_opaque = bg_mask & (out_alpha[i] > 0) & ~enclosed
+        leftover_bg_counts.append(int(still_opaque.sum()))
+
+        # Fraction of the edge ring still close to the background color, not
+        # the ring's MEAN distance -- confirmed on a real fixture that the
+        # mean has essentially no discriminative power: it's dominated by
+        # the art's own outline color (which can be hundreds of units from
+        # bg), so a localized background-colored fringe (the actual failure
+        # this check exists for) can't move a whole-silhouette mean
+        # anywhere near `tolerance`. A per-pixel fraction is scale-free and
+        # localized regardless of the art's own dominant colors.
+        edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=2) & (out_alpha[i] > 0)
+        if edge_ring.any():
+            ring_dist = np.linalg.norm(
+                out_rgb[i][edge_ring].astype(float) - np.array(bg_rgb, dtype=float), axis=-1)
+            fringed_pixel_fractions.append(float((ring_dist <= tolerance).mean()))
+
+    report['leftover_background_opaque_px'] = {
+        'max_per_frame': max(leftover_bg_counts) if leftover_bg_counts else 0,
+        'worst_frame_index': int(np.argmax(leftover_bg_counts)) if leftover_bg_counts else None,
+        'total_frames_with_any': sum(1 for c in leftover_bg_counts if c > 0),
+    }
+    report['edge_fringe_check'] = {
+        'mean_fringed_pixel_fraction': round(float(np.mean(fringed_pixel_fractions)), 4) if fringed_pixel_fractions else None,
+        'looks_fringed': bool(fringed_pixel_fractions and np.mean(fringed_pixel_fractions) > 0.02),
+    }
+
+    # Protected-region coverage: the opposite failure direction from
+    # leftover background -- a region analyze() flagged as likely
+    # intentional design (high enclosure_ratio) that DIDN'T stay opaque in
+    # the output, e.g. --protect-outline-color was omitted or used the
+    # wrong color. Restricted to pixels that are background-colored in the
+    # INPUT within the bbox (the region's real footprint), not the whole
+    # bbox -- see the module-level history above for why. Reuses bg_masks
+    # already computed per-frame above instead of recomputing color_mask.
+    #
+    # `frames_with_data` / a None mean_opacity_fraction exist to distinguish
+    # "no comparable background-colored pixels were found in any frame"
+    # from "confirmed unprotected" (mean_opacity_fraction == 0.0 with real
+    # data) -- silently collapsing those two into the same 0.0 would hide a
+    # measurement gap behind what looks like a confirmed failure. Mirrors
+    # edge_fringe_check's own None-when-empty handling just above.
+    protected_coverage = []
+    for r in protected_regions:
+        x0, y0, x1, y1 = r['bbox_xyxy']
+        opacities = []
+        for i in range(n):
+            region_bg_mask = bg_masks[i][y0:y1 + 1, x0:x1 + 1]
+            if not region_bg_mask.any():
+                continue
+            region_alpha = out_alpha[i][y0:y1 + 1, x0:x1 + 1]
+            opacities.append(float((region_alpha[region_bg_mask] > 0).mean()))
+        if not opacities:
+            protected_coverage.append({
+                'region_id': r['id'],
+                'frames_with_data': 0,
+                'mean_opacity_fraction': None,
+                'looks_unprotected': None,
+            })
+            continue
+        mean_opacity = sum(opacities) / len(opacities)
+        # Only a region with a VERIFIED outline color has an automatic
+        # protection mechanism analyze()/recommend() could have applied --
+        # an unverified region needs manual --protect-region/--protect-
+        # outline-color identification (SKILL.md's own guidance), so low
+        # opacity there isn't necessarily a bug, just an unaddressed
+        # region nobody claimed to have protected. Confirmed as a real
+        # false positive on jewelry.gif's own accepted output: its region
+        # 1 (unverified) reported looks_unprotected=True even though
+        # nothing ever claimed to protect it. Report the real number
+        # either way, but only assert the boolean for verified regions.
+        looks_unprotected = (mean_opacity < 0.5) if r['outline_color_verified'] else None
+        protected_coverage.append({
+            'region_id': r['id'],
+            'frames_with_data': len(opacities),
+            'mean_opacity_fraction': round(mean_opacity, 3),
+            'looks_unprotected': looks_unprotected,
+        })
+    report['protected_region_coverage'] = protected_coverage
+
+    # Small-region inflation: match each input small removed region to its
+    # nearest output alpha==0 region by CENTROID within a size-scaled search
+    # radius, THEN require actual pixel overlap with a small, FIXED (not
+    # size-scaled) dilation of the input region as a sanity gate. Centroid-
+    # only matching was tried first and confirmed to false-positive on an
+    # irregularly-shaped/annular background component whose centroid landed
+    # near a small input region's centroid despite having no real pixels
+    # nearby -- the pixel-overlap gate rejects that kind of coincidental
+    # match while still being far more conservative than the ORIGINAL
+    # mistake this whole check exists to avoid (an 8px blanket dilation of
+    # the source region used as the primary, unscoped search mechanism,
+    # tried by hand earlier in this project and confirmed to leak into
+    # unrelated background, misreporting a 1px region as 121px). Here the
+    # dilation is only a secondary sanity check on an already
+    # centroid-and-radius-scoped candidate, not the search mechanism itself.
+    struct = np.ones((3, 3), dtype=bool)
+    inflated = []
+    step = max(1, n // 20)
+    for i in range(0, n, step):
+        in_removed = color_mask(in_rgb[i], bg_rgb, tolerance)
+        in_labeled, in_num = ndimage.label(in_removed, structure=struct)
+        if in_num == 0:
+            continue
+        in_sizes = ndimage.sum(in_removed, in_labeled, range(1, in_num + 1))
+        in_largest = int(np.argmax(in_sizes)) + 1
+
+        out_removed = (out_alpha[i] == 0)
+        out_labeled, out_num = ndimage.label(out_removed, structure=struct)
+        if out_num == 0:
+            continue
+        out_sizes = ndimage.sum(out_removed, out_labeled, range(1, out_num + 1))
+        out_centroids = ndimage.center_of_mass(out_removed, out_labeled, range(1, out_num + 1))
+
+        for lab in range(1, in_num + 1):
+            if lab == in_largest or in_sizes[lab - 1] < 2:
+                continue
+            comp = in_labeled == lab
+            cy, cx = ndimage.center_of_mass(comp)
+            search_r = max(8.0, (in_sizes[lab - 1] ** 0.5) * 2)
+            comp_dilated = ndimage.binary_dilation(comp, iterations=10)
+            best = None
+            for oc_idx, (ocy, ocx) in enumerate(out_centroids):
+                d = ((ocy - cy) ** 2 + (ocx - cx) ** 2) ** 0.5
+                if d > search_r or (best is not None and d >= best[0]):
+                    continue
+                out_comp_mask = (out_labeled == (oc_idx + 1))
+                if (out_comp_mask & comp_dilated).any():
+                    best = (d, oc_idx)
+            if best is not None:
+                out_size = int(out_sizes[best[1]])
+                in_size = int(in_sizes[lab - 1])
+                if out_size > in_size * 3 and out_size - in_size > 15:
+                    inflated.append({
+                        'frame_index': i,
+                        'input_size_px': in_size,
+                        'output_size_px': out_size,
+                        'inflation_factor': round(out_size / max(in_size, 1), 1),
+                    })
+
+    report['small_region_inflation'] = {'flagged': inflated[:10], 'flagged_count': len(inflated)}
+    report['timing'] = describe_written_timing(output_path, in_durations)
+    return report
 
 
 def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
@@ -1341,6 +2194,48 @@ def find_tiny_removed_regions(alpha_frames, max_size):
                     tiny |= (labeled == lab)
         tiny_masks.append(tiny)
     return tiny_masks
+
+
+def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_size=500, mask=None):
+    """
+    Single-frame version of find_tiny_removed_regions's labeling pattern,
+    but on a raw background color_mask (analyze() has no processed alpha
+    array to work with) and returning sizes for a histogram instead of
+    masks.
+
+    Excludes the largest removed component per frame (assumed true
+    background), same reasoning as find_tiny_removed_regions and
+    largest_bg_component_mask elsewhere in this file -- but that alone is
+    NOT enough here, unlike in find_tiny_removed_regions: this function
+    runs on the raw, pre-processing color_mask, where a large ENCLOSED
+    candidate region (e.g. a highlight that --protect-outline-color would
+    protect) is a second large background-colored component that isn't the
+    single largest one, so it would otherwise get miscounted as a "small"
+    region. Confirmed on real fixtures: jewelry.gif's own protected
+    highlight region (3700-11500+px) was being reported as a "small removed
+    region" this way, inflating the suggested --erosion-exempt-max-size by
+    ~300x (12647 vs. the real ballpark of ~40). max_plausible_size is a
+    heuristic ceiling -- real erosion-inflation-prone gaps measured well
+    under 150px on every fixture checked so far (references/lessons.md
+    SS11's own motivating case was a single ORIGINAL pixel), while every
+    false positive found was in the thousands; 500 leaves a wide margin on
+    both sides for the fixtures this was verified against, but a genuinely
+    larger deliberate "small" removed region on some future asset would
+    need this raised.
+
+    Accepts an optional pre-computed `mask` -- see measure_bg_component_
+    margin's docstring for why (shared per-frame computation in analyze(),
+    a real cost fix, not premature optimization).
+    """
+    removed = color_mask(rgb, bg_rgb, tolerance) if mask is None else mask
+    struct = np.ones((3, 3), dtype=bool)
+    labeled, num = ndimage.label(removed, structure=struct)
+    if num == 0:
+        return []
+    sizes = ndimage.sum(removed, labeled, range(1, num + 1))
+    largest_label = int(np.argmax(sizes)) + 1
+    return [int(sizes[lab - 1]) for lab in range(1, num + 1)
+            if lab != largest_label and sizes[lab - 1] <= max_plausible_size]
 
 
 def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks):
@@ -1893,6 +2788,16 @@ def process(input_path, output_path, args):
                 if len(damage) > 5:
                     print(f"  ...and {len(damage) - 5} more.", file=sys.stderr)
 
+    # Force-remove regions (inverse of --protect-region), applied last so it
+    # overrides whatever --protect-outline-color / --protect-region decided
+    # -- see apply_remove_regions' docstring for the case this is for.
+    if getattr(args, 'remove_region', None):
+        H0, W0 = alpha_frames[0].shape
+        remove_mask = parse_protect_regions(args.remove_region, (H0, W0))
+        rgb_frames, alpha_frames = apply_remove_regions(
+            rgb_frames, alpha_frames, remove_mask,
+            feather_px=args.remove_region_feather)
+
     tier = args.compress  # None (plain background removal), 'optimize', 'medium', or 'heavy'
 
     # Cropping: explicit --crop, OR bundled automatically into any tier
@@ -2235,6 +3140,27 @@ def main():
                          '-- `;` rather than `,` between regions since `,` '
                          'already separates each region\'s own numeric '
                          'fields. Each region\'s mask is unioned.')
+    p.add_argument('--remove-region', default=None,
+                    help='Manual FORCE-REMOVE region (inverse of '
+                         '--protect-region): circle:cx,cy,r or rect:x,y,w,h, '
+                         'same multi-region `;`-joined syntax. Overrides '
+                         '--protect-outline-color / --protect-region inside '
+                         'this region regardless of what they decided -- for '
+                         'carving out a small feature (e.g. a decorative '
+                         'hole/grommet) that shares its enclosing outline '
+                         'color with something else you want kept, so '
+                         'outline-color protection alone can\'t tell them '
+                         'apart. Edge is feathered and defringed against the '
+                         'LOCAL surrounding color (sampled fresh per frame), '
+                         'not left as a stale color at partial alpha -- see '
+                         '--remove-region-feather. Static across all frames, '
+                         'same caution as --protect-region: do not use this '
+                         'for a target that moves/resizes across frames '
+                         '(tumbling/rotating content) without re-deriving '
+                         'the mask per frame yourself first.')
+    p.add_argument('--remove-region-feather', type=float, default=1.5,
+                    help='Feather width in px for --remove-region\'s edge '
+                         'taper (default 1.5).')
     p.add_argument('--no-feather', dest='feather', action='store_false',
                     help='Disable edge feathering/de-fringing; use a hard '
                          'color-distance cutoff (old behavior, choppier edges).')
@@ -2490,12 +3416,40 @@ def main():
                          'of the detected background color and candidate regions that may '
                          'need protecting, with a recommendation for each based on how '
                          'consistently each region is enclosed across frames.')
+    p.add_argument('--recommend', action='store_true',
+                    help='Do not process the GIF. Run --analyze internally and print a '
+                         'JSON report with a suggested command line and the evidence '
+                         'behind each recommended flag.')
+    p.add_argument('--verify', action='store_true',
+                    help='Do not process the GIF. Instead compare input_gif (the original '
+                         'source) against output_gif (an already-produced result) and print '
+                         'a JSON report of the mechanical verification checks: leftover '
+                         'background, protected-region coverage, edge fringe, small '
+                         'removed-region inflation, and duration/frame-count.')
     args = p.parse_args()
+
+    if sum([args.analyze, args.recommend, args.verify]) > 1:
+        p.error('Use only one of --analyze, --recommend, or --verify at a time')
 
     if args.analyze:
         if not args.input_gif:
             p.error('input_gif is required when using --analyze')
-        report = analyze(args.input_gif)
+        report = analyze(args.input_gif, tolerance=args.tolerance)
+        print(json.dumps(report, indent=2))
+        return
+
+    if args.recommend:
+        if not args.input_gif:
+            p.error('input_gif is required when using --recommend')
+        rec = recommend(args.input_gif, tolerance=args.tolerance)
+        print(json.dumps(rec, indent=2))
+        return
+
+    if args.verify:
+        if not args.input_gif or not args.output_gif:
+            p.error('both input_gif and output_gif are required when using --verify '
+                    '(input_gif = original source, output_gif = the file to verify)')
+        report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
         return
 

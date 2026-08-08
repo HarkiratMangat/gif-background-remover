@@ -26,6 +26,28 @@ scratch risks retrying an approach already known to fail.
 11. [Small removed regions get inflated by edge-cleanup erosion: a second animated-icon case, five rounds](#11-small-removed-regions-get-inflated-by-edge-cleanup-erosion-a-second-animated-icon-case-five-rounds)
 12. [Art that fades toward the background colour renders as a dither mesh](#12-art-that-fades-toward-the-background-colour-renders-as-a-dither-mesh)
 13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
+14. [Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element](#14-punching-one-same-colour-interior-hole-while-protecting-a-same-colour-same-size-range-animated-design-element)
+15. [A second, independent solution to §14's same problem — `--remove-region`, and where it needs help](#15-a-second-independent-solution-to-14s-same-problem---remove-region-and-where-it-needs-help)
+
+**Symptom → section**, for scanning without reading the full ToC titles:
+
+| If you're seeing... | Go to |
+|---|---|
+| Pixel art misdetected as antialiased (or vice versa) | §1 |
+| A bulge/halo/gap that doesn't follow the art's silhouette | §2 |
+| Flicker or a hole in a protected region | §3 (real bug) or §9 (bbox-vs-mask measurement artifact — check which first) |
+| A shape totally erased / near-zero survival | §4 |
+| Blurry or degraded fine detail after resize/compress | §5 |
+| Choosing between compression tools/quantizers | §6, §8 |
+| Confused why alpha looks all-or-nothing | §7 |
+| A reported animation length that seems wrong | §9, §13 |
+| Anything on tumbling/rotating/translating content | §10 |
+| A small removed region looks like an inflated speckle | §11 |
+| A grid/mesh pattern over what should be solid color | §12 (interior fade) vs §10 Bug 5 (edge over flat paint — different trigger, see §12's own note) |
+| Lower output frame count than input | §13 |
+| A real cutout/hole must stay transparent but a same-colour design element keeps getting damaged (or the hole won't punch at all) | §14, §15 |
+| Need to force-remove a specific region regardless of what outline/region protection decided | §15 (`--remove-region`) |
+| A whitish halo/fringe hugging a manually punched or edited region's edge | §14 addendum (skipped cleanup erosion) or §15 (hand-rolled alpha edit with no defringing) — different root causes, check which |
 
 ---
 
@@ -800,3 +822,188 @@ tool that reports on its own output must read that output back; restating the in
 it's a claim wearing a check's clothing, and it is more dangerous than no message at all because it
 actively discourages looking. Worth grepping for the same shape anywhere else a message asserts a
 property of a written file.
+
+---
+
+## 14. Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element
+
+**Found 2026-08-07** on `military-tag.gif` (126-frame dog-tag icon), delivered by a user who had
+already gotten 4 incorrect/ugly attempts from a live claude.ai v3.1.0 session on the same file.
+
+### The symptom
+The tag has a pure-white 4-point star (a real design element, must stay opaque) and a small round
+pinhole where the ball-chain threads through (must become transparent) — both near-white, both
+enclosed by the tag's navy outline, both non-border-touching. `--recommend`'s own suggested
+`--protect-outline-color 002864` reported the region's `outline_enclosure_all_frames` at only
+**47% enclosed across all 126 frames** (own evidence text: *"outline 002864 verified across 126
+frames (47% enclosed)"*) — a real, honest signal that this asset's outline color isn't reliably
+enclosing, not something to trust blindly. Root cause: the star **twinkles** (its rendered shape
+changes size/aspect every frame, from ~75px to ~6000px across the sample), so a single fixed-frame
+`comp_footprint` containment check misses most frames.
+
+### First attempt: `--tumble-safe` (sidesteps outline reliability) + `--keep-bg-blob-if-near` with a decoy colour
+`--tumble-safe`'s default (protect everything except the single largest bg-colored component, computed
+fresh per frame) sidesteps the outline-reliability problem entirely — correct call, confirmed by full
+127-frame verification later. But `--keep-bg-blob-if-near 000000` (a colour picked to match nothing,
+intending "hole-size-range alone decides") punched holes through the star's own antialiased boundary
+in the frames where the twinkle happens to fragment it into pieces inside the default
+`--hole-size-range 50,2000` — visible in a `--preview` contact sheet as a jagged bite out of the star
+(looked like solid dark fill only because it was composited over a dark preview background; it was
+actually alpha=0, confirmed by checking the raw alpha array directly rather than trusting the visual).
+
+### Second attempt: real design colours as the keep-target — also wrong, in the other direction
+Passing the tag's own body/sheen colours (`93b2f4,d1dbfc`) as `--keep-bg-blob-if-near` stopped the
+star damage, but now punched **zero** holes in **all 126 frames** — the pinhole itself got kept.
+Traced with the real `build_tumble_safe_protected_mask` function directly (not re-derived by hand):
+the pinhole's antialiased boundary (white → navy) passes, for a handful of pixels, within
+`near_tolerance`(40) of `d1dbfc` purely by coincidence (measured min distance 19.5) — and the match
+is an `.any()` over the whole dilated ring, so one coincidental pixel flips the entire component's
+verdict. More dilation doesn't fix this: the boundary pixels closest to the shape are included at
+every dilation radius once they first appear.
+
+### The fix: separate the two by geometry, not colour
+Measured the pinhole's real per-frame size/aspect across all 126 frames: **423–466px, aspect
+1.00–1.04 — a near-perfect circle, essentially constant**, because the physical hole doesn't change
+even though the tag translates and swings. The twinkling star's fragments, sampled the same way,
+range 75–6070px, aspect 1.0–2.69, and only ever coincidentally overlap the pinhole's size band
+without also matching its aspect. `--hole-size-range 400,480 --hole-max-aspect 1.3` (still paired
+with a `--keep-bg-blob-if-near` decoy colour, required only because the code path is gated on that
+flag being present) admits **exactly one component per frame across all 126**, and it's the pinhole
+every time — confirmed by brute-force scanning every frame, not sampling.
+
+### Verification note: `--verify`'s `protected_region_coverage` false-positives here
+`--verify` correctly skipped its pixel checks given `--crop` changed the canvas size (its own
+documented behavior), so verification ran against an uncropped intermediate. On that,
+`leftover_background_opaque_px`, `edge_fringe_check`, `small_region_inflation`, and `timing` all came
+back clean — but `protected_region_coverage` flagged the merged star+pinhole candidate region as
+`looks_unprotected: true` (46.2% opacity). Confirmed as a false positive by two independent, more
+precise checks: (1) restricting the same opacity measurement to each frame's own correctly-identified
+star component (excluding the pinhole) still isn't clean-looking from the bbox math, but (2) directly
+checking "is every star-component pixel opaque, per frame, using that frame's own true star mask" —
+the unambiguous test — came back **100% opaque in all 126 frames, zero exceptions**. The false
+positive traces to the same root cause as `outline_enclosure_all_frames`'s low ratio and the known
+`band_interior_regions` grouping gap (see `gif-deferred-list.md`): `analyze()`'s candidate-region
+detection ties a region to one fixed-frame bbox/footprint, which a translating design with a legitimate
+interior sub-hole breaks. Not fixed here (would need `verify()` to know about deliberately-carved
+sub-holes, which it currently cannot express) — noted as a real, novel gap for the deferred list rather
+than left silently unmentioned.
+
+### Generalizable takeaway
+**When a "keep vs. remove" distinction is needed between two same-colour blobs, ask which axis
+actually separates them before reaching for `--keep-bg-blob-if-near`'s colour-adjacency mechanism.**
+Colour-adjacency is fragile across an antialiased boundary — a coincidental match on a handful of
+transition pixels is enough to flip an entire component, in either direction, and more dilation does
+not fix a coincidental match found at low dilation. If one blob is physically constant (a real cutout)
+and the other is animated (breathing/twinkling/pulsing), size+aspect over the FULL frame range is
+usually the more robust discriminator — verify it by scanning every frame's actual measured values,
+never a handful of samples, since the whole failure mode here is an animated element occasionally
+drifting into the other's range.
+
+### Addendum, same asset, found by the user zooming into the delivered file: `--erosion-exempt-max-size` left a whitish fringe around the punched hole
+Passed `--erosion-exempt-max-size 519` on `--recommend`'s generic evidence ("152 small removed
+region(s) observed") without checking whether that number meant genuine incidental noise on THIS
+asset. It didn't: every one of those 152 detections across all 126 frames was either the pinhole
+itself (repeated once per frame) or a star-twinkle fragment that never actually enters this
+pipeline's removable set (confirmed: only the pinhole ever passes the `--hole-size-range`/
+`--hole-max-aspect` gate). So the exemption had nothing genuine to protect — but it still did its
+job of restoring the pinhole to its exact PRE-erosion pixels, which skipped the normal
+`--edge-cleanup-erosion` pass that would have cleaned up the antialiasing blend between the white
+pinhole and the navy ring. Result: a handful of pale, technically-opaque, off-white pixels
+(measured `237,241,253` — not pure white, not navy, an untrimmed antialiasing blend) sitting right
+at the hole's edge, small enough to miss in a `--preview` contact sheet composited over
+transparency-checkerboard but visible zoomed in over a solid dark background.
+
+**The fix:** drop `--erosion-exempt-max-size` entirely and let the default 2px erosion run
+normally. Re-verified across all 126 frames: fringe pixels went to zero, the hole's own true size
+grew modestly (~423–466px raw → ~632–682px post-erosion, roughly a 20% radius increase) because
+the navy ring is thick (15+px) relative to the 2px erosion radius — nowhere near the 50–70x
+runaway inflation §11 exists to prevent, which only happens when the wall around a removed region
+is thin relative to the erosion radius. `small_region_inflation` (from `--verify`) correctly did
+not flag this growth.
+
+**Generalizable takeaway:** `--erosion-exempt-max-size`'s own evidence count from `--recommend`
+(or `--analyze`'s `small_removed_regions`) is a raw histogram of ANY small removable-by-color blob
+across every frame — it does not know which of those blobs actually survive into your SPECIFIC
+chosen protection pipeline as truly removable. Before applying the flag, check whether the asset
+actually has incidental noise distinct from its main removed-region logic (as §11's original
+gear/book case did) or whether, as here, the "152 regions" are just one legitimate, physically
+constant hole detected 126 times — in the latter case the exemption trades a real fringe defect for
+protection against an inflation risk that was never actually present.
+
+---
+
+## 15. A second, independent solution to §14's same problem — `--remove-region`, and where it needs help
+
+**Found 2026-08-07**, same asset as §14 (`military-tag.gif`), from a parallel claude.ai live-skill
+session working the identical problem (star to keep, pin hole to remove, both enclosed by the same
+navy outline) with no knowledge of §14's approach. Reconciled into the repo 2026-08-08. Kept as its
+own section rather than merged into §14 because the two solutions are genuinely different in shape,
+not just different phrasing of the same fix — read both before picking one for a new case.
+
+### The approach: `--protect-outline-color` (as normal) + a new inverse flag to carve the hole back out
+Unlike §14 (which avoided `--protect-outline-color` entirely because its all-frame enclosure ratio
+measured only 47%), this session used `--protect-outline-color 002864` as normal — correct
+per-region framing either way, since it protects the whole navy-enclosed interior including the
+star — then added **`--remove-region`** (new flag, inverse of `--protect-region`: force-removes a
+manually specified region regardless of what protection already decided there) to punch the pin
+hole back out. The underlying insight, precisely: **"enclosed by the same outline color" is not the
+same claim as "the same region should get the same treatment."** `--protect-outline-color` correctly
+unions the whole enclosed area for one color; there was previously no way to say "protect this
+EXCEPT that sub-region."
+
+**A real bug found and fixed in the same session, general beyond this one flag:** the first
+hand-rolled hole-punch (before `--remove-region` existed) zeroed alpha inside a circle without
+touching RGB, leaving the original antialiased white-into-navy blend color sitting at partial alpha
+— invisible over checkerboard, a visible pale halo over any solid composite. `apply_remove_regions()`
+fixes this generically: recolor every touched pixel to the LOCAL kept color (sampled fresh per frame
+from a thin ring just outside the removal mask, not a hardcoded hex) BEFORE tapering alpha down, so
+a fading pixel always reads as "surrounding color fading to transparent," never a ghost of what got
+removed. **This is a different root cause than §14's addendum fringe**, worth keeping distinct: §14's
+fringe came from `--erosion-exempt-max-size` skipping an EXISTING cleanup step (the main feathering
+path already defringes correctly); this one is about a hand-rolled alpha edit that bypassed the main
+feathering path entirely and so never got defringed in the first place. Both LOOK like "a whitish
+ring around a punched hole" — they are not the same bug, and the fix for one would not have fixed
+the other.
+
+### Where it needs help: this flag alone did not solve this specific asset — confirmed independently, not just taken on faith
+`--remove-region`'s own worked example (`--protect-outline-color 002864 --remove-region
+circle:283.5,231.5,15`) is a STATIC mask, same limitation `--protect-region` already has. This
+asset's pin hole is not static: **re-measured independently while reconciling this drop into the
+repo — the true hole center drifts up to ~67px from that fixed circle across the 126 frames** (the
+live session's own account cites ~150px, plausibly measured at a different scale/crop; both
+readings agree the drift is large, not marginal). Directly checking the STATIC-circle output against
+the real per-frame hole location: **96 of 126 frames (76%) do NOT actually have the true pin hole
+punched** — the fixed circle is simply removing the wrong patch of navy ring in most frames. The
+flag's own documentation is honest about this ("do not use this for a target that moves/resizes
+across frames... without re-deriving the mask per frame yourself first") — this is a confirmation
+that the caveat is load-bearing on this exact asset, not a defect in the flag or its docs.
+
+The live session's real fix for this (§ their Bug 3/4, condensed): track the hole's true per-frame
+center via `cv2.HoughCircles` on each source frame independently, and — after finding that a
+per-frame RE-MEASURED radius was itself corrupted by a shine/sparkle sweep passing through the same
+screen area in some frames (a real second bug, a differently-principled edge/gradient-based method
+disagreeing with a color-threshold radial scan is what caught it) — settle on ONE constant radius
+measured only from unaffected frames, applied to every frame's own tracked center. None of this
+tracking happens inside the script; it is bespoke, external, per-asset work.
+
+**§14's `--tumble-safe` + `--keep-bg-blob-if-near` + tight `--hole-size-range`/`--hole-max-aspect`
+approach handles this exact drift natively, with no external tracking script**, because it
+re-derives the hole's mask fresh from each frame's own connected-component geometry rather than
+applying one fixed region — the drift was never a problem for it, verified in §14 across all 126
+frames without needing to know the drift's magnitude in advance.
+
+### Generalizable takeaway: two valid tools for the same *shape* of problem, different fits
+- **`--remove-region` is the more general, more directly-expressive fix** when the target to punch
+  out is static, or as a component after you've separately solved per-frame tracking yourself — it
+  works regardless of whether the hole is geometrically distinguishable from nearby decoration
+  (§14's approach specifically needed the hole and the decoration to differ in measurable
+  size/aspect across every frame, which was true here somewhat fortuitously, not guaranteed on a
+  future asset).
+- **§14's geometric-gate approach is the more robust fix for a moving/resizing target with no
+  external tooling**, but only when the thing to remove and the thing to keep really are separable
+  by a stable, measurable geometric signal (size, aspect, or similar) across the whole animation —
+  verify that separation across every frame before trusting it, same discipline §14 itself used.
+- **Neither is a substitute for the other in every case.** A static hole shared with animated
+  same-colored decoration wants `--remove-region`. A moving hole with no reliable external tracking
+  step wants the geometric-gate approach. A moving hole where NEITHER geometric separation nor
+  tracking tooling is available is a real gap this skill does not yet close.
