@@ -63,6 +63,7 @@ import contextlib
 import copy
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -353,9 +354,21 @@ def analyze(input_path, max_samples=40, tolerance=15):
         for region in detect_band_interior_regions(all_rgb_frames[i], bg_rgb, tolerance):
             cx_r = (region['bbox_xyxy'][0] + region['bbox_xyxy'][2]) / 2
             cy_r = (region['bbox_xyxy'][1] + region['bbox_xyxy'][3]) / 2
+            # 40px, not 15 -- confirmed too tight on real moving/rotating art
+            # during the final whole-branch review: a single physical region
+            # on jewelry.gif fragmented into ~15 separate groups because its
+            # bbox center drifted 25-32px between consecutive detections as
+            # the design rotated. 40px still keeps this fixture's two
+            # genuinely distinct physical regions separate (their bbox
+            # centers are 200+px apart). Known remaining limitation (not
+            # fully fixed here, see the review): this still doesn't know
+            # which of these groups is actually the SAME area a verified
+            # --protect-outline-color already covers -- that needs analyze()
+            # to compute candidate regions before this loop runs, which is a
+            # larger reordering left as a follow-up.
             grp = next((g for g in band_interior_groups
-                        if abs((g['bbox_xyxy'][0] + g['bbox_xyxy'][2]) / 2 - cx_r) < 15
-                        and abs((g['bbox_xyxy'][1] + g['bbox_xyxy'][3]) / 2 - cy_r) < 15), None)
+                        if abs((g['bbox_xyxy'][0] + g['bbox_xyxy'][2]) / 2 - cx_r) < 40
+                        and abs((g['bbox_xyxy'][1] + g['bbox_xyxy'][3]) / 2 - cy_r) < 40), None)
             if grp is None:
                 band_interior_groups.append({
                     'pixel_count': region['pixel_count'],
@@ -372,6 +385,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
 
     band_interior_regions = []
     for g in band_interior_groups:
+        if len(g['distances']) < 2:
+            continue  # single-frame blip, not a stable enough signal to report
         dist_span = round(max(g['distances']) - min(g['distances']), 1)
         is_fade = dist_span >= 6.0
         band_interior_regions.append({
@@ -624,7 +639,7 @@ def recommend(input_path):
                     f"identification, not auto-recommended.")
             elif not region['outline_color_verified']:
                 if region['circle_region_safe']:
-                    flags.append(region['suggested_protect_region'])
+                    flags.append(f"--protect-region {region['suggested_protect_region']}")
                     region_notes.append(
                         f"Region {rid}: no verified outline color, but shape is circular "
                         f"(circularity {region['circularity_ratio']}) -- falling back to "
@@ -686,7 +701,7 @@ def recommend(input_path):
             "GIF has a deliberately small removed region larger than that, "
             "--erosion-exempt-max-size may still be needed and should be measured manually.")
 
-    suggested = f"python3 scripts/remove_gif_background.py {input_path} <output.gif>"
+    suggested = f"python3 scripts/remove_gif_background.py {shlex.quote(input_path)} <output.gif>"
     if flags:
         suggested += " " + " ".join(flags)
 
@@ -1058,14 +1073,34 @@ def measure_bg_component_margin(rgb, bg_rgb, tolerance):
     their ratio, so callers can flag frames where that margin gets
     uncomfortably close -- the confirmed-safe case measured a margin that
     never dropped below ~3x across a full animation.
+
+    Only compares the largest against other BORDER-TOUCHING components, not
+    every same-colored component -- an enclosed (non-border-touching)
+    component is a candidate design region (exactly what --protect-outline-
+    color/--protect-region would target), not a tumble-detection risk, which
+    is specifically about the border-touch heuristic breaking down (see
+    largest_bg_component_mask's docstring). Without this exclusion, a large
+    enclosed candidate region can read as a false "close margin" and wrongly
+    trigger a --tumble-safe recommendation that then skips
+    --protect-outline-color entirely for every region -- confirmed as a real
+    latent risk (not yet observed on the 3 fixtures this was built against,
+    but directly analogous to the false positive collect_small_removed_
+    region_sizes needed its own size ceiling to avoid, see that function's
+    docstring) during the final whole-branch review of this feature.
     """
     mask = color_mask(rgb, bg_rgb, tolerance)
     labeled, num = ndimage.label(mask, structure=STRUCTURE)
     if num == 0:
         return {'largest_px': 0, 'second_largest_px': 0, 'margin_ratio': None}
-    sizes = sorted((int(s) for s in ndimage.sum(mask, labeled, range(1, num + 1))), reverse=True)
-    largest = sizes[0]
-    second = sizes[1] if len(sizes) > 1 else 0
+    border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
+    border_labels.discard(0)
+    sizes_by_label = {lab: int(s) for lab, s in
+                       zip(range(1, num + 1), ndimage.sum(mask, labeled, range(1, num + 1)))}
+    largest_label = max(sizes_by_label, key=sizes_by_label.get)
+    largest = sizes_by_label[largest_label]
+    border_sizes = sorted((sizes_by_label[lab] for lab in border_labels if lab != largest_label),
+                           reverse=True)
+    second = border_sizes[0] if border_sizes else 0
     margin = (largest / second) if second > 0 else None
     return {
         'largest_px': largest,
@@ -1608,7 +1643,7 @@ def verify(input_path, output_path, tolerance=15):
         candidate_mask[y0:y1 + 1, x0:x1 + 1] = True
 
     leftover_bg_counts = []
-    fringe_distances = []
+    fringed_pixel_fractions = []
     bg_masks = []
     for i in range(n):
         bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
@@ -1616,11 +1651,19 @@ def verify(input_path, output_path, tolerance=15):
         still_opaque = bg_mask & (out_alpha[i] > 0) & ~candidate_mask
         leftover_bg_counts.append(int(still_opaque.sum()))
 
+        # Fraction of the edge ring still close to the background color, not
+        # the ring's MEAN distance -- confirmed on a real fixture that the
+        # mean has essentially no discriminative power: it's dominated by
+        # the art's own outline color (which can be hundreds of units from
+        # bg), so a localized background-colored fringe (the actual failure
+        # this check exists for) can't move a whole-silhouette mean
+        # anywhere near `tolerance`. A per-pixel fraction is scale-free and
+        # localized regardless of the art's own dominant colors.
         edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=2) & (out_alpha[i] > 0)
         if edge_ring.any():
             ring_dist = np.linalg.norm(
                 out_rgb[i][edge_ring].astype(float) - np.array(bg_rgb, dtype=float), axis=-1)
-            fringe_distances.append(float(ring_dist.mean()))
+            fringed_pixel_fractions.append(float((ring_dist <= tolerance).mean()))
 
     report['leftover_background_opaque_px'] = {
         'max_per_frame': max(leftover_bg_counts) if leftover_bg_counts else 0,
@@ -1628,8 +1671,8 @@ def verify(input_path, output_path, tolerance=15):
         'total_frames_with_any': sum(1 for c in leftover_bg_counts if c > 0),
     }
     report['edge_fringe_check'] = {
-        'mean_edge_ring_distance_from_bg': round(float(np.mean(fringe_distances)), 1) if fringe_distances else None,
-        'looks_fringed': bool(fringe_distances and np.mean(fringe_distances) < tolerance),
+        'mean_fringed_pixel_fraction': round(float(np.mean(fringed_pixel_fractions)), 4) if fringed_pixel_fractions else None,
+        'looks_fringed': bool(fringed_pixel_fractions and np.mean(fringed_pixel_fractions) > 0.02),
     }
 
     # Protected-region coverage: the opposite failure direction from
@@ -1666,11 +1709,22 @@ def verify(input_path, output_path, tolerance=15):
             })
             continue
         mean_opacity = sum(opacities) / len(opacities)
+        # Only a region with a VERIFIED outline color has an automatic
+        # protection mechanism analyze()/recommend() could have applied --
+        # an unverified region needs manual --protect-region/--protect-
+        # outline-color identification (SKILL.md's own guidance), so low
+        # opacity there isn't necessarily a bug, just an unaddressed
+        # region nobody claimed to have protected. Confirmed as a real
+        # false positive on jewelry.gif's own accepted output: its region
+        # 1 (unverified) reported looks_unprotected=True even though
+        # nothing ever claimed to protect it. Report the real number
+        # either way, but only assert the boolean for verified regions.
+        looks_unprotected = (mean_opacity < 0.5) if r['outline_color_verified'] else None
         protected_coverage.append({
             'region_id': r['id'],
             'frames_with_data': len(opacities),
             'mean_opacity_fraction': round(mean_opacity, 3),
-            'looks_unprotected': mean_opacity < 0.5,
+            'looks_unprotected': looks_unprotected,
         })
     report['protected_region_coverage'] = protected_coverage
 
