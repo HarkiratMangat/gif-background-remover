@@ -1609,8 +1609,10 @@ def verify(input_path, output_path, tolerance=15):
 
     leftover_bg_counts = []
     fringe_distances = []
+    bg_masks = []
     for i in range(n):
         bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
+        bg_masks.append(bg_mask)
         still_opaque = bg_mask & (out_alpha[i] > 0) & ~candidate_mask
         leftover_bg_counts.append(int(still_opaque.sum()))
 
@@ -1634,21 +1636,39 @@ def verify(input_path, output_path, tolerance=15):
     # leftover background -- a region analyze() flagged as likely
     # intentional design (high enclosure_ratio) that DIDN'T stay opaque in
     # the output, e.g. --protect-outline-color was omitted or used the
-    # wrong color. Checks mean opacity fraction within the region's own
-    # bbox across every frame.
+    # wrong color. Restricted to pixels that are background-colored in the
+    # INPUT within the bbox (the region's real footprint), not the whole
+    # bbox -- see the module-level history above for why. Reuses bg_masks
+    # already computed per-frame above instead of recomputing color_mask.
+    #
+    # `frames_with_data` / a None mean_opacity_fraction exist to distinguish
+    # "no comparable background-colored pixels were found in any frame"
+    # from "confirmed unprotected" (mean_opacity_fraction == 0.0 with real
+    # data) -- silently collapsing those two into the same 0.0 would hide a
+    # measurement gap behind what looks like a confirmed failure. Mirrors
+    # edge_fringe_check's own None-when-empty handling just above.
     protected_coverage = []
     for r in protected_regions:
         x0, y0, x1, y1 = r['bbox_xyxy']
         opacities = []
         for i in range(n):
-            region_bg_mask = color_mask(in_rgb[i][y0:y1 + 1, x0:x1 + 1], bg_rgb, tolerance)
+            region_bg_mask = bg_masks[i][y0:y1 + 1, x0:x1 + 1]
             if not region_bg_mask.any():
                 continue
             region_alpha = out_alpha[i][y0:y1 + 1, x0:x1 + 1]
             opacities.append(float((region_alpha[region_bg_mask] > 0).mean()))
-        mean_opacity = sum(opacities) / len(opacities) if opacities else 0.0
+        if not opacities:
+            protected_coverage.append({
+                'region_id': r['id'],
+                'frames_with_data': 0,
+                'mean_opacity_fraction': None,
+                'looks_unprotected': None,
+            })
+            continue
+        mean_opacity = sum(opacities) / len(opacities)
         protected_coverage.append({
             'region_id': r['id'],
+            'frames_with_data': len(opacities),
             'mean_opacity_fraction': round(mean_opacity, 3),
             'looks_unprotected': mean_opacity < 0.5,
         })
