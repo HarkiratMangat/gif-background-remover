@@ -118,6 +118,30 @@ text), never a wrong processing command.
 `verify()`'s existing, reviewed logic, but is more contained than the `band_interior_regions`
 reorder) -> `Sonnet5-High`.
 
+### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
+**Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
+
+**The problem:** this repo now has two real solutions to "punch a hole shared with same-color
+decoration that needs opposite treatment" -- §14's geometric-gate approach (`--tumble-safe` +
+`--keep-bg-blob-if-near` + tight `--hole-size-range`/`--hole-max-aspect`), which needs the hole and
+the decoration to differ measurably in size/aspect across every frame; and §15's `--remove-region`,
+which needs either a static target or an external per-frame tracking script (confirmed: a static
+circle alone missed the true target in 76% of frames on a real tumbling asset). Neither covers a
+moving hole that ISN'T geometrically separable from its decoration and has no available tracking
+tooling -- a real, currently-unsolved case, not yet encountered on a real asset but now a known gap
+rather than a silent one.
+
+**First slice (S):** wait for a real asset that actually needs this before designing a fix --
+speculative design against a hypothetical case risks solving the wrong shape of problem, the same
+mistake `--keep-bg-blob-if-near`'s color-adjacency approach made when first reached for on §14's
+own asset. If/when a real case arrives, the likely direction is a lighter-weight, script-native
+per-frame tracking primitive (a lower-effort analog to the live session's `cv2.HoughCircles` step)
+rather than requiring bespoke external tooling every time.
+
+**Model pick reasoning:** premise High (no real case yet, so even the shape of the right fix is
+speculative) · deliberation High (a script-native tracking primitive is real algorithm design) ->
+`Opus5-High`, and only once a concrete motivating case exists.
+
 ---
 
 ## ✅ Considered and NOT fixed — a real decision, not an oversight
