@@ -1691,14 +1691,32 @@ def find_tiny_removed_regions(alpha_frames, max_size):
     return tiny_masks
 
 
-def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance):
+def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_size=500):
     """
     Single-frame version of find_tiny_removed_regions's labeling pattern,
     but on a raw background color_mask (analyze() has no processed alpha
     array to work with) and returning sizes for a histogram instead of
-    masks. Excludes the largest removed component per frame (assumed true
+    masks.
+
+    Excludes the largest removed component per frame (assumed true
     background), same reasoning as find_tiny_removed_regions and
-    largest_bg_component_mask elsewhere in this file.
+    largest_bg_component_mask elsewhere in this file -- but that alone is
+    NOT enough here, unlike in find_tiny_removed_regions: this function
+    runs on the raw, pre-processing color_mask, where a large ENCLOSED
+    candidate region (e.g. a highlight that --protect-outline-color would
+    protect) is a second large background-colored component that isn't the
+    single largest one, so it would otherwise get miscounted as a "small"
+    region. Confirmed on real fixtures: jewelry.gif's own protected
+    highlight region (3700-11500+px) was being reported as a "small removed
+    region" this way, inflating the suggested --erosion-exempt-max-size by
+    ~300x (12647 vs. the real ballpark of ~40). max_plausible_size is a
+    heuristic ceiling -- real erosion-inflation-prone gaps measured well
+    under 150px on every fixture checked so far (references/lessons.md
+    SS11's own motivating case was a single ORIGINAL pixel), while every
+    false positive found was in the thousands; 500 leaves a wide margin on
+    both sides for the fixtures this was verified against, but a genuinely
+    larger deliberate "small" removed region on some future asset would
+    need this raised.
     """
     removed = color_mask(rgb, bg_rgb, tolerance)
     struct = np.ones((3, 3), dtype=bool)
@@ -1707,7 +1725,8 @@ def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance):
         return []
     sizes = ndimage.sum(removed, labeled, range(1, num + 1))
     largest_label = int(np.argmax(sizes)) + 1
-    return [int(sizes[lab - 1]) for lab in range(1, num + 1) if lab != largest_label]
+    return [int(sizes[lab - 1]) for lab in range(1, num + 1)
+            if lab != largest_label and sizes[lab - 1] <= max_plausible_size]
 
 
 def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks):
