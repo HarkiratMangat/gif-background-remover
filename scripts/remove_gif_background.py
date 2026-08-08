@@ -1522,6 +1522,200 @@ def describe_written_timing(output_path, intended_durations):
             f"total playback unchanged at {written_total}ms")
 
 
+def load_gif_rgba_frames(path):
+    """
+    Read every frame of a GIF as (rgb, alpha, duration). Works for both an
+    unprocessed source (alpha will be all-255, since a source GIF's own
+    transparency handling is a separate concern -- see
+    get_source_transparency_mask) and an already-processed output (alpha
+    reflects its real transparency index).
+    """
+    im = Image.open(path)
+    n = im.n_frames
+    rgb_frames, alpha_frames, durations = [], [], []
+    for i in range(n):
+        im.seek(i)
+        durations.append(im.info.get('duration', 100))
+        arr = np.array(im.convert('RGBA'))
+        rgb_frames.append(arr[:, :, :3])
+        alpha_frames.append(arr[:, :, 3])
+    return rgb_frames, alpha_frames, durations
+
+
+def verify(input_path, output_path, tolerance=15):
+    """
+    Mechanical half of SKILL.md's "Verification" checklist: leftover
+    background, protected-region coverage, edge fringe, small removed-
+    region inflation (see erode_alpha_edge_exempting_tiny_regions's
+    docstring for the real bug this last check targets), and duration/
+    frame-count (delegated straight to describe_written_timing). Does NOT
+    judge whether an edge "looks" soft/jagged or whether a --protect-region
+    bulge follows the art's own silhouette -- those genuinely need a
+    human/agent's eyes and stay in SKILL.md as a visual check.
+
+    CORRECTED DURING TASK 10 IMPLEMENTATION (real, data-confirmed design
+    flaws in the original draft, caught by an implementer running the
+    negative-validation test rather than trusting the design on paper):
+    the original leftover_background_opaque_px had no way to distinguish
+    a correctly-protected bg-colored interior (--protect-outline-color
+    working as intended) from genuinely leftover unremoved background --
+    both look IDENTICAL from raw color alone (bg-colored in input, opaque
+    in output). And the original small_region_inflation match had no
+    pixel-overlap sanity check on top of its centroid-distance search, so
+    it could match a tiny input region to a large, unrelated, irregularly-
+    shaped background blob whose CENTROID (not its actual pixels)
+    coincidentally landed nearby -- confirmed as a real false positive on
+    jewelry.gif. Both are fixed below by having verify() call analyze()
+    on the input and reuse its own candidate-region detection (which
+    already knows how to tell "large enclosed likely-intentional region"
+    from "true background") -- this also adds protected_region_coverage,
+    a check for the actual failure mode the negative-validation test was
+    exercising (a region that should have stayed protected but didn't),
+    which nothing in the original design could see at all.
+    """
+    in_rgb, _, in_durations = load_gif_rgba_frames(input_path)
+    out_rgb, out_alpha, _ = load_gif_rgba_frames(output_path)
+
+    report = {'input_path': input_path, 'output_path': output_path}
+
+    if in_rgb[0].shape != out_rgb[0].shape:
+        report['dimensions_match'] = False
+        ih, iw = in_rgb[0].shape[:2]
+        oh, ow = out_rgb[0].shape[:2]
+        report['input_dims'] = [iw, ih]
+        report['output_dims'] = [ow, oh]
+        report['note'] = ('Input/output canvas size differs (crop/resize likely used) -- '
+                           'pixel-position checks are skipped; only the timing check ran.')
+        report['timing'] = describe_written_timing(output_path, in_durations)
+        return report
+
+    report['dimensions_match'] = True
+    n = min(len(in_rgb), len(out_rgb))
+    bg_rgb = detect_bg_color(in_rgb[0], warn=False)
+
+    # Reuse analyze()'s own candidate-region detection so the checks below
+    # can tell "background-colored input pixel that's a legitimate
+    # protected interior" from "background-colored input pixel that's
+    # really just background" -- see the docstring above for why this is
+    # necessary, not optional polish.
+    input_analysis = analyze(input_path, tolerance=tolerance)
+    protected_regions = [r for r in input_analysis['candidate_regions']
+                          if r['likely_intentional_design']]
+    H, W = in_rgb[0].shape[:2]
+    candidate_mask = np.zeros((H, W), dtype=bool)
+    for r in protected_regions:
+        x0, y0, x1, y1 = r['bbox_xyxy']
+        candidate_mask[y0:y1 + 1, x0:x1 + 1] = True
+
+    leftover_bg_counts = []
+    fringe_distances = []
+    for i in range(n):
+        bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
+        still_opaque = bg_mask & (out_alpha[i] > 0) & ~candidate_mask
+        leftover_bg_counts.append(int(still_opaque.sum()))
+
+        edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=2) & (out_alpha[i] > 0)
+        if edge_ring.any():
+            ring_dist = np.linalg.norm(
+                out_rgb[i][edge_ring].astype(float) - np.array(bg_rgb, dtype=float), axis=-1)
+            fringe_distances.append(float(ring_dist.mean()))
+
+    report['leftover_background_opaque_px'] = {
+        'max_per_frame': max(leftover_bg_counts) if leftover_bg_counts else 0,
+        'worst_frame_index': int(np.argmax(leftover_bg_counts)) if leftover_bg_counts else None,
+        'total_frames_with_any': sum(1 for c in leftover_bg_counts if c > 0),
+    }
+    report['edge_fringe_check'] = {
+        'mean_edge_ring_distance_from_bg': round(float(np.mean(fringe_distances)), 1) if fringe_distances else None,
+        'looks_fringed': bool(fringe_distances and np.mean(fringe_distances) < tolerance),
+    }
+
+    # Protected-region coverage: the opposite failure direction from
+    # leftover background -- a region analyze() flagged as likely
+    # intentional design (high enclosure_ratio) that DIDN'T stay opaque in
+    # the output, e.g. --protect-outline-color was omitted or used the
+    # wrong color. Checks mean opacity fraction within the region's own
+    # bbox across every frame.
+    protected_coverage = []
+    for r in protected_regions:
+        x0, y0, x1, y1 = r['bbox_xyxy']
+        opacities = []
+        for i in range(n):
+            region_alpha = out_alpha[i][y0:y1 + 1, x0:x1 + 1]
+            if region_alpha.size:
+                opacities.append(float((region_alpha > 0).mean()))
+        mean_opacity = sum(opacities) / len(opacities) if opacities else 0.0
+        protected_coverage.append({
+            'region_id': r['id'],
+            'mean_opacity_fraction': round(mean_opacity, 3),
+            'looks_unprotected': mean_opacity < 0.5,
+        })
+    report['protected_region_coverage'] = protected_coverage
+
+    # Small-region inflation: match each input small removed region to its
+    # nearest output alpha==0 region by CENTROID within a size-scaled search
+    # radius, THEN require actual pixel overlap with a small, FIXED (not
+    # size-scaled) dilation of the input region as a sanity gate. Centroid-
+    # only matching was tried first and confirmed to false-positive on an
+    # irregularly-shaped/annular background component whose centroid landed
+    # near a small input region's centroid despite having no real pixels
+    # nearby -- the pixel-overlap gate rejects that kind of coincidental
+    # match while still being far more conservative than the ORIGINAL
+    # mistake this whole check exists to avoid (an 8px blanket dilation of
+    # the source region used as the primary, unscoped search mechanism,
+    # tried by hand earlier in this project and confirmed to leak into
+    # unrelated background, misreporting a 1px region as 121px). Here the
+    # dilation is only a secondary sanity check on an already
+    # centroid-and-radius-scoped candidate, not the search mechanism itself.
+    struct = np.ones((3, 3), dtype=bool)
+    inflated = []
+    step = max(1, n // 20)
+    for i in range(0, n, step):
+        in_removed = color_mask(in_rgb[i], bg_rgb, tolerance)
+        in_labeled, in_num = ndimage.label(in_removed, structure=struct)
+        if in_num == 0:
+            continue
+        in_sizes = ndimage.sum(in_removed, in_labeled, range(1, in_num + 1))
+        in_largest = int(np.argmax(in_sizes)) + 1
+
+        out_removed = (out_alpha[i] == 0)
+        out_labeled, out_num = ndimage.label(out_removed, structure=struct)
+        if out_num == 0:
+            continue
+        out_sizes = ndimage.sum(out_removed, out_labeled, range(1, out_num + 1))
+        out_centroids = ndimage.center_of_mass(out_removed, out_labeled, range(1, out_num + 1))
+
+        for lab in range(1, in_num + 1):
+            if lab == in_largest or in_sizes[lab - 1] < 2:
+                continue
+            comp = in_labeled == lab
+            cy, cx = ndimage.center_of_mass(comp)
+            search_r = max(8.0, (in_sizes[lab - 1] ** 0.5) * 2)
+            comp_dilated = ndimage.binary_dilation(comp, iterations=10)
+            best = None
+            for oc_idx, (ocy, ocx) in enumerate(out_centroids):
+                d = ((ocy - cy) ** 2 + (ocx - cx) ** 2) ** 0.5
+                if d > search_r or (best is not None and d >= best[0]):
+                    continue
+                out_comp_mask = (out_labeled == (oc_idx + 1))
+                if (out_comp_mask & comp_dilated).any():
+                    best = (d, oc_idx)
+            if best is not None:
+                out_size = int(out_sizes[best[1]])
+                in_size = int(in_sizes[lab - 1])
+                if out_size > in_size * 3 and out_size - in_size > 15:
+                    inflated.append({
+                        'frame_index': i,
+                        'input_size_px': in_size,
+                        'output_size_px': out_size,
+                        'inflation_factor': round(out_size / max(in_size, 1), 1),
+                    })
+
+    report['small_region_inflation'] = {'flagged': inflated[:10], 'flagged_count': len(inflated)}
+    report['timing'] = describe_written_timing(output_path, in_durations)
+    return report
+
+
 def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
                           colors=255, quantizer='pil'):
     """
@@ -2894,6 +3088,12 @@ def main():
                     help='Do not process the GIF. Run --analyze internally and print a '
                          'JSON report with a suggested command line and the evidence '
                          'behind each recommended flag.')
+    p.add_argument('--verify', action='store_true',
+                    help='Do not process the GIF. Instead compare input_gif (the original '
+                         'source) against output_gif (an already-produced result) and print '
+                         'a JSON report of the mechanical verification checks: leftover '
+                         'background, edge fringe, small removed-region inflation, and '
+                         'duration/frame-count.')
     args = p.parse_args()
 
     if args.analyze:
@@ -2908,6 +3108,14 @@ def main():
             p.error('input_gif is required when using --recommend')
         rec = recommend(args.input_gif)
         print(json.dumps(rec, indent=2))
+        return
+
+    if args.verify:
+        if not args.input_gif or not args.output_gif:
+            p.error('both input_gif and output_gif are required when using --verify '
+                    '(input_gif = original source, output_gif = the file to verify)')
+        report = verify(args.input_gif, args.output_gif)
+        print(json.dumps(report, indent=2))
         return
 
     if args.batch:
