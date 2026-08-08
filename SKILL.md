@@ -5,9 +5,24 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v3.3.1** (previous: v3.3.0, v3.2.0, v3.1.0, v3.0.0, v2.2.2,
-v2.2.1, v2.2, v2.1, v2, v1). This is a **correction**: pure prose compression
-against v3.3.0's own new fields, no behavior change. Every manual-check
+**Skill version: v3.3.2** (previous: v3.3.1, v3.3.0, v3.2.0, v3.1.0, v3.0.0,
+v2.2.2, v2.2.1, v2.2, v2.1, v2, v1). This is a **correction**: one new
+confirmed finding documented (`references/lessons.md` §14) from a real job
+(`military-tag.gif`) — punching a small interior hole (a pinhole) while
+protecting a same-colour, overlapping-size-range animated design element
+(a twinkling star) is unreliable via `--keep-bg-blob-if-near`'s colour-
+adjacency alone (an antialiased boundary can coincidentally match a keep
+colour, and more dilation doesn't fix a match already found at low
+dilation); `--hole-size-range`/`--hole-max-aspect`, verified across every
+frame rather than sampled, is the robust discriminator when one blob is
+physically constant and the other animates. Also notes a real
+`--verify` `protected_region_coverage` false-positive on a legitimately
+punched sub-hole within a translating candidate region (tracked in
+`gif-deferred-list.md`, not fixed here). No script or flag behavior changed.
+
+**v3.3.1** (previous entry, kept for context) was a **correction**: pure
+prose compression against v3.3.0's own new fields, no behavior change. Every
+manual-check
 paragraph in "Animated/rotating content," the erosion-exempt and fade-detect
 sections, and the Verification checklist that Phase 1 (v3.3.0) made
 mechanically checkable now points at the actual `--analyze`/`--recommend`/

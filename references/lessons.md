@@ -26,6 +26,7 @@ scratch risks retrying an approach already known to fail.
 11. [Small removed regions get inflated by edge-cleanup erosion: a second animated-icon case, five rounds](#11-small-removed-regions-get-inflated-by-edge-cleanup-erosion-a-second-animated-icon-case-five-rounds)
 12. [Art that fades toward the background colour renders as a dither mesh](#12-art-that-fades-toward-the-background-colour-renders-as-a-dither-mesh)
 13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
+14. [Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element](#14-punching-one-same-colour-interior-hole-while-protecting-a-same-colour-same-size-range-animated-design-element)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -43,6 +44,7 @@ scratch risks retrying an approach already known to fail.
 | A small removed region looks like an inflated speckle | §11 |
 | A grid/mesh pattern over what should be solid color | §12 (interior fade) vs §10 Bug 5 (edge over flat paint — different trigger, see §12's own note) |
 | Lower output frame count than input | §13 |
+| A real cutout/hole must stay transparent but a same-colour design element keeps getting damaged (or the hole won't punch at all) | §14 |
 
 ---
 
@@ -817,3 +819,79 @@ tool that reports on its own output must read that output back; restating the in
 it's a claim wearing a check's clothing, and it is more dangerous than no message at all because it
 actively discourages looking. Worth grepping for the same shape anywhere else a message asserts a
 property of a written file.
+
+---
+
+## 14. Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element
+
+**Found 2026-08-07** on `military-tag.gif` (126-frame dog-tag icon), delivered by a user who had
+already gotten 4 incorrect/ugly attempts from a live claude.ai v3.1.0 session on the same file.
+
+### The symptom
+The tag has a pure-white 4-point star (a real design element, must stay opaque) and a small round
+pinhole where the ball-chain threads through (must become transparent) — both near-white, both
+enclosed by the tag's navy outline, both non-border-touching. `--recommend`'s own suggested
+`--protect-outline-color 002864` reported the region's `outline_enclosure_all_frames` at only
+**47% enclosed across all 126 frames** (own evidence text: *"outline 002864 verified across 126
+frames (47% enclosed)"*) — a real, honest signal that this asset's outline color isn't reliably
+enclosing, not something to trust blindly. Root cause: the star **twinkles** (its rendered shape
+changes size/aspect every frame, from ~75px to ~6000px across the sample), so a single fixed-frame
+`comp_footprint` containment check misses most frames.
+
+### First attempt: `--tumble-safe` (sidesteps outline reliability) + `--keep-bg-blob-if-near` with a decoy colour
+`--tumble-safe`'s default (protect everything except the single largest bg-colored component, computed
+fresh per frame) sidesteps the outline-reliability problem entirely — correct call, confirmed by full
+127-frame verification later. But `--keep-bg-blob-if-near 000000` (a colour picked to match nothing,
+intending "hole-size-range alone decides") punched holes through the star's own antialiased boundary
+in the frames where the twinkle happens to fragment it into pieces inside the default
+`--hole-size-range 50,2000` — visible in a `--preview` contact sheet as a jagged bite out of the star
+(looked like solid dark fill only because it was composited over a dark preview background; it was
+actually alpha=0, confirmed by checking the raw alpha array directly rather than trusting the visual).
+
+### Second attempt: real design colours as the keep-target — also wrong, in the other direction
+Passing the tag's own body/sheen colours (`93b2f4,d1dbfc`) as `--keep-bg-blob-if-near` stopped the
+star damage, but now punched **zero** holes in **all 126 frames** — the pinhole itself got kept.
+Traced with the real `build_tumble_safe_protected_mask` function directly (not re-derived by hand):
+the pinhole's antialiased boundary (white → navy) passes, for a handful of pixels, within
+`near_tolerance`(40) of `d1dbfc` purely by coincidence (measured min distance 19.5) — and the match
+is an `.any()` over the whole dilated ring, so one coincidental pixel flips the entire component's
+verdict. More dilation doesn't fix this: the boundary pixels closest to the shape are included at
+every dilation radius once they first appear.
+
+### The fix: separate the two by geometry, not colour
+Measured the pinhole's real per-frame size/aspect across all 126 frames: **423–466px, aspect
+1.00–1.04 — a near-perfect circle, essentially constant**, because the physical hole doesn't change
+even though the tag translates and swings. The twinkling star's fragments, sampled the same way,
+range 75–6070px, aspect 1.0–2.69, and only ever coincidentally overlap the pinhole's size band
+without also matching its aspect. `--hole-size-range 400,480 --hole-max-aspect 1.3` (still paired
+with a `--keep-bg-blob-if-near` decoy colour, required only because the code path is gated on that
+flag being present) admits **exactly one component per frame across all 126**, and it's the pinhole
+every time — confirmed by brute-force scanning every frame, not sampling.
+
+### Verification note: `--verify`'s `protected_region_coverage` false-positives here
+`--verify` correctly skipped its pixel checks given `--crop` changed the canvas size (its own
+documented behavior), so verification ran against an uncropped intermediate. On that,
+`leftover_background_opaque_px`, `edge_fringe_check`, `small_region_inflation`, and `timing` all came
+back clean — but `protected_region_coverage` flagged the merged star+pinhole candidate region as
+`looks_unprotected: true` (46.2% opacity). Confirmed as a false positive by two independent, more
+precise checks: (1) restricting the same opacity measurement to each frame's own correctly-identified
+star component (excluding the pinhole) still isn't clean-looking from the bbox math, but (2) directly
+checking "is every star-component pixel opaque, per frame, using that frame's own true star mask" —
+the unambiguous test — came back **100% opaque in all 126 frames, zero exceptions**. The false
+positive traces to the same root cause as `outline_enclosure_all_frames`'s low ratio and the known
+`band_interior_regions` grouping gap (see `gif-deferred-list.md`): `analyze()`'s candidate-region
+detection ties a region to one fixed-frame bbox/footprint, which a translating design with a legitimate
+interior sub-hole breaks. Not fixed here (would need `verify()` to know about deliberately-carved
+sub-holes, which it currently cannot express) — noted as a real, novel gap for the deferred list rather
+than left silently unmentioned.
+
+### Generalizable takeaway
+**When a "keep vs. remove" distinction is needed between two same-colour blobs, ask which axis
+actually separates them before reaching for `--keep-bg-blob-if-near`'s colour-adjacency mechanism.**
+Colour-adjacency is fragile across an antialiased boundary — a coincidental match on a handful of
+transition pixels is enough to flip an entire component, in either direction, and more dilation does
+not fix a coincidental match found at low dilation. If one blob is physically constant (a real cutout)
+and the other is animated (breathing/twinkling/pulsing), size+aspect over the FULL frame range is
+usually the more robust discriminator — verify it by scanning every frame's actual measured values,
+never a handful of samples, since the whole failure mode here is an animated element occasionally
+drifting into the other's range.

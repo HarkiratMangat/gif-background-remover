@@ -90,6 +90,34 @@ a large function's internals without regressing its existing, already-reviewed c
 care, and the byte-identical/behavior-preservation discipline this whole project runs on) →
 `Sonnet5-XHigh`.
 
+### `[P3 · M · Sonnet5-High]` `--verify`'s `protected_region_coverage` false-positives on a legitimately punched sub-hole inside a translating candidate region
+**Added:** 2026-08-07, from `military-tag.gif` production job (see `references/lessons.md` §14 for
+the full case).
+
+**The problem:** `protected_region_coverage` measures opacity for background-colored-in-input pixels
+within a candidate region's bbox. Two things break this on a real asset: (1) the region's footprint
+is tied to one fixed reference frame, but if the design translates/swings across the animation, real
+outer background can fall inside that same fixed bbox in other frames and get correctly removed --
+inflating the "not opaque" count with pixels that were never really part of the region; (2) if a
+verified region legitimately contains its own interior sub-hole (punched via
+`--hole-size-range`/`--hole-max-aspect`, not `--protect-outline-color`), the hole's pixels are
+*supposed* to go transparent, but the check has no concept of an intentional sub-hole and just counts
+it as unprotected coverage. Confirmed false positive: flagged `looks_unprotected: true` at 46.2%
+opacity on an output independently verified (via a frame-by-frame true-component check, not the bbox
+metric) to have the protected element at 100% opacity in all 126 frames.
+
+**Why not fixed now:** same root architectural cause as the `band_interior_regions` gap above
+(candidate-region detection ties to one fixed-frame bbox/footprint) -- a real fix needs `verify()` to
+either re-derive the region's footprint per-frame the way `outline_enclosure_all_frames` does, or
+accept an explicit "known intentional sub-hole" input. Genuinely a design question, not a quick patch,
+and lower priority than the two items above since it only produces a misleading warning (evidence
+text), never a wrong processing command.
+
+**Model pick reasoning:** premise Medium (root cause understood, but the right API shape for
+"this region has an intentional sub-hole" isn't obvious yet) · deliberation Medium (touches
+`verify()`'s existing, reviewed logic, but is more contained than the `band_interior_regions`
+reorder) -> `Sonnet5-High`.
+
 ---
 
 ## ✅ Considered and NOT fixed — a real decision, not an oversight
