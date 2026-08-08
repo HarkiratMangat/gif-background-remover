@@ -463,10 +463,13 @@ its iteration is obvious rather than silently overwriting: first attempt
 Independent from the skill's own version number above.
 
 ## Verification (always do this before delivering the result)
-Run `--verify <input.gif> <output.gif>` first — it covers the mechanical half
-of the checks below (leftover background, protected-region coverage, edge
-fringe, small-region inflation, duration/frame-count) across every frame
-automatically. It does NOT replace the visual checks (soft-vs-jagged edges, a
+Run `--verify` first — it covers the mechanical half of the checks below
+(leftover background, protected-region coverage, edge fringe, small-region
+inflation, duration/frame-count) across every frame automatically:
+```
+python scripts/remove_gif_background.py <input.gif> <output.gif> --verify
+```
+It does NOT replace the visual checks (soft-vs-jagged edges, a
 `--protect-region` bulge following the art's own silhouette) — those still
 need a human/agent's eyes, below.
 

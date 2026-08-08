@@ -313,6 +313,18 @@ def analyze(input_path, max_samples=40, tolerance=15):
     OCCASIONALLY (likely incidental — an animated element temporarily
     cutting off a pocket of real background). Returns a JSON-serializable
     report; does not modify anything.
+
+    Also runs three whole-GIF checks independent of any specific candidate
+    region, each a top-level field on the returned report: `tumble_risk`
+    (does the foreground ever graze the canvas edge, motivating
+    --tumble-safe), `band_interior_regions` (solid design tints or baked-in
+    fades sitting inside the feathering transition band, motivating
+    --protect-band-only or --dither-mode none), and `small_removed_regions`
+    (a size histogram of small removed regions, motivating
+    --erosion-exempt-max-size). See each check's own function docstring
+    (measure_bg_component_margin, detect_band_interior_regions,
+    collect_small_removed_region_sizes) for what real bug each one exists
+    to catch.
     """
     im = Image.open(input_path)
     n_frames = im.n_frames
@@ -327,13 +339,26 @@ def analyze(input_path, max_samples=40, tolerance=15):
         im.seek(i)
         all_rgb_frames.append(np.array(im.convert('RGB')))
 
+    # Tumble margin and the small-region histogram both scan every frame
+    # and both start from the identical color_mask(rgb, bg_rgb, tolerance)
+    # -- computed once per frame and shared, instead of each check
+    # recomputing it independently. Confirmed via the final whole-branch
+    # review that scanning every frame (necessary, see each check's own
+    # docstring for the real false negatives it fixes) made --analyze
+    # measurably slower; this removes one of the concrete redundant
+    # per-frame costs without reverting to sampling, which would reopen
+    # the exact false-negative bugs these checks exist to close.
     worst_margin = None
     worst_margin_frame = None
+    all_small_sizes = []
     for i in range(n_frames):
-        m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance)
+        frame_bg_mask = color_mask(all_rgb_frames[i], bg_rgb, tolerance)
+        m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
             worst_margin = m['margin_ratio']
             worst_margin_frame = i
+        all_small_sizes.extend(collect_small_removed_region_sizes(
+            all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask))
     tumble_risk = {
         'worst_margin_ratio': worst_margin,
         'worst_margin_frame_index': worst_margin_frame,
@@ -413,12 +438,18 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'distance_span_across_frames': dist_span,
             'frames_seen': len(g['distances']),
             'classification': 'gradient_fade' if is_fade else 'solid_tint',
+            # band_only_width is the real numeric field callers should read;
+            # recommendation is human-readable text for evidence display
+            # only -- confirmed during the final whole-branch review that
+            # parsing the width back out of this string
+            # (int(recommendation.split()[-1])) was a fragile pattern with
+            # a duplicated magic constant. 4 = edge_margin_px (3, this
+            # function's own default) + 1, matching build_band_only_
+            # removal_mask's own docstring guidance that the ring should be
+            # at least as wide as the real antialiasing fringe.
+            'band_only_width': None if is_fade else 4,
             'recommendation': '--dither-mode none' if is_fade else '--protect-band-only 4',
         })
-
-    all_small_sizes = []
-    for i in range(n_frames):
-        all_small_sizes.extend(collect_small_removed_region_sizes(all_rgb_frames[i], bg_rgb, tolerance))
 
     small_removed_regions = {
         'sizes_sample': sorted(all_small_sizes, reverse=True)[:20],
@@ -595,7 +626,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
     }
 
 
-def recommend(input_path):
+def recommend(input_path, tolerance=15):
     """
     Run analyze() and translate its report into a suggested command line
     plus the evidence behind each flag, per the decision tree SKILL.md's
@@ -604,7 +635,7 @@ def recommend(input_path):
     across them, pick flags" down to "read a recommendation, sanity-check
     it, confirm with the user."
     """
-    report = analyze(input_path)
+    report = analyze(input_path, tolerance=tolerance)
     evidence = []
     region_notes = []
     flags = []
@@ -674,7 +705,7 @@ def recommend(input_path):
                     f"--protect-outline-color for this region.")
 
     if outline_colors:
-        flags.append(f"--protect-outline-color {','.join(outline_colors)}")
+        flags.append(f"--protect-outline-color {','.join(dict.fromkeys(outline_colors))}")
 
     band_regions = report.get('band_interior_regions', [])
     if any(r['classification'] == 'gradient_fade' for r in band_regions):
@@ -683,7 +714,7 @@ def recommend(input_path):
             "Band-interior region(s) show a gradient-fade signature (color distance from "
             "background varies across the frames it appears in) -- recommending "
             "--dither-mode none instead of the default Bayer dither.")
-    tint_widths = [int(r['recommendation'].split()[-1]) for r in band_regions
+    tint_widths = [r['band_only_width'] for r in band_regions
                    if r['classification'] == 'solid_tint']
     if tint_widths and not outline_colors:
         flags.append(f'--protect-band-only {max(tint_widths)}')
@@ -1080,7 +1111,7 @@ def largest_bg_component_mask(rgb, bg_rgb, tolerance):
     return labeled == largest_label
 
 
-def measure_bg_component_margin(rgb, bg_rgb, tolerance):
+def measure_bg_component_margin(rgb, bg_rgb, tolerance, mask=None):
     """
     Per-frame safety check for the assumption largest_bg_component_mask relies
     on (see its docstring): true background should be overwhelmingly larger
@@ -1103,8 +1134,17 @@ def measure_bg_component_margin(rgb, bg_rgb, tolerance):
     but directly analogous to the false positive collect_small_removed_
     region_sizes needed its own size ceiling to avoid, see that function's
     docstring) during the final whole-branch review of this feature.
+
+    Accepts an optional pre-computed `mask` (color_mask(rgb, bg_rgb,
+    tolerance)) so a caller iterating every frame for multiple checks
+    (analyze() does, for this and collect_small_removed_region_sizes) can
+    compute it once and share it -- confirmed via the final whole-branch
+    review that escalating these checks from a 40-frame sample to every
+    frame (needed to fix real false negatives, see analyze()'s own call
+    sites) made --analyze measurably slower, and this redundant per-frame
+    color_mask call was one concrete, safe-to-remove piece of that cost.
     """
-    mask = color_mask(rgb, bg_rgb, tolerance)
+    mask = color_mask(rgb, bg_rgb, tolerance) if mask is None else mask
     labeled, num = ndimage.label(mask, structure=STRUCTURE)
     if num == 0:
         return {'largest_px': 0, 'second_largest_px': 0, 'margin_ratio': None}
@@ -1588,9 +1628,55 @@ def load_gif_rgba_frames(path):
         im.seek(i)
         durations.append(im.info.get('duration', 100))
         arr = np.array(im.convert('RGBA'))
-        rgb_frames.append(arr[:, :, :3])
-        alpha_frames.append(arr[:, :, 3])
+        # .copy(): a bare slice is a VIEW into arr, so without copying,
+        # every element of rgb_frames/alpha_frames keeps its own frame's
+        # full RGBA buffer alive for the whole call (verify() holds three
+        # complete GIF decodes at once -- input, output, and the alpha
+        # channel from each -- so this is a real, not theoretical, memory
+        # cost on a large animation). Copying lets the RGBA array itself be
+        # garbage collected once split.
+        rgb_frames.append(arr[:, :, :3].copy())
+        alpha_frames.append(arr[:, :, 3].copy())
     return rgb_frames, alpha_frames, durations
+
+
+def align_input_to_output_frames(in_durations, out_durations):
+    """
+    Map each output frame index to the input frame index it actually
+    corresponds to, accounting for Pillow's GIF-encoder frame coalescing:
+    consecutive frames that come out byte-identical after quantization get
+    merged, with their delays folded into the one frame the encoder keeps
+    (see describe_written_timing's docstring / references/lessons.md SS13
+    for the real confirmed case this handles -- 170 frames in, 168 out).
+    Pillow keeps the FIRST frame of each identical run and extends its own
+    delay to cover the run, so each output frame maps to the first input
+    frame of the run that collapsed into it.
+
+    Matches runs by accumulating input durations until they sum to each
+    output duration in turn, in order -- both duration lists are exact
+    integers read from real GIF frame data, so this is an exact match, not
+    a fuzzy one. Returns a list the same length as out_durations (input
+    frame index per output frame), or None if the durations don't
+    reconcile at all (a real timing defect describe_written_timing already
+    flags separately -- this function isn't the place to also report that).
+    """
+    mapping = []
+    in_idx = 0
+    for out_dur in out_durations:
+        if in_idx >= len(in_durations):
+            return None
+        start_idx = in_idx
+        acc = in_durations[in_idx]
+        in_idx += 1
+        while acc < out_dur and in_idx < len(in_durations):
+            acc += in_durations[in_idx]
+            in_idx += 1
+        if acc != out_dur:
+            return None
+        mapping.append(start_idx)
+    if in_idx != len(in_durations):
+        return None
+    return mapping
 
 
 def verify(input_path, output_path, tolerance=15):
@@ -1625,7 +1711,7 @@ def verify(input_path, output_path, tolerance=15):
     which nothing in the original design could see at all.
     """
     in_rgb, _, in_durations = load_gif_rgba_frames(input_path)
-    out_rgb, out_alpha, _ = load_gif_rgba_frames(output_path)
+    out_rgb, out_alpha, out_durations = load_gif_rgba_frames(output_path)
 
     report = {'input_path': input_path, 'output_path': output_path}
 
@@ -1641,7 +1727,26 @@ def verify(input_path, output_path, tolerance=15):
         return report
 
     report['dimensions_match'] = True
-    n = min(len(in_rgb), len(out_rgb))
+
+    # Align input frames to output frames by DURATION, not raw index --
+    # the encoder can coalesce consecutive identical frames (real confirmed
+    # case: 170 in, 168 out, see describe_written_timing's docstring), and
+    # naive index pairing would silently compare mismatched animation
+    # frames past the first coalesced run. Rebinding in_rgb to the aligned
+    # list means every loop below that already indexes in_rgb[i]/out_*[i]
+    # for i in range(n) is correct without further changes.
+    mapping = align_input_to_output_frames(in_durations, out_durations)
+    if mapping is not None:
+        in_rgb = [in_rgb[j] for j in mapping]
+        report['frame_alignment'] = 'exact'
+    else:
+        m = min(len(in_rgb), len(out_rgb))
+        in_rgb, out_rgb, out_alpha = in_rgb[:m], out_rgb[:m], out_alpha[:m]
+        report['frame_alignment'] = ('index_fallback -- durations did not reconcile into a '
+                                      'clean coalescing pattern; comparing by raw index, '
+                                      'which may compare mismatched frames past any divergence')
+
+    n = len(in_rgb)
     bg_rgb = detect_bg_color(in_rgb[0], warn=False)
 
     # Reuse analyze()'s own candidate-region detection so the checks below
@@ -1653,10 +1758,16 @@ def verify(input_path, output_path, tolerance=15):
     protected_regions = [r for r in input_analysis['candidate_regions']
                           if r['likely_intentional_design']]
     H, W = in_rgb[0].shape[:2]
-    candidate_mask = np.zeros((H, W), dtype=bool)
+    # A modest bbox union, dilated a few px, scoping WHERE a real candidate
+    # region could be -- used only to restrict the per-frame enclosed-mask
+    # computation below to known candidate areas, not as the exclusion mask
+    # itself (see the fix note just below for why a bare rectangle isn't
+    # precise enough on its own).
+    bbox_scope = np.zeros((H, W), dtype=bool)
     for r in protected_regions:
         x0, y0, x1, y1 = r['bbox_xyxy']
-        candidate_mask[y0:y1 + 1, x0:x1 + 1] = True
+        bbox_scope[y0:y1 + 1, x0:x1 + 1] = True
+    bbox_scope = ndimage.binary_dilation(bbox_scope, iterations=5) if protected_regions else bbox_scope
 
     leftover_bg_counts = []
     fringed_pixel_fractions = []
@@ -1664,7 +1775,23 @@ def verify(input_path, output_path, tolerance=15):
     for i in range(n):
         bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
         bg_masks.append(bg_mask)
-        still_opaque = bg_mask & (out_alpha[i] > 0) & ~candidate_mask
+
+        # Real per-frame enclosed-region footprint, not a static bbox
+        # rectangle -- confirmed during the final whole-branch review that
+        # a bare rectangle blanks out its whole area regardless of the
+        # actual (often irregular) candidate shape, which could mask a
+        # genuine leftover-background bug that happens to fall in the
+        # rectangle's corners. Same border-touching-exclusion technique
+        # analyze() itself uses to find these regions in the first place,
+        # scoped to bbox_scope so a coincidentally enclosed area elsewhere
+        # in THIS frame that has nothing to do with a known candidate
+        # region isn't also swept in.
+        labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
+        border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
+        border_labels.discard(0)
+        enclosed = bg_mask & ~np.isin(labeled, list(border_labels)) & bbox_scope
+
+        still_opaque = bg_mask & (out_alpha[i] > 0) & ~enclosed
         leftover_bg_counts.append(int(still_opaque.sum()))
 
         # Fraction of the edge ring still close to the background color, not
@@ -1991,7 +2118,7 @@ def find_tiny_removed_regions(alpha_frames, max_size):
     return tiny_masks
 
 
-def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_size=500):
+def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_size=500, mask=None):
     """
     Single-frame version of find_tiny_removed_regions's labeling pattern,
     but on a raw background color_mask (analyze() has no processed alpha
@@ -2017,8 +2144,12 @@ def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_siz
     both sides for the fixtures this was verified against, but a genuinely
     larger deliberate "small" removed region on some future asset would
     need this raised.
+
+    Accepts an optional pre-computed `mask` -- see measure_bg_component_
+    margin's docstring for why (shared per-frame computation in analyze(),
+    a real cost fix, not premature optimization).
     """
-    removed = color_mask(rgb, bg_rgb, tolerance)
+    removed = color_mask(rgb, bg_rgb, tolerance) if mask is None else mask
     struct = np.ones((3, 3), dtype=bool)
     labeled, num = ndimage.label(removed, structure=struct)
     if num == 0:
@@ -3184,21 +3315,24 @@ def main():
                     help='Do not process the GIF. Instead compare input_gif (the original '
                          'source) against output_gif (an already-produced result) and print '
                          'a JSON report of the mechanical verification checks: leftover '
-                         'background, edge fringe, small removed-region inflation, and '
-                         'duration/frame-count.')
+                         'background, protected-region coverage, edge fringe, small '
+                         'removed-region inflation, and duration/frame-count.')
     args = p.parse_args()
+
+    if sum([args.analyze, args.recommend, args.verify]) > 1:
+        p.error('Use only one of --analyze, --recommend, or --verify at a time')
 
     if args.analyze:
         if not args.input_gif:
             p.error('input_gif is required when using --analyze')
-        report = analyze(args.input_gif)
+        report = analyze(args.input_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
         return
 
     if args.recommend:
         if not args.input_gif:
             p.error('input_gif is required when using --recommend')
-        rec = recommend(args.input_gif)
+        rec = recommend(args.input_gif, tolerance=args.tolerance)
         print(json.dumps(rec, indent=2))
         return
 
@@ -3206,7 +3340,7 @@ def main():
         if not args.input_gif or not args.output_gif:
             p.error('both input_gif and output_gif are required when using --verify '
                     '(input_gif = original source, output_gif = the file to verify)')
-        report = verify(args.input_gif, args.output_gif)
+        report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
         return
 
