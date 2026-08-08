@@ -326,10 +326,75 @@ def analyze(input_path, max_samples=40, tolerance=15):
         im.seek(i)
         all_rgb_frames.append(np.array(im.convert('RGB')))
 
+    worst_margin = None
+    worst_margin_frame = None
+    for i in range(n_frames):
+        m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance)
+        if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
+            worst_margin = m['margin_ratio']
+            worst_margin_frame = i
+    tumble_risk = {
+        'worst_margin_ratio': worst_margin,
+        'worst_margin_frame_index': worst_margin_frame,
+        'likely_tumble_risk': worst_margin is not None and worst_margin < 3.0,
+    }
+
     if n_frames <= max_samples:
         sample_idxs = list(range(n_frames))
     else:
         sample_idxs = sorted(set(np.linspace(0, n_frames - 1, max_samples).astype(int).tolist()))
+
+    # Group detections of the same spatial region across frames (by bbox-
+    # center proximity) so classification can use CROSS-FRAME distance
+    # variance, not within-frame variance -- see detect_band_interior_
+    # regions's docstring for why within-frame spread can't see a real fade.
+    band_interior_groups = []
+    for i in range(n_frames):
+        for region in detect_band_interior_regions(all_rgb_frames[i], bg_rgb, tolerance):
+            cx_r = (region['bbox_xyxy'][0] + region['bbox_xyxy'][2]) / 2
+            cy_r = (region['bbox_xyxy'][1] + region['bbox_xyxy'][3]) / 2
+            grp = next((g for g in band_interior_groups
+                        if abs((g['bbox_xyxy'][0] + g['bbox_xyxy'][2]) / 2 - cx_r) < 15
+                        and abs((g['bbox_xyxy'][1] + g['bbox_xyxy'][3]) / 2 - cy_r) < 15), None)
+            if grp is None:
+                band_interior_groups.append({
+                    'pixel_count': region['pixel_count'],
+                    'bbox_xyxy': region['bbox_xyxy'],
+                    'mean_color': region['mean_color'],
+                    'distances': [region['mean_distance_from_bg']],
+                })
+            else:
+                grp['distances'].append(region['mean_distance_from_bg'])
+                if region['pixel_count'] > grp['pixel_count']:
+                    grp['pixel_count'] = region['pixel_count']
+                    grp['bbox_xyxy'] = region['bbox_xyxy']
+                    grp['mean_color'] = region['mean_color']
+
+    band_interior_regions = []
+    for g in band_interior_groups:
+        dist_span = round(max(g['distances']) - min(g['distances']), 1)
+        is_fade = dist_span >= 6.0
+        band_interior_regions.append({
+            'pixel_count': g['pixel_count'],
+            'bbox_xyxy': g['bbox_xyxy'],
+            'mean_color': g['mean_color'],
+            'mean_distance_from_bg': round(sum(g['distances']) / len(g['distances']), 1),
+            'distance_span_across_frames': dist_span,
+            'frames_seen': len(g['distances']),
+            'classification': 'gradient_fade' if is_fade else 'solid_tint',
+            'recommendation': '--dither-mode none' if is_fade else '--protect-band-only 4',
+        })
+
+    all_small_sizes = []
+    for i in range(n_frames):
+        all_small_sizes.extend(collect_small_removed_region_sizes(all_rgb_frames[i], bg_rgb, tolerance))
+
+    small_removed_regions = {
+        'sizes_sample': sorted(all_small_sizes, reverse=True)[:20],
+        'count': len(all_small_sizes),
+        'max_small_region_px': max(all_small_sizes) if all_small_sizes else 0,
+        'suggested_erosion_exempt_max_size': int(max(all_small_sizes) * 1.1) + 1 if all_small_sizes else 0,
+    }
 
     union_mask = np.zeros((H, W), dtype=bool)
     rep_frame_for_color = {}  # remember a frame index/rgb to sample outline color later
@@ -426,6 +491,14 @@ def analyze(input_path, max_samples=40, tolerance=15):
         outline_color, outline_filled_area, outline_shape = find_verified_outline_color(
             true_footprint_frame_rgb, bg_rgb, true_footprint, tolerance)
 
+        outline_enclosure_all_frames = None
+        outline_background_leak = None
+        if outline_color is not None:
+            outline_enclosure_all_frames = verify_outline_enclosure_all_frames(
+                all_rgb_frames, outline_color, true_footprint)
+            outline_background_leak = detect_outline_background_leak(
+                all_rgb_frames, bg_rgb, tolerance, outline_color)
+
         # Circularity check: how well would a bounding CIRCLE (i.e.
         # --protect-region circle:...) approximate the true protected
         # shape? Measured as the IoU between the true shape (the verified
@@ -471,6 +544,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'likely_intentional_design': ratio >= 0.9,
             'candidate_outline_color': outline_color,
             'outline_color_verified': outline_color is not None,
+            'outline_enclosure_all_frames': outline_enclosure_all_frames,
+            'outline_background_leak': outline_background_leak,
             'circularity_ratio': round(circularity, 2),
             'circle_region_safe': circularity >= 0.85,
             'note': note,
@@ -482,6 +557,9 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'detected_bg_color': rgb_to_hex(bg_rgb),
         'source_has_pre_existing_transparency': 'transparency' in im.info,
         'edge_hardness': measure_edge_hardness(rgb0, bg_rgb, tolerance),
+        'tumble_risk': tumble_risk,
+        'band_interior_regions': band_interior_regions,
+        'small_removed_regions': small_removed_regions,
         'candidate_regions': results,
     }
 
@@ -555,6 +633,72 @@ def find_verified_outline_color(rgb, bg_rgb, comp_footprint, tolerance,
                 best_color, best_area, best_shape = rgb_to_hex(np.array(color)), area, filled
 
     return best_color, best_area, best_shape
+
+
+def verify_outline_enclosure_all_frames(all_rgb_frames, outline_hex, comp_footprint, outline_tolerance=40):
+    """
+    Re-run the same enclosure test find_verified_outline_color uses (build
+    the outline color's mask, binary_fill_holes it, check containment of
+    comp_footprint) across EVERY frame, not just the single first-sampled
+    frame outline_color_verified checks. Confirmed real gap this closes: a
+    color that binary_fill_holes-verifies on frame 0 can still fail to
+    enclose the region on other frames if the outline itself gets crossed by
+    another animated element (see build_protected_masks_robust's docstring
+    for the exact mechanism) -- exactly the scenario
+    detect_anomalous_frame_sizes exists to flag.
+    """
+    outline_rgb = hex_to_rgb(outline_hex)
+    sizes = []
+    containments = []
+    footprint_total = max(int(comp_footprint.sum()), 1)
+    for rgb in all_rgb_frames:
+        omask = color_mask(rgb, outline_rgb, outline_tolerance)
+        filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE) if omask.any() else omask
+        sizes.append(int(filled.sum()))
+        containments.append(float((comp_footprint & filled).sum()) / footprint_total)
+
+    bad_flags = detect_anomalous_frame_sizes(np.array(sizes))
+    frames_enclosed = sum(1 for c in containments if c >= 0.95)
+    anomalous = [i for i, b in enumerate(bad_flags) if b]
+    return {
+        'frames_checked': len(all_rgb_frames),
+        'frames_enclosed': frames_enclosed,
+        'enclosure_ratio_all_frames': round(frames_enclosed / max(len(all_rgb_frames), 1), 3),
+        'anomalous_frame_indices': anomalous[:20],
+        'anomalous_frame_count': len(anomalous),
+    }
+
+
+def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_hex, outline_tolerance=40):
+    """
+    Opposite failure direction from verify_outline_enclosure_all_frames: not
+    "does the outline fail to enclose the intended region" but "does the
+    outline's filled shape leak outward and swallow real background". This
+    happens when the outline isn't fully closed in some frame and
+    binary_fill_holes fills straight through the gap into the actual
+    background rather than stopping at the intended boundary. Flags any
+    frame where the filled shape overlaps the frame's own largest
+    background-colored component (the actual background, per
+    largest_bg_component_mask).
+    """
+    outline_rgb = hex_to_rgb(outline_hex)
+    max_leak = 0
+    leak_frame = None
+    for i, rgb in enumerate(all_rgb_frames):
+        omask = color_mask(rgb, outline_rgb, outline_tolerance)
+        if not omask.any():
+            continue
+        filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE)
+        core_bg = largest_bg_component_mask(rgb, bg_rgb, tolerance)
+        leaked = int((filled & core_bg).sum())
+        if leaked > max_leak:
+            max_leak = leaked
+            leak_frame = i
+    return {
+        'leaked_pixel_count': max_leak,
+        'leak_frame_index': leak_frame,
+        'over_protects_background': max_leak > 20,
+    }
 
 
 def circularity_iou(shape_mask, cx, cy, radius):
@@ -682,6 +826,52 @@ def estimate_alpha_and_defringe(rgb, bg_rgb, protected, tolerance, band_multipli
     return alpha, recolored.astype(np.uint8), band_mask
 
 
+def detect_band_interior_regions(rgb, bg_rgb, tolerance, band_multiplier=4.0, min_size=30, edge_margin_px=3):
+    """
+    Find solid-colored interior regions that fall inside the feathering
+    transition band [tolerance, tolerance*band_multiplier] purely by color
+    coincidence, not because they're a real antialiased edge. SKILL.md's own
+    prose check (the "Art that FADES toward the background colour" section)
+    already describes exactly this signature: band-distance pixels more than
+    ~edge_margin_px from any true background pixel, in a blob bigger than a
+    thin edge fringe. Two distinct real root causes converge on this same
+    signature (references/lessons.md SS10 Bug 4 and SS12). This function only
+    finds regions in ONE frame; the caller (analyze()) groups detections of
+    the same spatial region across frames and classifies solid-tint vs.
+    gradient-fade from how much mean_distance_from_bg varies ACROSS those
+    frames -- a within-frame color-distance spread was tried first and
+    confirmed wrong: a fade is temporal (the same spot changes color across
+    the animation), so a single mid-fade frame looks spatially uniform and a
+    within-frame spread metric can never see it. Confirmed on the real
+    fff2d1 sparkle case (lessons.md SS12): within-frame spread was ~0.0 even
+    though the region is a genuine fade.
+    """
+    bg = np.array(bg_rgb, dtype=float)
+    dist = np.linalg.norm(rgb.astype(float) - bg, axis=-1)
+    band_lo, band_hi = float(tolerance), float(tolerance) * band_multiplier
+    band = (dist > band_lo) & (dist <= band_hi)
+    true_bg = dist <= band_lo
+    near_bg = ndimage.binary_dilation(true_bg, iterations=edge_margin_px)
+    interior_band = band & ~near_bg
+
+    labeled, num = ndimage.label(interior_band, structure=STRUCTURE)
+    regions = []
+    for lab in range(1, num + 1):
+        comp = labeled == lab
+        size = int(comp.sum())
+        if size < min_size:
+            continue
+        ys, xs = np.where(comp)
+        comp_dist = dist[comp]
+        regions.append({
+            'pixel_count': size,
+            'bbox_xyxy': [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())],
+            'mean_color': rgb_to_hex(rgb[comp].mean(axis=0)),
+            'mean_distance_from_bg': round(float(comp_dist.mean()), 1),
+        })
+    return regions
+
+
 def largest_bg_component_mask(rgb, bg_rgb, tolerance):
     """
     Tumble-safe background detection. Returns a mask of ONLY the single
@@ -724,6 +914,31 @@ def largest_bg_component_mask(rgb, bg_rgb, tolerance):
     sizes = ndimage.sum(mask, labeled, range(1, num + 1))
     largest_label = int(np.argmax(sizes)) + 1
     return labeled == largest_label
+
+
+def measure_bg_component_margin(rgb, bg_rgb, tolerance):
+    """
+    Per-frame safety check for the assumption largest_bg_component_mask relies
+    on (see its docstring): true background should be overwhelmingly larger
+    than any other same-colored region, not just the largest by any margin.
+    Returns the largest and second-largest bg-colored component sizes and
+    their ratio, so callers can flag frames where that margin gets
+    uncomfortably close -- the confirmed-safe case measured a margin that
+    never dropped below ~3x across a full animation.
+    """
+    mask = color_mask(rgb, bg_rgb, tolerance)
+    labeled, num = ndimage.label(mask, structure=STRUCTURE)
+    if num == 0:
+        return {'largest_px': 0, 'second_largest_px': 0, 'margin_ratio': None}
+    sizes = sorted((int(s) for s in ndimage.sum(mask, labeled, range(1, num + 1))), reverse=True)
+    largest = sizes[0]
+    second = sizes[1] if len(sizes) > 1 else 0
+    margin = (largest / second) if second > 0 else None
+    return {
+        'largest_px': largest,
+        'second_largest_px': second,
+        'margin_ratio': round(margin, 2) if margin is not None else None,
+    }
 
 
 def build_tumble_safe_protected_mask(rgb, bg_rgb, tolerance,
@@ -1355,6 +1570,25 @@ def find_tiny_removed_regions(alpha_frames, max_size):
                     tiny |= (labeled == lab)
         tiny_masks.append(tiny)
     return tiny_masks
+
+
+def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance):
+    """
+    Single-frame version of find_tiny_removed_regions's labeling pattern,
+    but on a raw background color_mask (analyze() has no processed alpha
+    array to work with) and returning sizes for a histogram instead of
+    masks. Excludes the largest removed component per frame (assumed true
+    background), same reasoning as find_tiny_removed_regions and
+    largest_bg_component_mask elsewhere in this file.
+    """
+    removed = color_mask(rgb, bg_rgb, tolerance)
+    struct = np.ones((3, 3), dtype=bool)
+    labeled, num = ndimage.label(removed, structure=struct)
+    if num == 0:
+        return []
+    sizes = ndimage.sum(removed, labeled, range(1, num + 1))
+    largest_label = int(np.argmax(sizes)) + 1
+    return [int(sizes[lab - 1]) for lab in range(1, num + 1) if lab != largest_label]
 
 
 def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks):
