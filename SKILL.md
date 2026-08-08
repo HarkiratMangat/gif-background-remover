@@ -5,8 +5,22 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v3.2.0** (previous: v3.1.0, v3.0.0, v2.2.2, v2.2.1, v2.2,
-v2.1, v2, v1). This is a **minor** bump: one confirmed bug fix in the script
+**Skill version: v3.3.0** (previous: v3.2.0, v3.1.0, v3.0.0, v2.2.2, v2.2.1,
+v2.2, v2.1, v2, v1). This is a **minor** bump: `--analyze` gained five new
+checks (tumble/edge-grazing margin, all-frame outline-color enclosure
+verification, outline-fill background-leak detection, feather-band interior
+region detection covering both §10 Bug 4 and §12's signature, and a small
+removed-region size histogram), plus two new modes — `--recommend` (runs
+`--analyze` and emits a ready-to-confirm command line with evidence) and
+`--verify <input.gif> <output.gif>` (runs the mechanical half of the
+Verification checklist below: leftover background, protected-region
+coverage, edge fringe, small-region inflation, duration/frame-count). All
+additive and opt-in; the default processing codepath is unchanged (verified
+byte-identical against v3.2.0's output on all three real fixtures used to
+build this). No existing flag's behavior changed.
+
+**v3.2.0** (previous entry, kept for context) was a **minor** bump: one
+confirmed bug fix in the script
 (the save message asserted a frame count it never read back — it restated the
 frame list the script intended to write and claimed "durations preserved
 exactly" without opening the output; on a real 170-frame job it reported 170
@@ -302,6 +316,12 @@ region from scratch.
 ```
 python scripts/remove_gif_background.py <input.gif> --analyze
 ```
+For a ready-to-confirm suggestion instead of reasoning across `--analyze`'s
+fields by hand, use `--recommend` — it runs `--analyze` internally and returns
+`suggested_command` plus an `evidence` list justifying each flag:
+```
+python scripts/remove_gif_background.py <input.gif> --recommend
+```
 Returns JSON with:
 - `detected_bg_color` — auto-sampled from the corner pixels.
 - `candidate_regions` — background-colored areas enclosed by other colors
@@ -443,6 +463,13 @@ its iteration is obvious rather than silently overwriting: first attempt
 Independent from the skill's own version number above.
 
 ## Verification (always do this before delivering the result)
+Run `--verify <input.gif> <output.gif>` first — it covers the mechanical half
+of the checks below (leftover background, protected-region coverage, edge
+fringe, small-region inflation, duration/frame-count) across every frame
+automatically. It does NOT replace the visual checks (soft-vs-jagged edges, a
+`--protect-region` bulge following the art's own silhouette) — those still
+need a human/agent's eyes, below.
+
 **For animated/rotating content (see that section above), do two things
 more thoroughly, not skip them:** run the full checks below across EVERY
 frame, not a first/middle/last sample — the bugs in `references/lessons.md`
