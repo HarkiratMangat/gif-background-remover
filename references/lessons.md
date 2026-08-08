@@ -27,6 +27,7 @@ scratch risks retrying an approach already known to fail.
 12. [Art that fades toward the background colour renders as a dither mesh](#12-art-that-fades-toward-the-background-colour-renders-as-a-dither-mesh)
 13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
 14. [Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element](#14-punching-one-same-colour-interior-hole-while-protecting-a-same-colour-same-size-range-animated-design-element)
+15. [A second, independent solution to §14's same problem — `--remove-region`, and where it needs help](#15-a-second-independent-solution-to-14s-same-problem---remove-region-and-where-it-needs-help)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -44,7 +45,9 @@ scratch risks retrying an approach already known to fail.
 | A small removed region looks like an inflated speckle | §11 |
 | A grid/mesh pattern over what should be solid color | §12 (interior fade) vs §10 Bug 5 (edge over flat paint — different trigger, see §12's own note) |
 | Lower output frame count than input | §13 |
-| A real cutout/hole must stay transparent but a same-colour design element keeps getting damaged (or the hole won't punch at all) | §14 |
+| A real cutout/hole must stay transparent but a same-colour design element keeps getting damaged (or the hole won't punch at all) | §14, §15 |
+| Need to force-remove a specific region regardless of what outline/region protection decided | §15 (`--remove-region`) |
+| A whitish halo/fringe hugging a manually punched or edited region's edge | §14 addendum (skipped cleanup erosion) or §15 (hand-rolled alpha edit with no defringing) — different root causes, check which |
 
 ---
 
@@ -926,3 +929,81 @@ actually has incidental noise distinct from its main removed-region logic (as §
 gear/book case did) or whether, as here, the "152 regions" are just one legitimate, physically
 constant hole detected 126 times — in the latter case the exemption trades a real fringe defect for
 protection against an inflation risk that was never actually present.
+
+---
+
+## 15. A second, independent solution to §14's same problem — `--remove-region`, and where it needs help
+
+**Found 2026-08-07**, same asset as §14 (`military-tag.gif`), from a parallel claude.ai live-skill
+session working the identical problem (star to keep, pin hole to remove, both enclosed by the same
+navy outline) with no knowledge of §14's approach. Reconciled into the repo 2026-08-08. Kept as its
+own section rather than merged into §14 because the two solutions are genuinely different in shape,
+not just different phrasing of the same fix — read both before picking one for a new case.
+
+### The approach: `--protect-outline-color` (as normal) + a new inverse flag to carve the hole back out
+Unlike §14 (which avoided `--protect-outline-color` entirely because its all-frame enclosure ratio
+measured only 47%), this session used `--protect-outline-color 002864` as normal — correct
+per-region framing either way, since it protects the whole navy-enclosed interior including the
+star — then added **`--remove-region`** (new flag, inverse of `--protect-region`: force-removes a
+manually specified region regardless of what protection already decided there) to punch the pin
+hole back out. The underlying insight, precisely: **"enclosed by the same outline color" is not the
+same claim as "the same region should get the same treatment."** `--protect-outline-color` correctly
+unions the whole enclosed area for one color; there was previously no way to say "protect this
+EXCEPT that sub-region."
+
+**A real bug found and fixed in the same session, general beyond this one flag:** the first
+hand-rolled hole-punch (before `--remove-region` existed) zeroed alpha inside a circle without
+touching RGB, leaving the original antialiased white-into-navy blend color sitting at partial alpha
+— invisible over checkerboard, a visible pale halo over any solid composite. `apply_remove_regions()`
+fixes this generically: recolor every touched pixel to the LOCAL kept color (sampled fresh per frame
+from a thin ring just outside the removal mask, not a hardcoded hex) BEFORE tapering alpha down, so
+a fading pixel always reads as "surrounding color fading to transparent," never a ghost of what got
+removed. **This is a different root cause than §14's addendum fringe**, worth keeping distinct: §14's
+fringe came from `--erosion-exempt-max-size` skipping an EXISTING cleanup step (the main feathering
+path already defringes correctly); this one is about a hand-rolled alpha edit that bypassed the main
+feathering path entirely and so never got defringed in the first place. Both LOOK like "a whitish
+ring around a punched hole" — they are not the same bug, and the fix for one would not have fixed
+the other.
+
+### Where it needs help: this flag alone did not solve this specific asset — confirmed independently, not just taken on faith
+`--remove-region`'s own worked example (`--protect-outline-color 002864 --remove-region
+circle:283.5,231.5,15`) is a STATIC mask, same limitation `--protect-region` already has. This
+asset's pin hole is not static: **re-measured independently while reconciling this drop into the
+repo — the true hole center drifts up to ~67px from that fixed circle across the 126 frames** (the
+live session's own account cites ~150px, plausibly measured at a different scale/crop; both
+readings agree the drift is large, not marginal). Directly checking the STATIC-circle output against
+the real per-frame hole location: **96 of 126 frames (76%) do NOT actually have the true pin hole
+punched** — the fixed circle is simply removing the wrong patch of navy ring in most frames. The
+flag's own documentation is honest about this ("do not use this for a target that moves/resizes
+across frames... without re-deriving the mask per frame yourself first") — this is a confirmation
+that the caveat is load-bearing on this exact asset, not a defect in the flag or its docs.
+
+The live session's real fix for this (§ their Bug 3/4, condensed): track the hole's true per-frame
+center via `cv2.HoughCircles` on each source frame independently, and — after finding that a
+per-frame RE-MEASURED radius was itself corrupted by a shine/sparkle sweep passing through the same
+screen area in some frames (a real second bug, a differently-principled edge/gradient-based method
+disagreeing with a color-threshold radial scan is what caught it) — settle on ONE constant radius
+measured only from unaffected frames, applied to every frame's own tracked center. None of this
+tracking happens inside the script; it is bespoke, external, per-asset work.
+
+**§14's `--tumble-safe` + `--keep-bg-blob-if-near` + tight `--hole-size-range`/`--hole-max-aspect`
+approach handles this exact drift natively, with no external tracking script**, because it
+re-derives the hole's mask fresh from each frame's own connected-component geometry rather than
+applying one fixed region — the drift was never a problem for it, verified in §14 across all 126
+frames without needing to know the drift's magnitude in advance.
+
+### Generalizable takeaway: two valid tools for the same *shape* of problem, different fits
+- **`--remove-region` is the more general, more directly-expressive fix** when the target to punch
+  out is static, or as a component after you've separately solved per-frame tracking yourself — it
+  works regardless of whether the hole is geometrically distinguishable from nearby decoration
+  (§14's approach specifically needed the hole and the decoration to differ in measurable
+  size/aspect across every frame, which was true here somewhat fortuitously, not guaranteed on a
+  future asset).
+- **§14's geometric-gate approach is the more robust fix for a moving/resizing target with no
+  external tooling**, but only when the thing to remove and the thing to keep really are separable
+  by a stable, measurable geometric signal (size, aspect, or similar) across the whole animation —
+  verify that separation across every frame before trusting it, same discipline §14 itself used.
+- **Neither is a substitute for the other in every case.** A static hole shared with animated
+  same-colored decoration wants `--remove-region`. A moving hole with no reliable external tracking
+  step wants the geometric-gate approach. A moving hole where NEITHER geometric separation nor
+  tracking tooling is available is a real gap this skill does not yet close.

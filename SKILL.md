@@ -5,8 +5,29 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v3.3.3** (previous: v3.3.2, v3.3.1, v3.3.0, v3.2.0, v3.1.0,
-v3.0.0, v2.2.2, v2.2.1, v2.2, v2.1, v2, v1). This is a **correction**: a
+**Skill version: v4.0.0** (previous: v3.3.3, v3.3.2, v3.3.1, v3.3.0, v3.2.0,
+v3.1.0, v3.0.0, v2.2.2, v2.2.1, v2.2, v2.1, v2, v1). This is a **major**
+bump, judged holistically against everything accumulated since v3.2.0 (the
+last real tag), not any single commit's own tier: five new `--analyze`
+checks, `--recommend`, `--verify`, a full prose-compression pass, and now
+one genuinely new capability — **`--remove-region`** (and
+`--remove-region-feather`), the inverse of `--protect-region`: force-removes
+a manually specified region regardless of what `--protect-outline-color`/
+`--protect-region` already decided there. Ported and reconciled from an
+independent claude.ai live-skill session that solved the same real job
+(`military-tag.gif`) a genuinely different way — see `references/
+lessons.md` §15 for the full case, including a real defringing bug that
+session found and fixed (`apply_remove_regions()`'s recolor-before-taper
+step), and an independent confirmation, found while reconciling this repo's
+copy, that the flag's own static-mask caveat is load-bearing: a static
+circle at the drop's own worked-example coordinates missed the true target
+in 76% of frames on this tumbling asset, needing the geometric-gate
+approach from §14 or external per-frame tracking instead. All additive and
+opt-in; the default codepath is unchanged. The full detail of each step
+along the way is preserved below rather than compressed into one entry,
+since each one traces to a real, distinct finding:
+
+**v3.3.3** (previous entry, kept for context) was a **correction**: a
 second finding on the same `military-tag.gif` job, found by the user
 zooming into the delivered file (`references/lessons.md` §14 addendum) --
 `--erosion-exempt-max-size`, applied on `--recommend`'s generic small-region
@@ -469,6 +490,22 @@ two real, initially-unnoticed bleeds/gaps from exactly this are documented in
   verification.
 - A region the user wants left as background needs nothing extra — it's
   already removed by default.
+- **If two different design features are enclosed by the SAME outline color
+  but need opposite treatment** (one kept, one removed — e.g. a highlight
+  star and a separate pin/grommet hole both ringed in the same navy), that's
+  not a bug in `--protect-outline-color` (it correctly unions the whole
+  area one color encloses); run it as normal, then carve the unwanted
+  sub-region back out with `--remove-region` (below). Confirmed real case:
+  `references/lessons.md` §15. **`--remove-region` is a STATIC mask, same
+  caution as `--protect-region`** — do not use it alone on a target that
+  moves/resizes across frames without re-deriving the region per frame
+  yourself first (confirmed: a static circle missed the true target in 76%
+  of frames on a real tumbling asset). For a moving target with no external
+  per-frame tracking available, `--tumble-safe` + `--keep-bg-blob-if-near`
+  with a tight `--hole-size-range`/`--hole-max-aspect` (§14) is the more
+  robust choice when the hole and the decoration differ measurably in size
+  or aspect across the whole animation — check `references/lessons.md` §14
+  vs §15 for which fits.
 - If `--bg-color` wasn't confirmed differently, omit it — auto-detected the
   same way `--analyze` does.
 - **Edge feathering is ON by default; cropping is NOT.** Feathering is a pure
@@ -481,6 +518,8 @@ python scripts/remove_gif_background.py <input.gif> <output.gif> \
     [--bg-color <hex>] \
     [--protect-outline-color <hex[,hex,...]>] \
     [--protect-region circle:cx,cy,r | rect:x,y,w,h [;more-regions]] \
+    [--remove-region circle:cx,cy,r | rect:x,y,w,h [;more-regions]] \
+    [--remove-region-feather 1.5] \
     [--tolerance 15] [--outline-tolerance 40] \
     [--feather-band-multiplier 4.0] [--no-feather] \
     [--edge-cleanup-erosion 2] [--pixel-art] \

@@ -953,6 +953,84 @@ def parse_protect_regions(spec, shape):
     return union
 
 
+def apply_remove_regions(rgb_frames, alpha_frames, remove_mask, feather_px=1.5):
+    """
+    Force full removal (alpha -> 0) inside remove_mask, overriding whatever
+    --protect-outline-color / --protect-region already decided -- the
+    inverse of --protect-region. For carving out a small feature (e.g. a
+    decorative hole/grommet) that shares its enclosing outline color with a
+    DIFFERENT feature the user wants kept, so outline-color protection
+    can't tell them apart on its own (confirmed real case, both features
+    enclosed by the same navy ring color: a badge's highlight star, keep;
+    a pin/grommet hole, remove -- see references/lessons.md SS15).
+
+    Confirmed real bug this guards against: naively zeroing alpha inside
+    remove_mask without touching RGB leaves the ORIGINAL pixel color
+    (frequently an antialiased blend from the source art's own edge, e.g.
+    a white-into-navy blend) sitting at partial alpha across the feather
+    band. Composited over anything, that reads as a visible colored
+    fringe/halo hugging the removed region's boundary -- not a mask/shape
+    bug, a color bug, and easy to miss unless checked over a SOLID
+    composite (checkerboard hides it). Fixed here by recoloring every
+    touched pixel to the LOCAL kept color -- sampled fresh per frame from
+    the thin ring of pixels just outside remove_mask, so it tracks
+    per-frame shading/lighting changes -- before tapering alpha down, so a
+    fading pixel always reads as "local surrounding color fading to
+    transparent," never a ghost of whatever got removed. This is the same
+    fringe failure mode --feather's own de-fringe step exists to prevent
+    on the primary background-removal edge; this function brings the same
+    protection to a manually-specified removal region, which the main
+    feathering path doesn't touch.
+
+    remove_mask is a single static (H, W) bool mask applied IDENTICALLY to
+    every frame, same as --protect-region -- it does not track a moving
+    target. If the region to remove changes position/size across frames
+    (tumbling/rotating content, or a feature whose apparent size shifts
+    frame to frame), this flag alone is not sufficient; that requires
+    deriving the mask per frame from position-independent signals before
+    calling this function once per frame with each frame's own mask (see
+    the "Animated/rotating content" section and lessons.md SS15 for a real
+    worked case -- notably including how a per-frame RE-MEASURED radius
+    can itself be corrupted by an unrelated bright overlay, e.g. a shine
+    sweep, transiently passing through the same screen area; a fixed
+    radius measured only from unaffected frames was the confirmed fix
+    there, not a smarter per-frame measurement).
+    """
+    if remove_mask is None or not remove_mask.any():
+        return rgb_frames, alpha_frames
+
+    dist_outside = ndimage.distance_transform_edt(~remove_mask)
+    # 1.0 at/inside the mask boundary, tapering linearly to 0.0 by
+    # feather_px outside it -- the region OUTSIDE remove_mask that still
+    # gets touched at all is exactly this feather band.
+    taper = np.clip(1.0 - dist_outside / max(feather_px, 1e-6), 0.0, 1.0)
+    taper[remove_mask] = 1.0
+    touched = taper > 0
+
+    # Sample the local kept color from a thin ring just outside the mask
+    # (not the whole frame, and not a single global color) so shading/
+    # lighting/shine gradients across the design are respected per frame.
+    ring = (dist_outside > 0) & (dist_outside <= feather_px + 2.0)
+
+    out_rgb, out_alpha = [], []
+    for rgb, alpha in zip(rgb_frames, alpha_frames):
+        rgb2 = rgb.copy()
+        if ring.any():
+            local_color = rgb[ring].reshape(-1, 3).mean(axis=0)
+        else:
+            # No ring pixels (mask touches frame edge, or feather_px is
+            # tiny relative to pixel grid) -- fall back to whatever color
+            # already borders the mask directly.
+            border = ndimage.binary_dilation(remove_mask, iterations=1) & ~remove_mask
+            local_color = rgb[border].reshape(-1, 3).mean(axis=0) if border.any() else np.zeros(3)
+        for c in range(3):
+            rgb2[:, :, c] = np.where(touched, local_color[c], rgb2[:, :, c]).astype(np.uint8)
+        alpha2 = alpha.astype(np.float64) * (1.0 - taper)
+        out_rgb.append(rgb2)
+        out_alpha.append(np.clip(alpha2, 0, 255).astype(np.uint8))
+    return out_rgb, out_alpha
+
+
 BAYER4 = np.array([
     [0, 8, 2, 10],
     [12, 4, 14, 6],
@@ -2710,6 +2788,16 @@ def process(input_path, output_path, args):
                 if len(damage) > 5:
                     print(f"  ...and {len(damage) - 5} more.", file=sys.stderr)
 
+    # Force-remove regions (inverse of --protect-region), applied last so it
+    # overrides whatever --protect-outline-color / --protect-region decided
+    # -- see apply_remove_regions' docstring for the case this is for.
+    if getattr(args, 'remove_region', None):
+        H0, W0 = alpha_frames[0].shape
+        remove_mask = parse_protect_regions(args.remove_region, (H0, W0))
+        rgb_frames, alpha_frames = apply_remove_regions(
+            rgb_frames, alpha_frames, remove_mask,
+            feather_px=args.remove_region_feather)
+
     tier = args.compress  # None (plain background removal), 'optimize', 'medium', or 'heavy'
 
     # Cropping: explicit --crop, OR bundled automatically into any tier
@@ -3052,6 +3140,27 @@ def main():
                          '-- `;` rather than `,` between regions since `,` '
                          'already separates each region\'s own numeric '
                          'fields. Each region\'s mask is unioned.')
+    p.add_argument('--remove-region', default=None,
+                    help='Manual FORCE-REMOVE region (inverse of '
+                         '--protect-region): circle:cx,cy,r or rect:x,y,w,h, '
+                         'same multi-region `;`-joined syntax. Overrides '
+                         '--protect-outline-color / --protect-region inside '
+                         'this region regardless of what they decided -- for '
+                         'carving out a small feature (e.g. a decorative '
+                         'hole/grommet) that shares its enclosing outline '
+                         'color with something else you want kept, so '
+                         'outline-color protection alone can\'t tell them '
+                         'apart. Edge is feathered and defringed against the '
+                         'LOCAL surrounding color (sampled fresh per frame), '
+                         'not left as a stale color at partial alpha -- see '
+                         '--remove-region-feather. Static across all frames, '
+                         'same caution as --protect-region: do not use this '
+                         'for a target that moves/resizes across frames '
+                         '(tumbling/rotating content) without re-deriving '
+                         'the mask per frame yourself first.')
+    p.add_argument('--remove-region-feather', type=float, default=1.5,
+                    help='Feather width in px for --remove-region\'s edge '
+                         'taper (default 1.5).')
     p.add_argument('--no-feather', dest='feather', action='store_false',
                     help='Disable edge feathering/de-fringing; use a hard '
                          'color-distance cutoff (old behavior, choppier edges).')
