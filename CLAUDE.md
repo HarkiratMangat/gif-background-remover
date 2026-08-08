@@ -40,6 +40,10 @@ collaboration layer on top of both.
   see the "Live skill sync workflow" section below), and `live-skill-drops/` (see below). **Check
   `local/` for anything new at the start of a session and periodically during a long one** — don't
   rely on stumbling onto it by chance.
+- `gif-deferred-list.md` (tracked, repo root) — this project's own flagged-findings/TODO tracker,
+  split out 2026-08-07 from the shared `/Applications/Claude Code/meta-deferred-list.md` (same
+  treatment Dior's Builds' `docs/db-deferred-list.md` got). Check it alongside `local/` at session
+  start — same "don't rely on stumbling onto it" reasoning.
 
 ## Live skill sync workflow (claude.ai standalone skill ↔ this repo)
 This repo is the dev copy. The live skill on claude.ai only gets updated at a repo session's
