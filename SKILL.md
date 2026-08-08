@@ -5,8 +5,19 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v3.3.2** (previous: v3.3.1, v3.3.0, v3.2.0, v3.1.0, v3.0.0,
-v2.2.2, v2.2.1, v2.2, v2.1, v2, v1). This is a **correction**: one new
+**Skill version: v3.3.3** (previous: v3.3.2, v3.3.1, v3.3.0, v3.2.0, v3.1.0,
+v3.0.0, v2.2.2, v2.2.1, v2.2, v2.1, v2, v1). This is a **correction**: a
+second finding on the same `military-tag.gif` job, found by the user
+zooming into the delivered file (`references/lessons.md` §14 addendum) --
+`--erosion-exempt-max-size`, applied on `--recommend`'s generic small-region
+evidence without checking it corresponded to genuine incidental noise in
+the CHOSEN pipeline, skipped the normal edge-cleanup erosion on a punched
+hole and left a faint off-white antialiasing fringe at its edge. Dropping
+the flag (nothing genuine for it to protect here) let normal erosion clean
+the fringe with only a modest, expected size increase, not runaway
+inflation. No script or flag behavior changed.
+
+**v3.3.2** (previous entry, kept for context) was a **correction**: one new
 confirmed finding documented (`references/lessons.md` §14) from a real job
 (`military-tag.gif`) — punching a small interior hole (a pinhole) while
 protecting a same-colour, overlapping-size-range animated design element

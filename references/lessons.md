@@ -895,3 +895,34 @@ and the other is animated (breathing/twinkling/pulsing), size+aspect over the FU
 usually the more robust discriminator — verify it by scanning every frame's actual measured values,
 never a handful of samples, since the whole failure mode here is an animated element occasionally
 drifting into the other's range.
+
+### Addendum, same asset, found by the user zooming into the delivered file: `--erosion-exempt-max-size` left a whitish fringe around the punched hole
+Passed `--erosion-exempt-max-size 519` on `--recommend`'s generic evidence ("152 small removed
+region(s) observed") without checking whether that number meant genuine incidental noise on THIS
+asset. It didn't: every one of those 152 detections across all 126 frames was either the pinhole
+itself (repeated once per frame) or a star-twinkle fragment that never actually enters this
+pipeline's removable set (confirmed: only the pinhole ever passes the `--hole-size-range`/
+`--hole-max-aspect` gate). So the exemption had nothing genuine to protect — but it still did its
+job of restoring the pinhole to its exact PRE-erosion pixels, which skipped the normal
+`--edge-cleanup-erosion` pass that would have cleaned up the antialiasing blend between the white
+pinhole and the navy ring. Result: a handful of pale, technically-opaque, off-white pixels
+(measured `237,241,253` — not pure white, not navy, an untrimmed antialiasing blend) sitting right
+at the hole's edge, small enough to miss in a `--preview` contact sheet composited over
+transparency-checkerboard but visible zoomed in over a solid dark background.
+
+**The fix:** drop `--erosion-exempt-max-size` entirely and let the default 2px erosion run
+normally. Re-verified across all 126 frames: fringe pixels went to zero, the hole's own true size
+grew modestly (~423–466px raw → ~632–682px post-erosion, roughly a 20% radius increase) because
+the navy ring is thick (15+px) relative to the 2px erosion radius — nowhere near the 50–70x
+runaway inflation §11 exists to prevent, which only happens when the wall around a removed region
+is thin relative to the erosion radius. `small_region_inflation` (from `--verify`) correctly did
+not flag this growth.
+
+**Generalizable takeaway:** `--erosion-exempt-max-size`'s own evidence count from `--recommend`
+(or `--analyze`'s `small_removed_regions`) is a raw histogram of ANY small removable-by-color blob
+across every frame — it does not know which of those blobs actually survive into your SPECIFIC
+chosen protection pipeline as truly removable. Before applying the flag, check whether the asset
+actually has incidental noise distinct from its main removed-region logic (as §11's original
+gear/book case did) or whether, as here, the "152 regions" are just one legitimate, physically
+constant hole detected 126 times — in the latter case the exemption trades a real fringe defect for
+protection against an inflation risk that was never actually present.
