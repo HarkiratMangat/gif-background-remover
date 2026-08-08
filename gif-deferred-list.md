@@ -117,9 +117,13 @@ don't get re-flagged as forgotten work by a future review.*
 ## Resolved (kept for the record, not to re-litigate)
 
 - ~~Phase 1: move SKILL.md's manual checks into `--analyze`/`--recommend`/`--verify`~~ → **SHIPPED
-  2026-08-07** on `feat/analyze-recommend-verify` (13 commits over `main`, not yet pushed/merged —
-  Harkirat's call). 5 new `--analyze` checks, `--recommend`, `--verify`, all reviewed (including a
-  full whole-branch review) and fixed. Three real design bugs found via testing against real
-  fixtures rather than written to spec and trusted — see the plan doc and SDD ledger for specifics.
-  Phase 2 (prose compression) is the two items above's sibling next step, handed off separately at
-  `local/HANDOFF-phase2-prose-compression.md` since it's planned work, not a flagged finding.
+  2026-08-07** on `feat/analyze-recommend-verify` (not yet pushed/merged — Harkirat's call). 5 new
+  `--analyze` checks, `--recommend`, `--verify`, all reviewed (including a full whole-branch review)
+  and fixed. Three real design bugs found via testing against real fixtures rather than written to
+  spec and trusted — see the plan doc and SDD ledger for specifics.
+- ~~Phase 2: compress SKILL.md's manual-check prose against Phase 1's new fields~~ → **SHIPPED
+  2026-08-08** (fresh session, on the same branch, v3.3.0 → v3.3.1). Every check-by-hand paragraph
+  Phase 1 made mechanically checkable now points at the real field name; also closed a real
+  documentation gap (two `candidate_regions` fields shipped in Phase 1 but never documented, and
+  `--recommend`'s actual outline-trust gate wasn't stated in "Run the real processing"). Pure docs
+  change, no script touched. `references/lessons.md` gained a symptom→section lookup table.
