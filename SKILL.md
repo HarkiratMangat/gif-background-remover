@@ -41,6 +41,23 @@ reviewed, end-to-end-verified round — squarely major.
   8-bit alpha a recovered fade is legitimately pale and semi-transparent, so
   those checks would flag correct pixels. Verify an 8-bit-alpha output by
   compositing it over the background AND over a dark solid instead (§16).
+- **`--verify` now accepts WebP/AVIF**, not just GIF. Every check is
+  partial-alpha aware: leftover background counts only ESSENTIALLY OPAQUE
+  (alpha ≥ 250) background-coloured pixels, because on an 8-bit output a pale
+  semi-transparent pixel is a recovered fade or an antialiasing ramp — correct
+  output, not leftover. The report carries a `scope_note` saying so.
+- **`--erosion-exempt-transient`** exempts small removed regions from erosion by
+  IDENTITY rather than size — present in ~every frame at a stable size = design
+  (eroded normally), comes and goes = incidental (exempt). Use it when the two
+  overlap in size, which `--erosion-exempt-max-size` structurally cannot handle:
+  on a real asset the design sat at 262–306px while the noise reached 442px, so
+  no threshold separated them. Auto-recommended exactly there. §21.4
+- ⚠️ **`protected_region_coverage` and leftover-background were both measuring
+  the wrong footprint** until 2026-08-17 — a bounding RECTANGLE contains real
+  background, and counting it made correct output look half-unprotected
+  (gift read 0.874 for a fully protected region; 1.000 once restricted to the
+  enclosed footprint). If you are comparing against numbers recorded before
+  that date, they are not comparable. §21.1
 - **`--auto`: TWO PASSES that verify the OUTPUT, not just the source.**
   ⚠️ Not a loop — there is no iteration construct and no counter. Worst case is
   two renders and exactly one correction, bounded by the code's shape.

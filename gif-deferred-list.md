@@ -91,6 +91,15 @@ care, and the byte-identical/behavior-preservation discipline this whole project
 `Sonnet5-XHigh`.
 
 ### `[P3 · M · Sonnet5-High]` `--verify`'s `protected_region_coverage` false-positives on a legitimately punched sub-hole inside a translating candidate region
+
+**PROBABLY FIXED 2026-08-17 — needs confirming against this item's own asset.** §21.1 changed
+`protected_region_coverage` to measure the ENCLOSED footprint rather than every background-coloured
+pixel in the bounding rectangle, which is the same mechanism described here: a punched sub-hole is
+background-coloured, correctly transparent, and was counted against the region. Corroboration:
+crystal's coverage went 0.569 → 1.000 with no change to the render. ⚠️ `military-tag.gif` is not on
+this machine, so this is NOT confirmed against the case that opened the item — re-run it when the
+asset is available before closing.
+
 **Added:** 2026-08-07, from `military-tag.gif` production job (see `references/lessons.md` §14 for
 the full case).
 
@@ -206,7 +215,7 @@ the measurements behind each. Remaining open: 5 and 9.
    seek-only, so every frame returned 0. Adding `load()` returns the true durations
    (3000 ms, `[220, 20 x122, 340]`). Same root cause as the WebP source-duration shift —
    see `references/lessons.md` §17.
-9. **`--verify` has no 8-bit-alpha mode** — *partially addressed 2026-08-17:* the fringe
+9. ~~**`--verify` has no 8-bit-alpha mode**~~ — **CLOSED 2026-08-17.** *(was: partially addressed)* the fringe
    metric itself is now alpha-aware (`measure_outer_ring_background_fraction` counts only
    near-opaque pixels, so a legitimate alpha ramp is not flagged), and `--auto`'s post-render
    check runs on WebP/AVIF using it. `--verify` proper still refuses non-GIF because its OTHER
@@ -221,7 +230,7 @@ the measurements behind each. Remaining open: 5 and 9.
    refusal. Lifting it without redefining the checks reintroduces exactly the misleading pass
    the refusal exists to prevent.
 
-10. **`--verify`'s leftover-background count flags intentionally protected design**
+10. ~~**`--verify`'s leftover-background count flags intentionally protected design**~~ — **CLOSED 2026-08-17.** Now also excludes the verified outline's own filled area (gift worst frame 14,243 → 0) and requires alpha>=250 so a partly transparent background-coloured pixel counts as the fade/ramp it is. §21.2. Original note:
     (opened 2026-08-17). On gift, `leftover_background_opaque_px` reports 14,243px on its worst
     frame; 73% of them are inside the protected white-strip region's own bbox. The strip is
     background-COLOURED design that is *supposed* to stay opaque, so counting it as leftover
@@ -231,7 +240,7 @@ the measurements behind each. Remaining open: 5 and 9.
     `bbox_scope`-restricted enclosure already does for part of it. Low severity (a noisy
     metric, not a bad output) but it undermines trust in an autonomous run's self-check.
 
-11. **Replace the erosion-exempt SIZE threshold with per-region masks** (opened 2026-08-17
+11. ~~**Replace the erosion-exempt SIZE threshold with per-region masks**~~ — **CLOSED 2026-08-17** via `--erosion-exempt-transient` + `find_transient_removed_regions()`, auto-recommended wherever the size threshold is refused. §21.4. Original note: (opened 2026-08-17
     during the §20 audit — a better fix than the guard shipped in §18.2). The overlap guard
     picks the safer side of a conflict rather than dissolving it: when transient noise and
     design occupy the same size range, love gets no exemption at all, so the v3.1.0
@@ -243,7 +252,7 @@ the measurements behind each. Remaining open: 5 and 9.
     size threshold entirely. That exempts exactly the noise regardless of how big they are or
     what size the design happens to be.
 
-12. **gift's protected-region coverage is 0.874, not 1.0** (opened 2026-08-17). §18.4 took it
+12. ~~**gift's protected-region coverage is 0.874, not 1.0**~~ — **CLOSED 2026-08-17: it was never real.** Coverage was measured over every background-coloured pixel in the bounding RECTANGLE (12,371 at frame 0) instead of the enclosed footprint (10,257); the extra pixels are genuine background, correctly transparent. Restricted to the footprint it reads 1.000, so item 4 is genuinely closed. §21.1. Original note: (opened 2026-08-17). §18.4 took it
     from 0.0, which is a real fix, but 12.6% of the region still is not opaque and I did not
     check why. It may be legitimate (frames where the strip is genuinely occluded) or a real
     remainder. **Do:** identify which frames and which pixels account for the gap before

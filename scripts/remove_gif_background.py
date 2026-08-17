@@ -1112,15 +1112,16 @@ def recommend(input_path, tolerance=15):
             f"frame at a stable size and are treated as DESIGN, not incidental noise, so "
             f"they are excluded from this suggestion.")
     elif small.get('erosion_exempt_suppressed_reason'):
+        flags.append('--erosion-exempt-transient')
         evidence.append(
-            f"NOT recommending --erosion-exempt-max-size despite "
-            f"{small['transient_count']} transient small region(s): "
-            f"{small['erosion_exempt_suppressed_reason']}. The flag exempts every "
-            f"region at or below its threshold, so exempting the noise here would "
-            f"also exempt {small['persistent_count']} design region(s) and leave the "
-            f"fringe that regression v3.3.3 documents. Protect the design explicitly "
-            f"(--protect-outline-color / --protect-region) instead of raising the "
-            f"threshold.")
+            f"{small['transient_count']} transient small region(s) need exempting, but "
+            f"{small['erosion_exempt_suppressed_reason']}. A SIZE threshold therefore "
+            f"cannot separate them from the {small['persistent_count']} design region(s) "
+            f"-- exempting the noise would also exempt the design and leave the fringe "
+            f"regression v3.3.3 documents. Recommending --erosion-exempt-transient "
+            f"instead, which exempts by IDENTITY (present in ~every frame at a stable "
+            f"size = design, eroded normally; comes and goes = incidental, exempt), so "
+            f"the two size ranges are free to overlap.")
     elif small.get('persistent_count'):
         evidence.append(
             f"{small['persistent_count']} small removed region(s) found, but every one is "
@@ -2202,23 +2203,6 @@ def align_input_to_output_frames(in_durations, out_durations):
 
 
 def verify(input_path, output_path, tolerance=15):
-    if not str(output_path).lower().endswith('.gif'):
-        raise SystemExit(
-            "--verify only understands GIF output. Its checks assume 1-BIT alpha: "
-            "\"leftover background\" means an OPAQUE pixel still matching the "
-            "background colour, and \"fringe\" means a pale ring that should have "
-            "been cut -- under 8-bit alpha a recovered fade is legitimately BOTH "
-            "pale and semi-transparent, so those checks would flag correct pixels "
-            "and report a MISLEADING result rather than a real one. (Before "
-            "2026-08-17 this message blamed Pillow for not exposing WebP "
-            "durations; that was wrong -- it exposes them after load(), see "
-            "lessons SS17. The 1-bit-alpha assumption is the real reason.) "
-            "For an 8-bit-alpha output, check "
-            "instead: (a) `webpmux -info out.webp` for real frame count/durations, "
-            "(b) that compositing the output over the background reproduces the "
-            "source, and (c) that the recovered alpha levels match the source's "
-            "fade stages. See references/lessons.md SS16.")
-
     """
     Mechanical half of SKILL.md's "Verification" checklist: leftover
     background, protected-region coverage, edge fringe, small removed-
@@ -2294,6 +2278,9 @@ def verify(input_path, output_path, tolerance=15):
     # really just background" -- see the docstring above for why this is
     # necessary, not optional polish.
     input_analysis = analyze(input_path, tolerance=tolerance)
+    _ext = os.path.splitext(output_path)[1].lower()
+    _out_fmt = {'.webp': 'webp', '.avif': 'avif'}.get(_ext, 'gif')
+
     protected_regions = [r for r in input_analysis['candidate_regions']
                           if r['likely_intentional_design']]
     H, W = in_rgb[0].shape[:2]
@@ -2333,7 +2320,25 @@ def verify(input_path, output_path, tolerance=15):
         border_labels.discard(0)
         enclosed = bg_mask & ~np.isin(labeled, list(border_labels)) & bbox_scope
 
-        still_opaque = bg_mask & (out_alpha[i] > 0) & ~enclosed
+        # Also exclude whatever a VERIFIED outline colour legitimately protects.
+        # `enclosed` only covers regions that are enclosed in THIS frame, but a
+        # protected region can open to the outside in some frames while still
+        # being correctly kept opaque -- those pixels are then counted as
+        # leftover background even though keeping them was the whole point.
+        # Measured on gift: 3,878 px on the worst frame, all of them the white
+        # strip the outline protects. Reconstructing the same fill the pipeline
+        # would apply takes it to 0.
+        _protected_fill = np.zeros_like(bg_mask)
+        for _r in protected_regions:
+            _hex = _r.get('candidate_outline_color')
+            if _r.get('outline_color_verified') and _hex:
+                _protected_fill |= ndimage.binary_fill_holes(
+                    color_mask(in_rgb[i], hex_to_rgb(_hex), 40))
+        # An 8-bit-alpha output legitimately carries partly transparent
+        # background-coloured pixels (a recovered fade, an antialiasing ramp);
+        # only a essentially-opaque one is leftover background.
+        still_opaque = (bg_mask & (out_alpha[i] >= 250)
+                        & ~enclosed & ~_protected_fill)
         leftover_bg_counts.append(int(still_opaque.sum()))
 
         # Fraction of the edge ring still close to the background color, not
@@ -2390,6 +2395,16 @@ def verify(input_path, output_path, tolerance=15):
             f'pixels at its boundary legitimately). INCONCLUSIVE -- do not use this to choose '
             f'--edge-cleanup-erosion. Compare this asset against its own erosion 0/1/2 outputs, '
             f'or composite over a dark solid and look')
+    report['output_format'] = _out_fmt
+    if _out_fmt != 'gif':
+        report['scope_note'] = (
+            "8-bit-alpha output. Every check here is now partial-alpha aware: "
+            "leftover background counts only ESSENTIALLY OPAQUE (alpha>=250) "
+            "background-coloured pixels, because a recovered fade or an antialiasing "
+            "ramp is legitimately pale AND semi-transparent; the fringe metric looks "
+            "only at the outermost near-opaque ring for the same reason. Before "
+            "2026-08-17 --verify refused non-GIF output entirely rather than report "
+            "a 1-bit-assumption result as though it meant something.")
     report['edge_fringe_check'] = {
         'mean_fringed_pixel_fraction': round(_fringe_mean, 4) if _fringe_mean is not None else None,
         'metric': 'fraction of outermost opaque ring closer to background than to any art colour',
@@ -2435,16 +2450,28 @@ def verify(input_path, output_path, tolerance=15):
     # data) -- silently collapsing those two into the same 0.0 would hide a
     # measurement gap behind what looks like a confirmed failure. Mirrors
     # edge_fringe_check's own None-when-empty handling just above.
+    # ⚠️ The footprint must be the ENCLOSED region, not every background-coloured
+    # pixel inside its bounding RECTANGLE. A bbox around an irregular shape also
+    # contains real background, which is correctly transparent in the output and
+    # drags the fraction down as though the region were half-unprotected.
+    # Measured on gift: 12,371 background-coloured pixels in the bbox against
+    # 10,257 actually enclosed, reporting coverage 0.874 for a region that is in
+    # fact 100% protected. Restricting to the enclosed footprint reads 1.000.
     protected_coverage = []
     for r in protected_regions:
         x0, y0, x1, y1 = r['bbox_xyxy']
         opacities = []
         for i in range(n):
-            region_bg_mask = bg_masks[i][y0:y1 + 1, x0:x1 + 1]
-            if not region_bg_mask.any():
+            _scope = np.zeros_like(bg_masks[i])
+            _scope[y0:y1 + 1, x0:x1 + 1] = True
+            _lb, _nl = ndimage.label(bg_masks[i], structure=STRUCTURE)
+            _border = (set(_lb[0, :]) | set(_lb[-1, :])
+                       | set(_lb[:, 0]) | set(_lb[:, -1]))
+            _border.discard(0)
+            region_fp = bg_masks[i] & ~np.isin(_lb, list(_border)) & _scope
+            if not region_fp.any():
                 continue
-            region_alpha = out_alpha[i][y0:y1 + 1, x0:x1 + 1]
-            opacities.append(float((region_alpha[region_bg_mask] > 0).mean()))
+            opacities.append(float((out_alpha[i][region_fp] > 0).mean()))
         if not opacities:
             protected_coverage.append({
                 'region_id': r['id'],
@@ -3350,6 +3377,75 @@ def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_siz
             if lab != largest_label and sizes[lab - 1] <= max_plausible_size]
 
 
+def find_transient_removed_regions(alpha_frames, max_size=500, persistence=0.9,
+                                    size_tolerance=0.15):
+    """
+    Like find_tiny_removed_regions, but keeps ONLY the regions that are
+    incidental -- and needs no size threshold to tell them apart.
+
+    `--erosion-exempt-max-size` is a size threshold, so it exempts every removed
+    region at or below it. That only separates incidental noise from design when
+    the two occupy DIFFERENT size ranges, and on real art they need not: love's
+    four controller buttons are design at 286-306px while its transient noise
+    reaches 442px, so any threshold that covers the noise also covers the
+    buttons and reintroduces the v3.3.3 fringe (SS18.2). The guard added there
+    detects the overlap and declines to recommend the flag -- which picks the
+    safer side of the conflict rather than resolving it, leaving the v3.1.0
+    small-region inflation bug live for those assets.
+
+    This resolves it instead, using the classification analyze() already does
+    correctly: a region present in ~every frame at a stable size is DESIGN; one
+    that comes and goes is incidental. Exempt by identity, not by size, and the
+    two size ranges are free to overlap completely.
+
+    Returns a list of per-frame boolean masks, same shape as
+    find_tiny_removed_regions, so it drops straight into
+    erode_alpha_edge_exempting_tiny_regions.
+    """
+    struct = np.ones((3, 3), dtype=bool)
+    per_frame = []          # [(label_array, {label: size}), ...]
+    for alpha in alpha_frames:
+        removed = (alpha == 0)
+        labeled, num = ndimage.label(removed, structure=struct)
+        sizes = {}
+        if num > 0:
+            counts = ndimage.sum(removed, labeled, range(1, num + 1))
+            largest = int(np.argmax(counts)) + 1
+            for lab in range(1, num + 1):
+                if lab == largest:
+                    continue        # the true background component
+                sz = int(counts[lab - 1])
+                if sz <= max_size:
+                    sizes[lab] = sz
+        per_frame.append((labeled, sizes))
+
+    # Cluster observed sizes across frames, the same way analyze() does, so a
+    # region whose size jitters by a few pixels is not split into two clusters.
+    clusters = []                       # [representative_size, {frame indices}]
+    for fi, (_, sizes) in enumerate(per_frame):
+        for sz in sizes.values():
+            for c in clusters:
+                if abs(sz - c[0]) <= size_tolerance * max(sz, c[0]):
+                    c[1].add(fi)
+                    break
+            else:
+                clusters.append([sz, {fi}])
+    n = max(len(per_frame), 1)
+    persistent_reps = [c[0] for c in clusters if len(c[1]) / n >= persistence]
+
+    def _is_design(sz):
+        return any(abs(sz - r) <= size_tolerance * max(sz, r) for r in persistent_reps)
+
+    masks = []
+    for labeled, sizes in per_frame:
+        m = np.zeros(labeled.shape, dtype=bool)
+        for lab, sz in sizes.items():
+            if not _is_design(sz):
+                m |= (labeled == lab)
+        masks.append(m)
+    return masks
+
+
 def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks):
     """
     Same contraction as erode_alpha_edge, EXCEPT any pixel inside a given
@@ -4049,8 +4145,15 @@ def process(input_path, output_path, args, diagnostics=None):
                   f"linework.", file=sys.stderr)
         alpha_frames_pre_erosion = alpha_frames
         exempt_max = getattr(args, 'erosion_exempt_max_size', None)
-        _tiny_for_cal = (find_tiny_removed_regions(alpha_frames, exempt_max)
-                         if exempt_max is not None and exempt_max > 0 else None)
+        if getattr(args, 'erosion_exempt_transient', False):
+            _tiny_for_cal = find_transient_removed_regions(
+                alpha_frames, max_size=exempt_max if exempt_max else 500)
+            print("erosion exemption by PERSISTENCE, not size: regions present in ~every "
+                  "frame at a stable size are treated as design and eroded normally; only "
+                  "incidental ones are exempt.", file=sys.stderr)
+        else:
+            _tiny_for_cal = (find_tiny_removed_regions(alpha_frames, exempt_max)
+                             if exempt_max is not None and exempt_max > 0 else None)
         if getattr(args, 'auto_erosion', False) and not args.pixel_art:
             _cal_pal = build_art_palette(
                 rgb_frames[::max(1, len(rgb_frames) // 8)], hex_to_rgb(args.bg_color))
@@ -4074,7 +4177,7 @@ def process(input_path, output_path, args, diagnostics=None):
         # while reporting a different one (caught in testing).
         if diagnostics is not None:
             diagnostics['erosion_used'] = args.edge_cleanup_erosion
-        if exempt_max is not None and exempt_max > 0:
+        if _tiny_for_cal is not None or (exempt_max is not None and exempt_max > 0):
             tiny_masks = (_tiny_for_cal if _tiny_for_cal is not None
                           else find_tiny_removed_regions(alpha_frames, exempt_max))
             alpha_frames = erode_alpha_edge_exempting_tiny_regions(
@@ -5101,6 +5204,16 @@ def main():
                          'a JSON report of the mechanical verification checks: leftover '
                          'background, protected-region coverage, edge fringe, small '
                          'removed-region inflation, and duration/frame-count.')
+    p.add_argument('--erosion-exempt-transient', action='store_true',
+                   help='Exempt small removed regions from edge-cleanup erosion by '
+                        'IDENTITY rather than by size: regions present in ~every frame at '
+                        'a stable size are treated as design and eroded normally, and only '
+                        'incidental ones are exempt. Use instead of '
+                        '--erosion-exempt-max-size when the two overlap in size -- on a real '
+                        'asset the design sat at 286-306px while the incidental noise reached '
+                        '442px, so NO size threshold separated them (references/lessons.md '
+                        'SS18.2, SS21). Optionally still bounded by --erosion-exempt-max-size '
+                        'as a sanity cap.')
     p.add_argument('--auto', action='store_true',
                    help='FULLY AUTONOMOUS MODE. Runs --recommend, applies its flags '
                         '(only where you left that option at its default -- your explicit '

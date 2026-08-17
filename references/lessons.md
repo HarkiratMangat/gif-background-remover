@@ -1865,3 +1865,90 @@ the rule is not stuck. But it means the calibration mostly re-derives a constant
 and its 2/3 branches have never been exercised on real content. Its genuine value is that it
 DERIVES rather than assumes, and adapts across alpha depths — not that it finds a different
 answer per asset.
+
+---
+
+## 21. Four verification defects, and exempting by identity instead of by size
+
+**2026-08-17.** Harkirat asked to fold the tractable backlog items into this session and leave the
+research ones for a fresh one. Items 9, 10, 11 and 12. Three of the four turned out to be the
+SAME underlying mistake, which is why they are written up together.
+
+### 21.1 The shared root cause: a bounding RECTANGLE is not a region
+`protected_region_coverage` measured opacity across every background-coloured pixel inside a
+region's bounding box. A bbox around an irregular shape also contains real background, which is
+correctly transparent — so the check counted correct transparency as missing protection.
+
+Measured on gift, frame 0: **12,371** background-coloured pixels inside the bbox against
+**10,257** actually enclosed. Coverage read **0.874** for a region that is in fact **100%**
+protected. Restricting to the enclosed footprint reads **1.000**.
+
+This is item 12, and it retroactively settles item 4: gift's white strip was never partly
+unprotected. I had reported "0.0 → 0.874" as a fix and let the summary say CLOSED while quietly
+not knowing what the remaining 12.6% was. It was never real.
+
+**It also appears to fix a separately-tracked P3 item** — `protected_region_coverage`
+false-positiving on a legitimately punched sub-hole inside a translating candidate region. Same
+mechanism: a punched hole inside a bbox is background-coloured, correctly transparent, and was
+being counted against the region. Corroborating evidence: crystal's coverage went **0.569 → 1.000**
+with no change to the render. ⚠️ Not confirmed against that item's own asset (`military-tag.gif`
+is not on this machine), so it is recorded as probably-fixed, not fixed.
+
+### 21.2 Leftover background counted the very thing it was told to protect
+`leftover_background_opaque_px` excluded pixels *enclosed in that frame*, which is not the same
+as pixels the pipeline protected: a protected region can open to the outside in some frames while
+still being correctly kept opaque. gift reported **14,243** background-coloured opaque pixels on
+its worst frame — all of them the white strip the outline protects, i.e. the intended output.
+
+Reconstructing the same fill the pipeline applies (`--protect-outline-color`'s mask, hole-filled)
+and excluding it takes that to **0**. Measured alternatives, worst frame:
+
+| exclusion | leftover |
+|---|---|
+| none | 14,243 |
+| enclosed-in-scope (what it did) | 3,878 |
+| whole protected bbox scope | 3,878 |
+| **enclosed + the outline's own filled area** | **0** |
+
+### 21.3 `--verify` now accepts WebP/AVIF
+The refusal was correct when written — its checks assumed 1-bit alpha — but the reason had
+already been dismantled: §17 made durations readable, §19 made the fringe metric alpha-aware.
+The last piece was leftover background, which now requires **alpha ≥ 250**: on an 8-bit output a
+background-coloured pixel that is *partly transparent* is a recovered fade or an antialiasing
+ramp, i.e. correct output, not leftover. The report carries a `scope_note` stating this rather
+than silently changing meaning between formats.
+
+Verified on a real WebP (`love_nocontroller_fullres.webp`): runs, reports `output_format: webp`,
+fringe 0.0003 clean, leftover 327 px.
+
+### 21.4 Exempting by IDENTITY dissolves what the size guard only sidestepped
+§18.2 stopped `--erosion-exempt-max-size` being recommended when the transient and design size
+ranges overlap. That was correct but partial: it picks the safer side of the conflict, so love
+gets no exemption at all and the v3.1.0 small-region inflation bug stays live for it.
+
+The overlap is only a problem because the flag keys on SIZE. The classifier already distinguishes
+them correctly — present in ~every frame at a stable size = design — and the erosion machinery
+already takes MASKS (`erode_alpha_edge_exempting_tiny_regions`), not a threshold. So
+`find_transient_removed_regions()` applies the same persistence clustering at process time and
+builds the exemption mask from the incidental regions only. New flag
+`--erosion-exempt-transient`, now auto-recommended exactly where the size threshold is refused.
+love's design at 262–306px and its noise at up to 442px may overlap freely; identity does not care.
+
+**The lesson worth keeping: when two things cannot be separated by the parameter you have, check
+whether a different parameter separates them trivially before settling for the safer side.** The
+machinery for the better answer had been in the file the whole time.
+
+### 21.5 Result across the corpus
+Every asset rendered straight from its own `--recommend` output, then verified:
+
+| asset | leftover bg | fringe | verdict | worst coverage |
+|---|---|---|---|---|
+| love | 0 | 0.0901 | inconclusive | 1.000 |
+| heart | 0 | 0.0000 | clean | — |
+| gift | 0 | 0.0070 | clean | 1.000 |
+| explosion | 0 | 0.0001 | clean | — |
+| crystal | 0 | 0.0068 | clean | 1.000 |
+
+Against the previous round: gift leftover 14,243 → 0 and coverage 0.874 → 1.000; crystal coverage
+0.569 → 1.000. No render changed — every one of these was a measurement defect, which is its own
+warning about how much weight a self-check can carry before it has been checked itself.
