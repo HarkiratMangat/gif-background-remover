@@ -1375,3 +1375,123 @@ average across the corpus after proper flags:
 When the top lost colour is the OUTLINE colour and the loss is 2–3%, the GIF is correct and you are
 seeing the unavoidable cost of 1-bit alpha on antialiased edges. When the top lost colour is an
 interior fill (`#ffffff`, `#d2dcfd`) and the loss is >10%, something is genuinely misconfigured.
+
+### An opaque translucent element punches a hole through whatever it covers
+A fading colour is deliberately NOT a flood-fill barrier — background behind a
+translucent element has to stay reachable (love.gif's gap between heart outline and
+pulse ring depends on it). But at FULL opacity such an element occludes, and where it
+crosses solid artwork, exempting it opens a corridor the background flood pours through.
+
+Confirmed on `crystal.gif`: an opaque yellow sparkle lying across the crystal's navy
+outline **emptied the crystal's white interior in 59 of 130 frames — 24,520 px in one
+blob.** A leak map (barrier black / correctly-outside green / leaked red / translucent
+corridor yellow) showed the sparkle sitting exactly on the outline.
+
+**Rejected fix:** a plain opacity cut (any pixel at t≥0.95 blocks). Fixes crystal, but
+**seals love's gap in 27 frames** — trading one visible bug for another.
+
+**Shipped fix — an ART PRIOR.** Colour alone cannot separate "opaque sparkle over navy"
+from "opaque sparkle over background". Position over TIME can: the outline is art in most
+frames, background is not. A near-opaque fading pixel (`t ≥ FADE_OPAQUE_BLOCK` 0.90) now
+blocks only where solid art is present in ≥30% of frames (`FADE_ART_PRIOR`). Measured:
+crystal 59/130 → **0**, love's ramp identical, falsifier still passing, opaque-white
+within 0.17%.
+
+### `--verify`'s `looks_fringed` is unreliable — do not decide erosion with it
+`--edge-cleanup-erosion`'s 2px default is calibrated for the BAYER path. Under
+`--dither-mode none` there is no dither noise to trim and 2px bites thin strokes from
+both sides. Measured, non-background px wrongly deleted at erosion 2 vs 1:
+
+| asset | erosion 2 | erosion 1 |
+|---|---|---|
+| crystal | 931,569 | 466,092 |
+| explosion | 448,205 | 223,686 |
+| gift | 635,720 | 313,631 |
+
+So erosion was reduced — **to 0, which was wrong**, and Harkirat caught a visible pale
+fringe on love.gif immediately. `--verify` reported `looks_fringed: False` at erosion
+**0, 1 AND 2**, so it could not have caught this and actively misled the decision.
+
+**Measure the outer opaque ring instead** — for the outermost ring of opaque pixels, how
+many are closer to the BACKGROUND colour than to the art colour:
+
+| erosion | mean distance to true outline colour | % of ring closer to background |
+|---|---|---|
+| 0 | 162.3 | **49.1%** ← visible fringe |
+| 1 | 15.6 | 0.2% |
+| 2 | 9.0 | 0.7% |
+
+**Resolved defaults: 0 for WebP/AVIF (8-bit alpha needs no fringe trim), 1 under
+`--dither-mode none`, 2 for the Bayer path.** ⚠️ `--edge-cleanup-erosion` now defaults to
+`None` and resolves explicitly — the previous version could not distinguish "user typed 2"
+from "default is 2" and silently overrode an explicit value, which also made a diagnostic
+probe return identical numbers for 0 and 2 and nearly produced a second wrong conclusion.
+
+### Bayer 8×8, and why error-diffusion dithers are wrong for ALPHA
+`--bayer-size` now defaults to **8** (64 threshold levels vs 4×4's 16), tracking the
+intended alpha **2.5× more closely** (mean local-density error 0.0051 vs 0.0128) at
+identical temporal stability. `--bayer-size 4` reproduces pre-v5.0.0 output byte-identical.
+
+**Floyd–Steinberg, Jarvis, Sierra, Stucki are disqualified for alpha**, and the test that
+shows it must be able to fail. A first attempt nudged one pixel by 2% and scored 0 for
+both methods — vacuous, because that pixel never crossed a threshold. Redone across two
+frames whose right half is **byte-identical**:
+
+| dither | px changed in the static region |
+|---|---|
+| Bayer 4×4 | **0** |
+| Bayer 8×8 | **0** |
+| Floyd–Steinberg | **312 (8.1%)** ← visible crawl |
+
+Error diffusion propagates each pixel's error to its neighbours, so the pattern depends on
+scan order and everything upstream: it crawls frame to frame even where the art is static,
+and that also defeats GIF inter-frame compression. Ordered dithers are position-indexed and
+therefore temporally stable by construction. (gifsicle still uses Floyd–Steinberg for
+COLOUR quantization in the tiers — a different problem; see `gif-deferred-list.md` for the
+open question of whether even that is right.)
+
+### `--recommend`'s outline gate was too strict — a 22× worse result from being "safe"
+The gate refused `--protect-outline-color` whenever `anomalous_frame_count != 0`, treating
+"enclosure breaks on some frames" as "unusable". On `crystal.gif` the outline is verified
+with `enclosure_ratio` 1.0 but breaks on 75/130 frames (the sparkle crossing it), so
+`--recommend` fell through to `--protect-band-only` — **19.99% of the artwork lost against
+the outline's 0.91%.**
+
+A nonzero count means "the substitution path will engage", not "reject". Background LEAK
+remains a hard reject (it over-protects, with no safe fallback). ⚠️ **A conservative gate
+is not automatically the safe choice** — it has to be judged against what the fallback
+actually costs.
+
+### Borrowed masks: UNION with the frame's own, and CLAMP to its silhouette
+When enclosure is flagged anomalous, the per-frame mask substitution used to REPLACE that
+frame's mask with a borrowed one. Two separate defects came out of that, both on crystal:
+
+- **Replacement discards correct information.** The frame's own mask encloses whatever
+  that frame does enclose. Pure replacement deleted ~500 px from inside the small left
+  crystal in frames 0-19. Fix: `(own | borrowed)`.
+- **A borrowed mask describes ANOTHER frame's geometry.** On anything that moves or grows
+  it protects background the current frame does not cover — a white wedge floating above
+  the tall crystal's tip, ~1,600 px/frame. Fix: `& this-frame's-filled-silhouette`.
+
+Combined: `(own | borrowed) & silhouette`. Measured: hole 502 px → 10-17 px, wedge +1,642
+→ 0, art loss 0.95% → 0.89%.
+
+⚠️ **Also tried and REVERTED:** suppressing the bimodal gap detector when the small mode is
+the MAJORITY, on the theory that occlusion is the exception. On crystal the small mode IS
+the majority (75/130) — and is the BROKEN state. Suppressing took art loss from 0.95% to
+7.07% and left an 11,451 px hole. **A majority can be wrong.**
+
+### `--recommend` now recommends the FORMAT, ranked for compatibility not just bytes
+It previously suggested flags but never the container — the first decision, not a packaging
+afterthought. A `gradient_fade` region means GIF structurally cannot carry the asset.
+Ranking (Harkirat's, 2026-08-17):
+
+- **full resolution** → WebP lossless > AVIF q85 > GIF
+- **under a byte cap** → AVIF > WebP > GIF (AVIF keeps EVERY frame; the others drop a third
+  to two-thirds)
+- **maximum compatibility** → WebP > GIF > AVIF
+- **GIF** only when required, or a genuine win on size/render-time at near-equal quality
+
+Always report frame counts beside file sizes — under a cap, frames are what actually gets
+spent.
+

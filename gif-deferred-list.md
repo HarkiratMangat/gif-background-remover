@@ -162,6 +162,39 @@ don't get re-flagged as forgotten work by a future review.*
 
 ## 🔔 Reminders / watch-for
 
+### AUTONOMY BACKLOG — `--recommend` still needs manual correction on these (opened 2026-08-17)
+The end goal is a fully automatic run: `--analyze`/`--recommend` produce correct flags with
+no human tuning. These are the cases where that is still false. **A manual flag tweak is an
+investigation result, not a fix** — the fix belongs in the script. Full detail, with the
+measurements behind each, in `local/HANDOFF-2026-08-17.md` and `references/lessons.md` §16.
+
+1. **`--pixel-art` emitted on thin-AA vector art** (love 0.425, heart 0.316). Measured
+   destructive on curve-heavy AA art. A near-boundary warning was added, but an autonomous
+   run takes the flag verbatim. Suppress in the 0.30–0.50 band, or find a second
+   discriminator. *(highest value)*
+2. **`--erosion-exempt-max-size` still emitted for love** — persistence classification fixed
+   crystal/gift but not this. Applying it to real design leaves a fringe (v3.3.3 regression).
+3. **heart's `--feather-band-multiplier 1.5`** is the clamp floor and unverified against
+   fringe. Measure with the outer-ring method, NOT `looks_fringed` (see 7).
+4. **gift's white strip is never surfaced as a candidate region** — the working flag
+   (`--protect-outline-color 052a75`) was found by eye.
+5. **gift's sparkle colour never appears at full opacity** — it is `#052a75`, the same navy
+   as the box outline, so one colour is both solid art and a translucent element. The art
+   prior is the plausible basis; ⚠️ read the REVERTED saturation-promotion experiment first.
+6. **GIF `--target-kb` discards `--square-pad`** (`apply_tier` re-crops) — fitted GIF emoji
+   comes back 128×110. WebP/AVIF unaffected.
+7. **`--verify`'s `looks_fringed` is unreliable** — returned False at erosion 0, 1 AND 2,
+   including a level with a visible fringe. It misled a decision and shipped a regression.
+   Replace with the outer-opaque-ring measurement (49.1%/0.2%/0.7% for erosion 0/1/2).
+8. **AVIF durations cannot be read back** — Pillow exposes none, so timing reports as
+   unverified. Encoder writes them correctly (confirmed by real Discord playback).
+
+### PARKED: remove the controller from love.gif (direct request, NOT skill training)
+Boundary reconstruction and the encoding path are SOLVED (static-in-canvas divide, degree-6
+fit at 0.33px RMS, no GIF round-trip). **Unsolved: isolating the controller mask on frames
+26–34**, where it touches the heart outline. Four approaches measured — see the handoff.
+
+
 ### Re-test gifsicle's colour dither on a GRADIENT-heavy corpus (opened 2026-08-17)
 The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot-
 measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that

@@ -316,6 +316,21 @@ apply at all.
   at native resolution lossy is *bigger* than lossless on flat vector art
   (measured 2675 KB at q85 vs 2114 KB lossless), though the ordering reverses
   once downscaled (at 128px: 650 KB lossy vs 1190 KB lossless).
+  `--bayer-size` (GIF, `--dither-mode bayer`) defaults to **8** — 64 threshold
+  levels against 4×4's 16, tracking the intended alpha 2.5× more closely at
+  identical temporal stability. Pass `4` to reproduce pre-v5.0.0 output
+  byte-identical. Error-diffusion dithers (Floyd–Steinberg, Jarvis, Sierra,
+  Stucki) are deliberately NOT offered for alpha: measured, Floyd–Steinberg
+  changed 8.1% of pixels in a region byte-identical between frames — visible
+  crawl on every edge — where both Bayer sizes changed 0.
+
+  `--edge-cleanup-erosion` now resolves its default by context: **0** for
+  WebP/AVIF (8-bit alpha needs no fringe trim), **1** under `--dither-mode none`
+  (no Bayer noise to trim, and 2 deletes thin strokes), **2** for the Bayer path.
+  ⚠️ Do NOT use `--verify`'s `looks_fringed` to pick this — it reported False at
+  every erosion level including one with a clearly visible fringe. Measure the
+  outer opaque ring instead (`references/lessons.md` §16).
+
   `--webp-method` defaults to **2** — measured across 5 real assets, m2 costs
   0.6–8.3% more bytes than m4 for ~2× the speed. **Do not raise it to 6**
   (45× slower for 2.3% smaller). Method 0 is faster still but its size cost is
