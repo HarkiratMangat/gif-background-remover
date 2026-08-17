@@ -316,18 +316,25 @@ apply at all.
   at native resolution lossy is *bigger* than lossless on flat vector art
   (measured 2675 KB at q85 vs 2114 KB lossless), though the ordering reverses
   once downscaled (at 128px: 650 KB lossy vs 1190 KB lossless).
-  `--webp-method` defaults to 4; **do not raise it to 6** (measured 45× slower
-  for 2.3% smaller). Method 0 is much faster but its size cost is
-  content-dependent (+134% here, +14% on different content elsewhere) — measure
-  before assuming.
+  `--webp-method` defaults to **2** — measured across 5 real assets, m2 costs
+  0.6–8.3% more bytes than m4 for ~2× the speed. **Do not raise it to 6**
+  (45× slower for 2.3% smaller). Method 0 is faster still but its size cost is
+  wildly content-dependent (+134% on one asset, +14% on another) — measure
+  before using it.
 - **AVIF** — 8-bit alpha, and roughly **3× the frame budget of WebP under a hard
   byte cap**: all 124 frames of a real asset fit Discord's 256 KB emoji limit at
   128×128, where WebP had to drop to 42. ⚠️ `--avif-quality 100` is NOT lossless
   and produces the largest file of all — never use it as a "best quality" knob.
 
-**Rules of thumb:** need a bit-exact master → WebP lossless. Need the smallest
-good-looking file, or need to keep every frame under a cap → AVIF (q85 was 37%
-smaller than WebP lossless with mean RGB error 2.0/255). Must ship a GIF →
+**Decision procedure** (measured on 5 real assets — the direction generalises,
+the exact numbers do not, so measure rather than quoting a ratio):
+1. **Full fidelity / "no compression"** → WebP lossless (`-m 2`). The only
+   bit-exact option; AVIF has no true lossless mode.
+2. **Full resolution, minor optimization** → AVIF q85. Smaller than WebP
+   lossless on every asset tested, but by anywhere from 28% to 72%.
+3. **Hard byte cap (e.g. Discord's 256 KB emoji)** → AVIF at 128×128, keeping
+   every frame, trying q85 then q70. All five test assets fit that way — two at
+   q85, three at q70. `--target-kb` runs this cascade for you. Must ship a GIF →
 accept the 1-bit-alpha consequences and read the fade section above.
 
 ⚠️ **Platform acceptance is not playback.** A platform listing a format as an

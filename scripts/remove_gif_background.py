@@ -452,7 +452,14 @@ def analyze(input_path, max_samples=40, tolerance=15):
             # removal_mask's own docstring guidance that the ring should be
             # at least as wide as the real antialiasing fringe.
             'band_only_width': None if is_fade else 4,
-            'recommendation': '--dither-mode none' if is_fade else '--protect-band-only 4',
+            # A gradient_fade is a translucent element the source flattened
+            # against the background. --dither-mode none is the best GIF can do
+            # (it just cuts the faintest stages); --recover-fade-alpha into a
+            # webp/avif reconstructs the real alpha. Name the better answer
+            # first -- see references/lessons.md SS16.
+            'recommendation': ('--recover-fade-alpha with a .webp/.avif output '
+                               '(or --dither-mode none if it must be a GIF)'
+                               if is_fade else '--protect-band-only 4'),
         })
 
     # Persistence split. The <=500px ceiling above exists to keep genuine
@@ -685,10 +692,18 @@ def recommend(input_path, tolerance=15):
     flags = []
 
     if report['edge_hardness']['appears_hard_edged']:
+        _hardness = float(report['edge_hardness']['ratio'])
         flags.append('--pixel-art')
         evidence.append(
-            f"Hard-edged art detected (edge_hardness ratio "
-            f"{report['edge_hardness']['ratio']}) -- recommending --pixel-art.")
+            f"Hard-edged art detected (edge_hardness ratio {_hardness:.3f}) -- "
+            f"recommending --pixel-art."
+            + ("" if _hardness < 0.30 else
+               " NEAR THE 0.5 BOUNDARY -- do not accept this unreviewed: a clean vector "
+               "export whose shapes are mostly straight lines needs only a thin "
+               "antialiasing band and can score low while being ordinary antialiased art. "
+               "A real asset measured 0.425 and --pixel-art would have been destructive "
+               "there. Zoom in on a CURVED edge and confirm there is no 1-2px ramp before "
+               "using this (references/lessons.md SS1 and SS16)."))
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
@@ -754,6 +769,11 @@ def recommend(input_path, tolerance=15):
     band_regions = report.get('band_interior_regions', [])
     if any(r['classification'] == 'gradient_fade' for r in band_regions):
         flags.append('--dither-mode none')
+        evidence.append(
+            "NOTE: --dither-mode none is the best GIF can do for a fade. If the "
+            "deliverable can be WebP or AVIF, use --recover-fade-alpha with a "
+            ".webp/.avif output instead -- it reconstructs the original alpha "
+            "exactly rather than cutting the faintest stages (lessons SS16).")
         evidence.append(
             "Band-interior region(s) show a gradient-fade signature (color distance from "
             "background varies across the frames it appears in) -- recommending "
@@ -2460,9 +2480,11 @@ def render_frames_to_webp(rgb_frames, alpha_frames, durations, loop, output_path
     and no transparency index -- WebP stores straight (non-premultiplied)
     RGBA directly, so partial alpha survives and no dithering is needed.
 
-    `method` defaults to 4, NOT 6. Measured on a real 124-frame 640x640 job:
-    method=6 took 415s against method=4's 9.2s -- a 45x slowdown -- to save
-    2.3% of file size. method=6 is essentially never worth it here.
+    `method` defaults to 2. Measured across 5 real assets: m2 costs 0.6-8.3%
+    more bytes than m4 while encoding ~2x faster. m6 is never worth it (45x
+    slower than m4 for 2.3%); m0 is faster still but its size penalty ranges
+    from +14% to +134% depending on content, so it must be measured, not
+    assumed.
 
     On flat vector art, `lossless=True` is usually SMALLER as well as better
     than lossy: measured 2109 KB lossless vs 3005 KB at quality 90 on the
@@ -2506,6 +2528,33 @@ def render_frames_to_avif(rgb_frames, alpha_frames, durations, loop, output_path
     ims[0].save(output_path, 'AVIF', save_all=True, append_images=ims[1:],
                 duration=list(durations), loop=loop, quality=quality)
     return os.path.getsize(output_path)
+
+
+def read_animation_timing(path):
+    """
+    (frame_count, total_ms) read back from a written animation, or None if this
+    environment cannot read it.
+
+    Returning None rather than a guess is the point: asserting the durations we
+    intended to write produces a message that CANNOT fail, which is exactly the
+    defect SS13 documents and SS16 repeats for WebP.
+    """
+    try:
+        im = Image.open(path)
+        n = getattr(im, 'n_frames', 1)
+        total = 0
+        for i in range(n):
+            im.seek(i)
+            total += im.info.get('duration', 0) or 0
+        if total > 0:
+            return n, total
+        # Pillow reports 0 for animated WebP; fall back to the container.
+        d = read_webp_durations(path)
+        if d:
+            return len(d), sum(d)
+        return None
+    except Exception:
+        return None
 
 
 def read_webp_durations(path):
@@ -2604,12 +2653,18 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
                     f"{'lossless' if lossless else f'q{quality}'}")
             say(f"  tried {desc}: {size/1024:.1f} KB")
             if best is None or size < best[0]:
-                best = (size, desc)
+                best = (size, desc, (stride, scale, quality, lossless))
             if size <= target_bytes:
                 say(f"Hit target: {size/1024:.1f} KB <= {target_kb} KB ({desc})")
                 return size, True
-    # nothing fit -- re-encode the smallest configuration so the file on disk
-    # matches what we report, rather than whatever the last rung happened to be.
+    # Nothing fit. Re-encode the SMALLEST configuration so the file left on disk
+    # is the one we report -- otherwise the file is whatever the last rung
+    # happened to produce, and the reported number describes a different file.
+    if best is not None and best[2] is not None:
+        stride, scale, quality, lossless = best[2]
+        fr, al, dur = (reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
+                       if stride > 1 else (rgb_frames, alpha_frames, durations))
+        encode(fr, al, dur, scale, quality, lossless)
     say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]}).")
     return os.path.getsize(output_path), False
 
@@ -3476,7 +3531,18 @@ def process(input_path, output_path, args):
         size_bytes = render_frames_to_avif(
             rgb_frames, alpha_frames, durations, loop, output_path,
             quality=args.avif_quality)
-        timing = f"{len(rgb_frames)} frames, {sum(durations)}ms total"
+        # Read the written file back rather than restating what we intended to
+        # write -- the SS13/SS16 footgun. If the reader cannot supply timing,
+        # say so instead of asserting a number that cannot fail.
+        written = read_animation_timing(output_path)
+        if written is None:
+            timing = (f"{len(rgb_frames)} frames intended; timing not read back "
+                      f"(no reader available for this container)")
+        else:
+            n, total = written
+            timing = (f"{n} frames, {total}ms total"
+                      + ("" if total == sum(durations)
+                         else f" -- WARNING: source was {sum(durations)}ms"))
     elif _fmt == 'webp':
         size_bytes = render_frames_to_webp(
             rgb_frames, alpha_frames, durations, loop, output_path,
@@ -4022,10 +4088,14 @@ def main():
     p.add_argument('--webp-quality', type=int, default=90,
                     help='Quality 0-100 for --webp-lossy (default 90). Alpha '
                          'is always kept at maximum quality.')
-    p.add_argument('--webp-method', type=int, default=4,
-                    help='WebP encoder effort 0-6 (default 4). Do NOT raise '
-                         'to 6 casually: measured 45x slower (415s vs 9.2s '
-                         'on a 124-frame 640x640 job) for a 2.3%% size gain.')
+    p.add_argument('--webp-method', type=int, default=2,
+                    help='WebP encoder effort 0-6 (default 2). Measured across 5 '
+                         'real assets: m2 costs only 0.6-8.3%% more bytes than m4 '
+                         'but encodes ~2x faster, which is the better default. '
+                         'm0 is faster still but its size cost is wildly '
+                         'content-dependent (+134%% on one asset, +14%% on another '
+                         '-- measure before using it). Do NOT raise to 6: 45x '
+                         'slower (415s vs 9.2s) for 2.3%%.')
     p.add_argument('--dither-mode', choices=['bayer', 'none', 'continuous'],
                     default=None,
                     help='How feathered edges resolve to the container\'s '

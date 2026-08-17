@@ -56,6 +56,13 @@ scratch risks retrying an approach already known to fail.
 ---
 
 ## 1. Edge-hardness caveat: geometry-heavy false positives
+
+**Second confirmed case (2026-08-17, §16's asset):** `love.gif` scored **0.425** — under the 0.5
+threshold, so `--recommend` suggested `--pixel-art`, which would have disabled feathering and
+erosion on curve-heavy antialiased vector art. Zooming 8× showed a real 1–2px antialiasing ramp.
+`--recommend` now attaches an explicit "near the 0.5 boundary, zoom before accepting" warning to any
+ratio at or above 0.30, so this caveat travels with the recommendation instead of relying on someone
+remembering to read this section.
 SKILL.md's rule: `edge_hardness.ratio` under ~0.5 means hard-edged (use `--pixel-art`); a few units
 or more means real antialiasing (normal defaults are correct). Real measurements for reference: a
 genuine pixel-art test file measured 0.0; two real antialiased vector icon test files measured 4.5
@@ -733,6 +740,11 @@ Additive/opt-in, default off — confirmed the existing default codepath is unaf
 
 ## 12. Art that fades toward the background colour renders as a dither mesh
 
+**⚠️ Superseded for non-GIF deliverables by §16 (2026-08-17).** Everything below is still the right
+answer *if the output must be a GIF*. If it can be WebP or AVIF, `--recover-fade-alpha` reconstructs
+the original alpha exactly instead of cutting the faintest stages, and the fade renders as real
+translucency. Read §16 first; treat `--dither-mode none` as the GIF fallback, not the default answer.
+
 **Found 2026-08-07** on `ruby.gif`, a 109-frame 640x640 gem icon with yellow four-pointed
 sparkles. Reported by Harkirat directly, from the delivered file, against a dark backdrop.
 
@@ -1108,7 +1120,8 @@ Two further guards, both from real failures during this build:
   matters.
 - **AVIF `quality=100` is a trap**: not lossless (max RGB delta 145) *and* the largest file of all.
 - **AVIF fits ~3× the frames under a hard cap.** Discord's 256 KB emoji limit: AVIF held all 124
-  frames at 128×128 (244 KB, q70/q85); WebP had to drop to 42 frames. Confirmed live by the
+  frames at 128×128 in **244 KB at q70** (q85 was 357 KB and did *not* fit); WebP had to drop to
+  42 frames to fit at all. Confirmed live by the
   requester that Discord accepts *and animates* AVIF emoji.
 - **AVIF's alpha "error" is not where the max-delta suggests.** Despite ±31–50 maxima, every fade
   stage reproduced with median alpha exactly right (255/204/152/102/50); on the faintest stage the
@@ -1165,3 +1178,77 @@ any recovery. Dior's Builds' nameplate work is the cautionary version — a sess
 "genuinely has no alpha channel" when the alpha was there all along and ffmpeg's *default decoder
 choice* was discarding it (`-c:v libvpx-vp9` recovered 234 distinct alpha values). **A tool's
 default reading of an asset is not the asset.**
+
+### Validated across a 5-asset corpus, not just the motivating file
+Run 2026-08-17 against four further real emoji (`heart`, `gift`, `explosion`, `crystal`) chosen to
+attack specific assumptions. **Two predicted failures did not occur**, which is worth recording as
+honestly as a failure would be:
+
+| Asset | Probe | Result |
+|---|---|---|
+| `heart` | replication of a fading pulse | fade found (`#384998`), coverage 99.2% — method is not overfit |
+| `gift` | many *small* sparkles vs `min_px=2000` tuned on a 30,000px ring | **prediction wrong** — fade found, coverage 99.3% |
+| `explosion` | tumbling motion (§10's failure class) | correctly found **no** fade; no fixed-region artifacts — supports position-independence |
+| `crystal` | art colours very close to the background | **prediction wrong** — near-white crystals stayed opaque, coverage 99.7% |
+
+**But `crystal` exposed a real latent fragility.** Its `#d2dcfd` (distance 57 from white, 261k px)
+is a *solid art colour* that the palette builder REJECTS as a blend-impostor, because it is
+genuinely explained as 43% `#93b2f4` over white (residual 3.6). It survived only because it sits
+**interior**, where topological protection keeps it opaque. **A near-background solid colour that
+appears at the silhouette edge would be unmixed to partial alpha and go semi-transparent.** The
+impostor-rejection rule that fixes the fade-stage bug creates this one; they are the same mechanism
+pointed in opposite directions. Not hit on any corpus asset — recorded so the next occurrence is
+recognised rather than re-derived.
+
+**Format conclusions, now measured on 5 assets rather than 1:**
+
+| Asset | Frames | WebP m2 | WebP m4 | m2 time | m4 time | AVIF q85 | q85 as % of m4 |
+|---|---|---|---|---|---|---|---|
+| love | 124 | 2163 KB | 2114 KB | 11.3s | 22.6s | 1331 KB | 63% |
+| heart | 35 | 595 | 575 | 3.3s | 5.9s | 392 | 68% |
+| gift | 172 | 1519 | 1403 | 11.0s | 20.5s | 675 | 48% |
+| explosion | 77 | 1215 | 1178 | 7.3s | 13.0s | 655 | 56% |
+| crystal | 130 | 1416 | 1408 | 9.1s | 16.6s | 396 | 28% |
+
+- **`-m 2` is the right default, not `-m 4`** — 0.6–8.3% more bytes for ~2× the speed, consistently
+  across all five. (Contrast `-m 0`: +134% on love, +14% on Dior's Builds' content — the curve
+  between 0 and 2 is steep and content-dependent, the curve between 2 and 4 is flat and boring.)
+- **AVIF q85 beat WebP lossless on every asset**, but by 28–72% — the *direction* generalises, the
+  *magnitude* does not. Do not quote "37% smaller" as a rule.
+- **All five fit Discord's 256 KB emoji cap at 128×128 with every frame kept**, at q85 (heart,
+  crystal) or q70 (love, gift, explosion). So "AVIF, all frames, try q85 then q70" is a sound
+  default procedure — but it is a procedure that MEASURES, not a fixed quality number.
+
+### Known limits of `--recover-fade-alpha` (not yet hit, recorded before they are)
+- **A fading element that OVERLAPS artwork** is a blend of glow+art, not background+one colour. It
+  becomes a residual case and is forced opaque — the translucency over the art is lost. Degrades
+  safely but silently; the coverage guard only catches it if the overlap is large.
+- **A fading element whose colour EQUALS a solid art colour** is the dangerous one: that colour stops
+  being a flood-fill barrier, so the fill can leak through solid artwork and punch it transparent.
+  This is precisely why `--fade-color` exists as a manual override.
+- **Strokes thinner than `2 × FADE_EDGE_DILATE` (6px)** let the edge rim reach through from both
+  sides. The interior-protection warning is the designed detector and fires with a count (10 px on
+  love, 349 on heart) — it is meant to be read, not ignored.
+
+### An observation bigger than the feature itself
+`--recover-fade-alpha` derives protection **topologically** — enclosed-and-unreached-by-the-flood
+means opaque — with no outline colour to verify and no region geometry to supply. On `love.gif` it
+protected the controller buttons perfectly with **zero user input**, where the normal path required
+`--protect-outline-color 002864` discovered through analysis. That is position-independent by
+construction, so it also sidesteps §10's whole fixed-region failure class, and with erosion off it
+sidesteps §11's inflation class too.
+
+If that holds generally, it is a better default protection strategy for flat vector art than either
+`--protect-outline-color` (§2) or `--protect-region`. It is currently gated behind a fade-oriented
+flag name and a webp/avif requirement — the latter is stricter than necessary, since binary alpha is
+enough when there is no fade to preserve. **Observed on 5 assets, not proven; recorded as the
+direction this skill should probably go next, not as a claim.**
+
+### Decision recorded: `img2webp -exact` was considered and NOT adopted
+libwebp can rewrite RGB under fully-transparent pixels to improve compression; `-exact` forbids it,
+and Dior's Builds passes it. Not adopted here because: this script sets transparent pixels to the
+background colour (the least harmful value for this content), its own resize path premultiplies and
+is therefore immune regardless, and adopting it means adding an external-binary dependency to the
+main output path with a Pillow fallback to maintain — for a benefit not demonstrable on any asset
+tested. **`-exact` is the lever if a halo is ever actually observed.** Recorded so this is not
+re-litigated from scratch.
