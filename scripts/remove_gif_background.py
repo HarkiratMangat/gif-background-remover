@@ -2362,15 +2362,10 @@ def verify(input_path, output_path, tolerance=15):
             # ring pixel closer to the background than to any real art colour?
             # Measured on the asset that exposed the false negative, erosion
             # 0/1/2: 49.1% / 0.2% / 0.7%.
-            ring_px = out_rgb[i][edge_ring].astype(np.float32)
-            d_bg = np.linalg.norm(ring_px - np.asarray(bg_rgb, np.float32), axis=-1)
-            _pal = np.asarray(_fringe_palette, np.float32).reshape(-1, 3)
-            if len(_pal):
-                d_art = np.linalg.norm(
-                    ring_px[:, None, :] - _pal[None, :, :], axis=-1).min(axis=1)
-                fringed_pixel_fractions.append(float((d_bg < d_art).mean()))
-            else:
-                fringed_pixel_fractions.append(float((d_bg <= tolerance).mean()))
+            _v = measure_outer_ring_background_fraction(
+                out_rgb[i], out_alpha[i], bg_rgb, _fringe_palette)
+            if _v is not None:
+                fringed_pixel_fractions.append(_v)
 
     report['leftover_background_opaque_px'] = {
         'max_per_frame': max(leftover_bg_counts) if leftover_bg_counts else 0,
@@ -3428,6 +3423,89 @@ def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks
     return final
 
 
+def measure_outer_ring_background_fraction(rgb, alpha, bg_rgb, palette,
+                                           opaque_min=250):
+    """
+    Fraction of the outermost NEAR-OPAQUE ring that is closer to the background
+    colour than to any of the art's own flat colours. High = a pale fringe the
+    edge cleanup should have removed.
+
+    `opaque_min` is what makes this usable on 8-bit alpha. On a GIF every pixel
+    is 0 or 255 and the ring is just "the edge". On WebP/AVIF the edge is a real
+    alpha ramp, and those ramp pixels are SUPPOSED to be pale and semi-
+    transparent -- counting them would flag correct output as fringed. Looking
+    only at pixels that are essentially fully opaque asks the right question in
+    both cases: is there anything SOLID here that should not be?
+
+    Returns None when the frame has no such ring, so callers can tell "measured
+    zero" apart from "nothing to measure".
+    """
+    solid = alpha >= opaque_min
+    ring = ndimage.binary_dilation(~solid, iterations=1) & solid
+    if not ring.any():
+        return None
+    pal = np.asarray(palette, np.float32).reshape(-1, 3)
+    if len(pal) == 0:
+        return None
+    px = rgb[ring].astype(np.float32)
+    d_bg = np.linalg.norm(px - np.asarray(bg_rgb, np.float32), axis=-1)
+    d_art = np.linalg.norm(px[:, None, :] - pal[None, :, :], axis=-1).min(axis=1)
+    return float((d_bg < d_art).mean())
+
+
+def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
+                                    candidates=(0, 1, 2, 3), tiny_masks=None,
+                                    tolerance_above_floor=0.02, log=None):
+    """
+    Choose --edge-cleanup-erosion by comparing THIS asset against ITSELF.
+
+    This exists because the fringe metric has no honest global threshold. It
+    separates cleanly WITHIN one asset -- every erosion-0 reading is 2-4x that
+    same asset's own clean baseline -- but the ranges OVERLAP across assets:
+    measured, heart's genuinely fringed 0.0665 sits BELOW crystal's perfectly
+    clean 0.0830, because art with a baked-in fade legitimately carries pale
+    near-background pixels at its boundary (references/lessons.md SS18.5).
+
+    A constant cannot express "2-4x above THIS asset's floor". So rather than
+    invent one, measure the asset at each candidate erosion and read the answer
+    off its own curve. The pick is the SMALLEST erosion whose reading is within
+    `tolerance_above_floor` of that asset's own minimum -- smallest because
+    erosion also eats thin strokes, so the goal is the least erosion that has
+    already removed the fringe, not the most.
+
+    One rule covers both failure directions: too little erosion reads well above
+    the floor, too much shows no further improvement and loses the tie to the
+    smaller candidate.
+
+    Runs on in-memory alpha before any encode, so it costs one extra erosion
+    pass per candidate -- not one extra render.
+    """
+    log = log if log is not None else []
+    table = {}
+    for e in candidates:
+        if e == 0:
+            cand_alpha = alpha_frames
+        elif tiny_masks is not None:
+            cand_alpha = erode_alpha_edge_exempting_tiny_regions(alpha_frames, e, tiny_masks)
+        else:
+            cand_alpha = erode_alpha_edge(alpha_frames, iterations=e)
+        vals = [v for rgb, al in zip(rgb_frames, cand_alpha)
+                if (v := measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)) is not None]
+        table[e] = round(float(np.mean(vals)), 4) if vals else None
+    measured = {e: v for e, v in table.items() if v is not None}
+    if not measured:
+        log.append("erosion calibration: no measurable opaque edge ring -- keeping the default.")
+        return None, table
+    floor = min(measured.values())
+    best = min(e for e, v in measured.items() if v <= floor + tolerance_above_floor)
+    log.append("erosion calibrated against this asset's own curve ("
+               + ", ".join(f"{e}:{v}" for e, v in sorted(measured.items()))
+               + f") -> {best}; floor {floor:.4f}, and {best} is the smallest level "
+                 f"already within {tolerance_above_floor} of it, so the fringe is gone "
+                 f"without eroding more than necessary.")
+    return best, table
+
+
 def erode_alpha_edge(alpha_frames, iterations=1):
     """
     Shave the outermost `iterations` pixel(s) off every frame's opaque
@@ -3781,7 +3859,7 @@ def build_preview(rgb_frames, alpha_frames, n_preview=6):
     return Image.fromarray(canvas)
 
 
-def process(input_path, output_path, args):
+def process(input_path, output_path, args, diagnostics=None):
     args = copy.copy(args)          # never mutate the caller's args (batch reuses them)
     out_format = resolve_output_format(output_path, args)
     if getattr(args, 'dither_mode', None) is None:
@@ -3971,8 +4049,27 @@ def process(input_path, output_path, args):
                   f"linework.", file=sys.stderr)
         alpha_frames_pre_erosion = alpha_frames
         exempt_max = getattr(args, 'erosion_exempt_max_size', None)
+        _tiny_for_cal = (find_tiny_removed_regions(alpha_frames, exempt_max)
+                         if exempt_max is not None and exempt_max > 0 else None)
+        if getattr(args, 'auto_erosion', False) and not args.pixel_art:
+            _cal_pal = build_art_palette(
+                rgb_frames[::max(1, len(rgb_frames) // 8)], hex_to_rgb(args.bg_color))
+            _cal_log = []
+            _picked, _cal_table = calibrate_edge_cleanup_erosion(
+                rgb_frames, alpha_frames, hex_to_rgb(args.bg_color), _cal_pal,
+                tiny_masks=_tiny_for_cal, log=_cal_log)
+            for _l in _cal_log:
+                print(_l, file=sys.stderr)
+            if diagnostics is not None:
+                diagnostics['erosion_table'] = _cal_table
+                diagnostics['erosion_picked'] = _picked
+            if _picked is not None and _picked != args.edge_cleanup_erosion:
+                print(f"auto: --edge-cleanup-erosion {args.edge_cleanup_erosion} -> {_picked}",
+                      file=sys.stderr)
+                args.edge_cleanup_erosion = _picked
         if exempt_max is not None and exempt_max > 0:
-            tiny_masks = find_tiny_removed_regions(alpha_frames, exempt_max)
+            tiny_masks = (_tiny_for_cal if _tiny_for_cal is not None
+                          else find_tiny_removed_regions(alpha_frames, exempt_max))
             alpha_frames = erode_alpha_edge_exempting_tiny_regions(
                 alpha_frames, args.edge_cleanup_erosion, tiny_masks
             )
@@ -4361,6 +4458,108 @@ def apply_pixel_art_preset(args):
     if getattr(args, 'pixel_art', False):
         args.feather = False
         args.edge_cleanup_erosion = 0
+
+
+def post_render_fringe_check(input_path, output_path, tolerance=15):
+    """
+    Re-measure the fringe metric on the ENCODED file, not on the in-memory
+    frames the calibration used.
+
+    These can genuinely disagree, which is the whole reason to look twice: GIF
+    palette quantization can snap an edge pixel onto a different palette entry
+    and merge identical frames, and a lossy WebP/AVIF can shift edge colours.
+    A calibration done before the encoder runs cannot see any of that.
+
+    Returns the mean fraction, or None if it could not be measured.
+    """
+    try:
+        in_rgb, _, _ = load_gif_rgba_frames(input_path)
+        out_rgb, out_alpha, _ = load_gif_rgba_frames(output_path)
+    except Exception:
+        return None
+    if not in_rgb or not out_rgb:
+        return None
+    bg = detect_bg_color(in_rgb[0])
+    pal = build_art_palette(in_rgb[::max(1, len(in_rgb) // 8)], bg)
+    vals = [v for rgb, al in zip(out_rgb, out_alpha)
+            if (v := measure_outer_ring_background_fraction(rgb, al, bg, pal)) is not None]
+    return round(float(np.mean(vals)), 4) if vals else None
+
+
+def auto_run(input_path, output_path, args, parser):
+    """
+    The closed loop: analyse -> recommend -> render -> RE-verify the rendered
+    file -> correct and re-render if the output disagrees with the prediction.
+
+    Harkirat's framing, and the reason this exists: the manual tweaks were only
+    ever an investigation layer, so anything learned there belongs in the script
+    as something it can derive itself. --recommend already reasons about the
+    SOURCE; this adds the second half, reasoning about the RESULT.
+
+    Explicit flags always win. A recommended flag is applied only where the user
+    left that option at its default, so --auto never silently overrides a
+    deliberate choice -- it fills in the ones nobody expressed an opinion about.
+    """
+    print("=== AUTO 1/3: analysing source ===", file=sys.stderr)
+    rec = recommend(input_path, tolerance=args.tolerance)
+    rec_tokens = shlex.split(rec['suggested_command'])[4:]
+
+    base = parser.parse_args([input_path, output_path])
+    rec_ns = parser.parse_args([input_path, output_path] + rec_tokens)
+    applied, overridden = [], []
+    for k in vars(rec_ns):
+        rv, dv, uv = getattr(rec_ns, k), getattr(base, k), getattr(args, k, None)
+        if rv == dv:
+            continue
+        if uv == dv:
+            setattr(args, k, rv)
+            applied.append(f"--{k.replace('_', '-')} {rv}")
+        elif uv != rv:
+            overridden.append(f"--{k.replace('_', '-')}: recommended {rv}, you set {uv} -- keeping yours")
+    for line in rec['evidence']:
+        print("  evidence: " + line[:220].replace("\n", " "), file=sys.stderr)
+    print(f"  recommended format: {rec.get('recommended_format')}", file=sys.stderr)
+    print(f"  applying: {' '.join(applied) if applied else '(nothing beyond defaults)'}",
+          file=sys.stderr)
+    for line in overridden:
+        print(f"  {line}", file=sys.stderr)
+
+    args.auto_erosion = True
+    diag = {}
+    print("=== AUTO 2/3: rendering ===", file=sys.stderr)
+    process(input_path, output_path, args, diagnostics=diag)
+
+    print("=== AUTO 3/3: verifying the RENDERED file ===", file=sys.stderr)
+    post = post_render_fringe_check(input_path, output_path, tolerance=args.tolerance)
+    table = diag.get('erosion_table') or {}
+    measured = {e: v for e, v in table.items() if v is not None}
+    floor = min(measured.values()) if measured else None
+    if post is None:
+        print("  post-render fringe: not measurable on this output -- reporting "
+              "unverified rather than assuming a pass.", file=sys.stderr)
+        return
+    print(f"  post-render fringe fraction: {post}"
+          + (f" (pre-encode floor for this asset: {floor})" if floor is not None else ""),
+          file=sys.stderr)
+    # The comparison is against THIS asset's own pre-encode floor, never a
+    # global constant -- the same reason calibrate_edge_cleanup_erosion exists.
+    if floor is not None and post > floor + 0.05:
+        newe = (args.edge_cleanup_erosion or 0) + 1
+        print(f"  DISAGREEMENT: the encoded file is {post - floor:.4f} above the floor the "
+              f"in-memory calibration predicted -- the encoder reintroduced edge pixels the "
+              f"calibration could not see. Re-rendering once at "
+              f"--edge-cleanup-erosion {newe}.", file=sys.stderr)
+        args.edge_cleanup_erosion = newe
+        args.auto_erosion = False          # do not re-calibrate over the escalation
+        process(input_path, output_path, args)
+        post2 = post_render_fringe_check(input_path, output_path, tolerance=args.tolerance)
+        print(f"  after correction: {post2}"
+              + ("" if post2 is None or post2 <= post else
+                 "  -- WARNING: not an improvement; the earlier render may have been better"),
+              file=sys.stderr)
+    else:
+        print("  the rendered file agrees with the calibration -- no correction needed.",
+              file=sys.stderr)
 
 
 def main():
@@ -4774,10 +4973,27 @@ def main():
                          'a JSON report of the mechanical verification checks: leftover '
                          'background, protected-region coverage, edge fringe, small '
                          'removed-region inflation, and duration/frame-count.')
+    p.add_argument('--auto', action='store_true',
+                   help='FULLY AUTONOMOUS MODE. Runs --recommend, applies its flags '
+                        '(only where you left that option at its default -- your explicit '
+                        'flags always win), renders, then RE-VERIFIES the rendered file and '
+                        'corrects/re-renders if the encoded result disagrees with what the '
+                        'pre-encode calibration predicted. Also enables --auto-erosion.')
+    p.add_argument('--auto-erosion', action='store_true',
+                   help='Choose --edge-cleanup-erosion by measuring THIS asset against '
+                        'itself (its own erosion 0/1/2/3 curve) instead of a fixed default. '
+                        'Exists because the fringe metric has no honest global threshold: it '
+                        'separates cleanly within one asset but the ranges overlap across '
+                        'assets (heart fringed 0.0665 < crystal clean 0.0830). Picks the '
+                        'SMALLEST erosion already at that asset\'s own floor, so it removes '
+                        'the fringe without eating thin strokes. In-memory: costs one erosion '
+                        'pass per candidate, not one render.')
     args = p.parse_args()
 
-    if sum([args.analyze, args.recommend, args.verify]) > 1:
-        p.error('Use only one of --analyze, --recommend, or --verify at a time')
+    if sum([args.analyze, args.recommend, args.verify, args.auto]) > 1:
+        p.error('Use only one of --analyze, --recommend, --verify, or --auto at a time')
+    if args.auto:
+        args.auto_erosion = True
 
     if args.analyze:
         if not args.input_gif:
@@ -4799,6 +5015,15 @@ def main():
                     '(input_gif = original source, output_gif = the file to verify)')
         report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
+        return
+
+    if args.auto:
+        if not args.input_gif or not args.output_gif:
+            p.error('both input_gif and output_gif are required when using --auto')
+        if not args.bg_color:
+            _im = Image.open(args.input_gif)
+            args.bg_color = rgb_to_hex(detect_bg_color(np.array(_im.convert('RGB'))))
+        auto_run(args.input_gif, args.output_gif, args, p)
         return
 
     if args.batch:

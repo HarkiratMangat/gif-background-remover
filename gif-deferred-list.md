@@ -206,7 +206,12 @@ the measurements behind each. Remaining open: 5 and 9.
    seek-only, so every frame returned 0. Adding `load()` returns the true durations
    (3000 ms, `[220, 20 x122, 340]`). Same root cause as the WebP source-duration shift —
    see `references/lessons.md` §17.
-9. **`--verify` has no 8-bit-alpha mode** (opened 2026-08-17, replaces the stale
+9. **`--verify` has no 8-bit-alpha mode** — *partially addressed 2026-08-17:* the fringe
+   metric itself is now alpha-aware (`measure_outer_ring_background_fraction` counts only
+   near-opaque pixels, so a legitimate alpha ramp is not flagged), and `--auto`'s post-render
+   check runs on WebP/AVIF using it. `--verify` proper still refuses non-GIF because its OTHER
+   checks (leftover background, protected coverage) remain 1-bit assumptions. **Do:** give
+   those two the same partial-alpha treatment, then lift the refusal. (opened 2026-08-17, replaces the stale
    duration-based reason). Now that WebP/AVIF durations read correctly, the ONLY thing
    blocking `--verify` on those formats is that its checks are written for 1-bit alpha:
    "leftover background" tests for an opaque background-coloured pixel, "fringe" for a pale

@@ -41,6 +41,21 @@ reviewed, end-to-end-verified round — squarely major.
   8-bit alpha a recovered fade is legitimately pale and semi-transparent, so
   those checks would flag correct pixels. Verify an 8-bit-alpha output by
   compositing it over the background AND over a dark solid instead (§16).
+- **`--auto`: a closed loop that verifies its own OUTPUT, not just the source.**
+  Runs `--recommend`, applies its flags (only where you left that option at
+  its default — explicit flags always win, and it prints what it skipped),
+  renders, then RE-MEASURES the written file and re-renders once if the
+  encoded result disagrees with what the pre-encode calibration predicted.
+  Use it when you want the skill to make the call end to end.
+- **`--auto-erosion`: `--edge-cleanup-erosion` chosen by measuring the asset
+  against ITSELF.** The fringe metric has no honest global threshold (§18.5),
+  but within one asset every erosion-0 reading is 2–4× its own clean floor, so
+  the calibration reads the answer off that asset's own curve and picks the
+  SMALLEST erosion already at the floor — removing the fringe without eating
+  thin strokes. It independently reproduces both hand-derived defaults: **1**
+  for the GIF path and **0** for WebP/AVIF, the latter because the metric only
+  counts near-opaque pixels and an 8-bit alpha ramp is legitimately pale.
+  In-memory: one erosion pass per candidate, not one render. Full case: §19.
 - **Four `--recommend` outputs that were wrong are now right** (full evidence:
   `references/lessons.md` §18). `--pixel-art` gained the blend-ratio
   discriminator above. `--erosion-exempt-max-size` is suppressed when the

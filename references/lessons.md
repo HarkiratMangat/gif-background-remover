@@ -1705,3 +1705,76 @@ without `--crop`, the padding survives the whole tier cascade. The original 128�
 was a render script that never passed `--square-pad` to the GIF variant in the first place.
 **A backlog item is a hypothesis until it is reproduced** — this one cost two commands to
 falsify and would have cost a speculative fix to "solve."
+
+---
+
+## 19. `--auto`: verifying the OUTPUT, and calibrating each asset against itself
+
+**Built 2026-08-17, from Harkirat's question** after §18.5 concluded the fringe metric could not
+be made a reliable boolean:
+
+> "why don't we make the script do a double verification/analysis? on the original, as it
+> currently does, and then again on the output, to decide if it's original recommendation was
+> correct or if something needs to be changed... like an automatic post render verification
+> analysis?"
+
+That reframes the problem correctly. §18.5 had established the metric **separates cleanly within
+one asset** (every erosion-0 reading is 2–4× that asset's own clean baseline) and **overlaps
+across assets** (heart's fringed 0.0665 below crystal's clean 0.0830). I had treated that as a
+dead end and shipped an "inconclusive" verdict. But it is only a dead end for a *global constant*
+— the within-asset signal was never the problem, and comparing an asset against **itself** is
+exactly the calibration a constant cannot express.
+
+### The calibration
+`calibrate_edge_cleanup_erosion()` measures the asset at each candidate erosion and reads the
+answer off its own curve, picking the **smallest** erosion already within 0.02 of that asset's
+own floor — smallest because erosion also eats thin strokes, so the goal is the least erosion
+that has already removed the fringe. Measured:
+
+| asset | erosion 0 | 1 | 2 | 3 | picked |
+|---|---|---|---|---|---|
+| love | 0.3688 | 0.0853 | 0.0850 | 0.0847 | **1** |
+| heart | 0.0720 | 0.0002 | 0.0002 | 0.0002 | **1** |
+| gift | 0.4343 | 0.0078 | 0.0073 | 0.0068 | **1** |
+| explosion | 0.2171 | 0.0000 | 0.0000 | 0.0000 | **1** |
+| crystal | 0.1928 | 0.0068 | 0.0057 | 0.0047 | **1** |
+| love (WebP, 8-bit alpha) | 0.0003 | 0.0003 | 0.0003 | 0.0003 | **0** |
+
+**heart is the proof.** Its fringed reading of 0.072 is what defeated the global threshold — it
+sits below crystal's *clean* 0.0830. Against its own floor of 0.0002 it is 360× the baseline and
+utterly unambiguous. Same number, same metric; only the reference changed.
+
+The last row matters just as much: the identical rule returns **0** for an 8-bit-alpha output,
+because the ring metric only looks at near-opaque pixels (`opaque_min=250`). On WebP/AVIF the
+edge is a real alpha ramp that is *supposed* to be pale and semi-transparent, so there is nothing
+to erode — and the calibration discovers that rather than being told. Both of last session's
+hand-derived defaults (1 for the GIF path, 0 for WebP/AVIF) now fall out of measurement.
+
+**One rule covers both failure directions.** Too little erosion reads far above the floor; too
+much shows no further improvement and loses the tie to the smaller candidate. There is no
+separate "is it over-eroded?" check to get wrong.
+
+### Why BOTH a pre-encode calibration and a post-render check
+The calibration runs on in-memory alpha, so it costs one extra erosion pass per candidate rather
+than one extra render — and it corrects before encoding, so nothing is wasted. But it cannot see
+the encoder: GIF palette quantization can snap an edge pixel onto a different palette entry (§16
+measured that same quantization destroying 90% of an outline's antialiasing), and lossy WebP/AVIF
+shifts edge colours. So `--auto` re-measures the **written file** and, if it exceeds the asset's
+own pre-encode floor by more than 0.05, escalates erosion once and re-renders.
+
+Across all five assets the encoder agreed (largest gap 0.0021), so the correction never fired on
+real content — which is a good result and also means the branch was **untested**. Per §16's own
+lesson that a test which cannot fail proves nothing, it was verified by stubbing the post-render
+reading high: the branch fires, re-renders, and re-measures to 0.0.
+
+### Design points worth keeping
+- **Explicit flags always win.** A recommended flag is applied only where the user left that
+  option at its default, computed by diffing three namespaces (defaults / recommended / actual).
+  `--auto` fills gaps; it never overrides a deliberate choice, and it prints what it skipped.
+- **`--auto` is opt-in, and the default codepath is byte-identical** — re-verified against the
+  retained `love_transparent.gif` baseline after every edit in this round.
+- **The general lesson: when a measurement has no absolute threshold, look for a relative one
+  before declaring it unusable.** "Compare it against itself" was available the whole time, and
+  I had written the manual version of it into the inconclusive verdict's own advice text
+  ("compare this asset against its own erosion 0/1/2 outputs") without noticing that a machine
+  could simply do it.
