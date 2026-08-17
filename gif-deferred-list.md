@@ -162,7 +162,41 @@ don't get re-flagged as forgotten work by a future review.*
 
 ## 🔔 Reminders / watch-for
 
-**None open right now.**
+### Re-test gifsicle's colour dither on a GRADIENT-heavy corpus (opened 2026-08-17)
+The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot-
+measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that
+matter for animation:
+
+| dither | KiB | mean colour err | frame-to-frame instability in static regions |
+|---|---|---|---|
+| floyd-steinberg (current default) | 1649.3 | 0.039 | 1.32% |
+| atkinson | 1655.7 | 0.028 | 1.12% |
+| ordered / o8 | 1658.4 | **0.026** | **0.97%** |
+| none | 1654.1 | 0.026 | 1.01% |
+
+i.e. it buys ~0.6% file size for the worst colour fidelity AND the most temporal crawl — the same
+error-diffusion instability that disqualified it for ALPHA (measured separately: Floyd-Steinberg
+changed 8.1% of pixels in a region that was byte-identical between frames; both Bayer sizes changed
+0). Crawl also fights GIF inter-frame compression, so the size win may not even survive on other
+content.
+
+**NOT acted on, deliberately.** `love.gif` is flat 6-colour vector art, so a 200-colour palette
+reproduces it almost exactly and dithering barely engages — all five options sit within 0.7% size
+and 0.013 colour error, too close to call. The tiers exist precisely for content where quantization
+DOES bite, and that content is what should decide this.
+
+**What a future session should do:** assemble a corpus with real gradients/soft shading (not the
+flat vector icons this skill is usually pointed at), run the same three measurements (bytes, colour
+error against the pre-quantization frames, and static-region frame-to-frame instability) across
+`floyd-steinberg` / `atkinson` / `o8` / `ordered` / none at both `medium` and `heavy`, and change
+the tier default only if a clear winner emerges on gradient content without regressing flat art.
+
+⚠️ **Jarvis, Sierra and Stucki are NOT options here** — verified by enumeration against the
+installed gifsicle 1.6.0: it implements only `floyd-steinberg` and `atkinson` as error-diffusion
+kernels (plus `ordered`/`o3`/`o4`/`o8`/`halftone`/`squarehalftone`/`diagonal`/`ro64`). Using them
+would mean doing colour reduction outside gifsicle entirely, which is a much larger change than a
+flag and should be scoped separately if the corpus test suggests error diffusion is worth
+improving at all.
 
 ---
 
