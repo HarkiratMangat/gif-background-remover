@@ -819,6 +819,29 @@ def recommend(input_path, tolerance=15):
             f"these tints fall outside the verified outline's interior, they need manual "
             f"review.")
 
+    # FORMAT RECOMMENDATION. The output container is the first decision, not a
+    # packaging afterthought: it decides whether partial transparency is even
+    # representable. A gradient_fade region means the source has a translucent
+    # element flattened against the background, which GIF structurally cannot
+    # carry (references/lessons.md SS16).
+    _fades = [r for r in report.get('band_interior_regions', [])
+              if r.get('classification') == 'gradient_fade']
+    if _fades:
+        report['recommended_format'] = 'webp-or-avif'
+        evidence.insert(0,
+            f"FORMAT: use .webp or .avif with --recover-fade-alpha. {len(_fades)} region(s) show a "
+            f"translucent element that was flattened against the background at authoring time. GIF "
+            f"has 1-bit alpha and CANNOT represent it -- the faded stages render as opaque pale "
+            f"blobs or vanish. AVIF q85 is the smallest good option; WebP lossless is the bit-exact "
+            f"master. Only ship GIF if the destination requires it.")
+    else:
+        report['recommended_format'] = 'gif-ok'
+        evidence.insert(0,
+            "FORMAT: no translucent/fading element detected, so GIF can represent this asset "
+            "faithfully. WebP/AVIF are still worth considering -- they keep real antialiasing on "
+            "the silhouette instead of dithering it, and AVIF is typically the smallest of the "
+            "three -- but GIF is not structurally wrong here.")
+
     small = report.get('small_removed_regions', {})
     if small.get('suggested_erosion_exempt_max_size'):
         flags.append(f"--erosion-exempt-max-size {small['suggested_erosion_exempt_max_size']}")
@@ -849,6 +872,7 @@ def recommend(input_path, tolerance=15):
         suggested += " " + " ".join(flags)
 
     return {
+        'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
         'evidence': evidence + region_notes,
         'analysis': report,
@@ -2768,14 +2792,21 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
                                      lossless=lossless, quality=quality,
                                      method=getattr(args, 'webp_method', 4))
 
+    # ⚠️ If the caller already chose an explicit output size (--resize-max-dim,
+    # e.g. a platform's 128x128 emoji slot), this cascade must NOT shrink below
+    # it. Confirmed bug: the scale ladder was applied ON TOP of an explicit
+    # 128px resize and silently produced 48x48 / 64x64 / 96x96 "128px emoji"
+    # files. A byte cap is a constraint; the requested resolution is a
+    # REQUIREMENT. Trade quality and frames instead, and if it still will not
+    # fit, say so rather than quietly delivering a different size.
+    _pinned = getattr(args, 'resize_max_dim', None) is not None
+    _scales = (1.0,) if _pinned else (1.0, 0.75, 0.5, 0.375, 0.25)
     if fmt == 'avif':
-        rungs = [(1.0, q, False) for q in (95, 85, 75, 65, 55)]
-        for sc in (0.75, 0.5, 0.375, 0.25):
-            rungs += [(sc, q, False) for q in (85, 70, 55)]
+        rungs = [(sc, q, False) for sc in _scales for q in (95, 85, 75, 65, 55, 45)]
     else:
-        rungs = [(1.0, 100, True)]
-        for sc in (0.75, 0.5, 0.375, 0.25):
-            rungs += [(sc, 100, True)] + [(sc, q, False) for q in (90, 80, 70)]
+        rungs = []
+        for sc in _scales:
+            rungs += [(sc, 100, True)] + [(sc, q, False) for q in (95, 90, 80, 70, 60)]
 
     best = None
     for stride in (1, 2, 3, 4):
@@ -2799,7 +2830,9 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
         fr, al, dur = (reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
                        if stride > 1 else (rgb_frames, alpha_frames, durations))
         encode(fr, al, dur, scale, quality, lossless)
-    say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]}).")
+    say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]})."
+        + (" The output size was pinned by --resize-max-dim, so resolution was NOT "
+           "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else ""))
     return os.path.getsize(output_path), False
 
 
