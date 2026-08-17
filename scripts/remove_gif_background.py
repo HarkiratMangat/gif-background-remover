@@ -2263,6 +2263,8 @@ def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
 FADE_RESIDUAL_TOLERANCE = 10.0   # max distance off the bg<->colour line to count as a blend
 FADE_BARRIER_ALPHA = 0.5         # unmixed alpha at/above which a solid colour blocks flood fill
 FADE_EDGE_DILATE = 3             # px around true background that may carry partial alpha
+FADE_OPAQUE_BLOCK = 0.90         # a fading colour this opaque occludes what it covers
+FADE_ART_PRIOR = 0.30            # ...but only where art is present in >=30% of frames
 
 
 def unmix_against_palette(rgb, bg_rgb, palette):
@@ -2489,6 +2491,31 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
     solid_idx = [i for i in range(len(palette)) if i not in fading]
     struct8 = ndimage.generate_binary_structure(2, 2)
 
+    # ART PRIOR -- how often each pixel position is SOLID art across the whole
+    # animation. Needed because a fading colour is deliberately NOT a flood-fill
+    # barrier (background behind a translucent element must stay reachable), but
+    # at FULL opacity such an element occludes whatever it covers. Where it
+    # crosses solid artwork, exempting it punches a hole clean through, and the
+    # background flood pours in.
+    #
+    # Confirmed real case (crystal.gif): an opaque yellow sparkle lying across the
+    # crystal's navy outline emptied the crystal's white interior in 59 of 130
+    # frames -- 24,520 px in one blob.
+    #
+    # Colour alone cannot separate "opaque sparkle over navy" from "opaque
+    # sparkle over background". Position over TIME can: the outline is art in
+    # most frames, the background is not. So a near-opaque fading pixel blocks
+    # only where art usually lives. Measured: fixes all 59 crystal frames with
+    # ZERO cost to love.gif's gap-between-outline-and-ring (which must stay
+    # reachable THROUGH the ring). A plain opacity cut with no prior fixed
+    # crystal too but sealed love's gap in 27 frames -- that trade was rejected.
+    art_prior = np.zeros(rgb_frames[0].shape[:2], np.float32)
+    for rgb in rgb_frames:
+        k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
+        solid = np.isin(k, solid_idx)
+        art_prior += ((res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA)))
+    art_prior /= max(len(rgb_frames), 1)
+
     out_rgb, out_alpha = [], []
     coverage_total = coverage_ok = 0
     interior_total = interior_leaky = 0
@@ -2501,6 +2528,9 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
 
         solid = np.isin(k, solid_idx)
         barrier = (res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA))
+        # A near-opaque translucent element occludes; block it, but only where
+        # solid art usually lives (see art_prior above).
+        barrier |= (t >= FADE_OPAQUE_BLOCK) & (~solid) & (art_prior >= FADE_ART_PRIOR)
         lab, _ = ndimage.label(~barrier)
         border = set(np.unique(np.concatenate(
             [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
