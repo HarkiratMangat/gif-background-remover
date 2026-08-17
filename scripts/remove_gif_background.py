@@ -1660,6 +1660,14 @@ def detect_anomalous_frame_sizes(sizes, window=5, local_ratio_threshold=0.8, gap
         below, above = sorted_sizes[max_gap_idx], sorted_sizes[max_gap_idx + 1]
         if below > 0 and above / below >= gap_ratio_threshold:
             gap_threshold = (below + above) / 2
+            # ⚠️ A "flag only a minority of frames" guard was TRIED HERE AND
+            # REVERTED (2026-08-17). The theory was that occlusion is the
+            # exception, so a small-mode majority must be the baseline. Measured
+            # on crystal.gif, where the small mode IS the majority (75/130):
+            # suppressing the flags took art loss from 0.95% to 7.07% and left
+            # an 11,451 px hole, because there the small mode is the BROKEN
+            # state -- the outline genuinely fails to enclose in those frames.
+            # A majority can be wrong. Do not re-add this guard.
             gap_flags = sizes < gap_threshold
 
     return local_flags | gap_flags
@@ -1804,14 +1812,26 @@ def build_protected_masks_robust(rgb_frames, args):
             # the frame's own filled silhouette keeps the useful part of the
             # substitution (interior detail that IS enclosed here) and drops the
             # part that describes a different frame.
+            # UNION, then clamp -- do not REPLACE. The frame's own mask is
+            # partially correct even when flagged: it encloses whatever this
+            # frame does enclose. Replacing it with a borrowed mask throws that
+            # away, and anything the borrowed mask happens to miss at this
+            # frame's geometry is simply lost. Confirmed on crystal.gif: pure
+            # replacement deleted ~500 px from inside the left crystal in
+            # frames 0-19, while the frame's own mask covered it correctly.
+            #
+            # The clamp to this frame's filled silhouette stays, because a
+            # borrowed mask describes ANOTHER frame's geometry and would
+            # otherwise protect background this frame does not cover (the white
+            # wedge above the tall crystal's tip, ~1,600 px/frame).
             bg_for_clamp = hex_to_rgb(args.bg_color)
+            own_raw = list(frame_masks)
             for bi in bad_idxs:
                 nearest = min(good_idxs, key=lambda gi: abs(gi - bi))
-                borrowed = frame_masks[nearest]
-                own = ndimage.binary_fill_holes(
+                silhouette = ndimage.binary_fill_holes(
                     ~color_mask(rgb_frames[bi], bg_for_clamp, args.tolerance),
                     structure=STRUCTURE)
-                frame_masks[bi] = borrowed & own
+                frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & silhouette
         per_color_masks[hex_color] = frame_masks
 
     result = []
