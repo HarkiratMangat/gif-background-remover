@@ -728,15 +728,36 @@ def recommend(input_path, tolerance=15):
 
             all_frames = region.get('outline_enclosure_all_frames')
             leak = region.get('outline_background_leak')
+            # ⚠️ A nonzero anomalous_frame_count means "this outline needs the
+            # substitution path", NOT "this outline is unusable". Gating it out
+            # entirely was measurably the wrong call: on crystal.gif the outline
+            # is verified with enclosure_ratio 1.0 but breaks on 75/130 frames
+            # (a sparkle crossing it), so --recommend fell through to
+            # --protect-band-only -- which loses 19.99% of the artwork against
+            # the 0.91% the outline loses. Nearly a 22x worse result from a gate
+            # meant to be conservative.
+            #
+            # The substitution is now clamped to each frame's own silhouette
+            # (see build_protected_masks_robust), which removes the artifact
+            # that made anomalous frames untrustworthy in the first place. So
+            # recommend it, and say plainly that the substitution will engage.
+            # A background LEAK is still a hard reject -- that one over-protects
+            # and there is no safe fallback.
             if (region['outline_color_verified'] and all_frames
-                    and all_frames['anomalous_frame_count'] == 0
                     and not (leak and leak['over_protects_background'])):
                 outline_colors.append(region['candidate_outline_color'])
+                anom = all_frames['anomalous_frame_count']
                 region_notes.append(
                     f"Region {rid}: outline {region['candidate_outline_color']} verified "
                     f"across {all_frames['frames_checked']} frames "
                     f"({all_frames['enclosure_ratio_all_frames'] * 100:.0f}% enclosed) -- "
-                    f"recommending --protect-outline-color.")
+                    f"recommending --protect-outline-color."
+                    + ("" if anom == 0 else
+                       f" Enclosure breaks on {anom}/{all_frames['frames_checked']} frames "
+                       f"(another element crossing the outline); the per-frame mask "
+                       f"substitution handles it, clamped to each frame's own silhouette. "
+                       f"Measured on a real asset, using the outline anyway beat falling back "
+                       f"to --protect-band-only by ~22x on preserved artwork."))
             elif leak and leak['over_protects_background']:
                 region_notes.append(
                     f"Region {rid}: outline {region['candidate_outline_color']} fills into "
@@ -757,10 +778,8 @@ def recommend(input_path, tolerance=15):
                         f"identification, not auto-recommended.")
             else:
                 region_notes.append(
-                    f"Region {rid}: outline {region['candidate_outline_color']} verified on "
-                    f"the first sampled frame, but {all_frames['anomalous_frame_count']} of "
-                    f"{all_frames['frames_checked']} frames show a break in enclosure (not a "
-                    f"background leak) -- needs manual review before trusting "
+                    f"Region {rid}: outline {region['candidate_outline_color']} could not be "
+                    f"confirmed across frames -- needs manual review before trusting "
                     f"--protect-outline-color for this region.")
 
     if outline_colors:
@@ -809,7 +828,7 @@ def recommend(input_path, tolerance=15):
             f"output this cannot happen: --recover-fade-alpha identifies it as a solid palette "
             f"colour and keeps it opaque. See references/lessons.md SS16.)")
 
-    elif tint_widths and outline_colors:
+    elif tint_widths and outline_colors:  # documented: combining the two shrinks protection
         evidence.append(
             f"{len(tint_widths)} solid-tint band-interior region(s) observed, but a "
             f"verified --protect-outline-color is already recommended -- not adding "
@@ -826,21 +845,36 @@ def recommend(input_path, tolerance=15):
     # carry (references/lessons.md SS16).
     _fades = [r for r in report.get('band_interior_regions', [])
               if r.get('classification') == 'gradient_fade']
+    # Ranking is Harkirat's stated preference (2026-08-17), weighted for
+    # COMPATIBILITY as well as bytes -- not smallest-file-wins:
+    #   full resolution      WebP lossless > AVIF q85 > GIF
+    #   under a byte cap     AVIF > WebP > GIF   (AVIF keeps every frame; the
+    #                        others must drop a third to two-thirds)
+    #   compatibility        WebP > GIF > AVIF
+    #   GIF                  only when explicitly required, or a genuine win on
+    #                        size/render-time at near-equal visual quality
+    _rank = ("  full resolution -> WebP lossless (bit-exact, widest support), "
+             "then AVIF q85 (smaller, still excellent), then GIF.\n"
+             "  under a byte cap (e.g. 256 KB emoji) -> AVIF first: measured, it keeps EVERY "
+             "frame where WebP and GIF each drop a third to two-thirds. Then WebP, then GIF.\n"
+             "  maximum compatibility -> WebP, then GIF, then AVIF.\n"
+             "  Prefer GIF only when the destination requires it, or when it is a genuine win on "
+             "size or render time at near-equal visual quality. Always report frame counts "
+             "alongside file sizes -- under a cap, frames are what actually gets spent.")
     if _fades:
         report['recommended_format'] = 'webp-or-avif'
         evidence.insert(0,
-            f"FORMAT: use .webp or .avif with --recover-fade-alpha. {len(_fades)} region(s) show a "
+            f"FORMAT: .webp or .avif, with --recover-fade-alpha. {len(_fades)} region(s) show a "
             f"translucent element that was flattened against the background at authoring time. GIF "
             f"has 1-bit alpha and CANNOT represent it -- the faded stages render as opaque pale "
-            f"blobs or vanish. AVIF q85 is the smallest good option; WebP lossless is the bit-exact "
-            f"master. Only ship GIF if the destination requires it.")
+            f"blobs or vanish, and no tolerance setting fixes it. Ranking:\n" + _rank)
     else:
         report['recommended_format'] = 'gif-ok'
         evidence.insert(0,
             "FORMAT: no translucent/fading element detected, so GIF can represent this asset "
-            "faithfully. WebP/AVIF are still worth considering -- they keep real antialiasing on "
-            "the silhouette instead of dithering it, and AVIF is typically the smallest of the "
-            "three -- but GIF is not structurally wrong here.")
+            "faithfully and is a legitimate choice on compatibility grounds. WebP/AVIF still keep "
+            "real antialiasing on the silhouette instead of dithering it, and need far less "
+            "per-asset flag tuning. Ranking:\n" + _rank)
 
     small = report.get('small_removed_regions', {})
     if small.get('suggested_erosion_exempt_max_size'):
@@ -1759,9 +1793,25 @@ def build_protected_masks_robust(rgb_frames, args):
                   f"the outline) on {len(bad_idxs)}/{n} frames; substituting "
                   f"the nearest good frame's mask for those so the "
                   f"protected region doesn't flicker.", file=sys.stderr)
+            # ⚠️ CLAMP the borrowed mask to THIS frame's own silhouette. A mask
+            # lifted from another frame describes that frame's geometry, so on
+            # anything that moves or grows it protects background the current
+            # frame does not cover. Confirmed real case (crystal.gif): a yellow
+            # sparkle crossing the outline broke enclosure on 75/130 frames, and
+            # the borrowed masks left a white wedge floating above the tall
+            # crystal's tip in frames 0-18 -- ~1,600 px/frame of background kept
+            # opaque, visible against any non-white backdrop. Intersecting with
+            # the frame's own filled silhouette keeps the useful part of the
+            # substitution (interior detail that IS enclosed here) and drops the
+            # part that describes a different frame.
+            bg_for_clamp = hex_to_rgb(args.bg_color)
             for bi in bad_idxs:
                 nearest = min(good_idxs, key=lambda gi: abs(gi - bi))
-                frame_masks[bi] = frame_masks[nearest]
+                borrowed = frame_masks[nearest]
+                own = ndimage.binary_fill_holes(
+                    ~color_mask(rgb_frames[bi], bg_for_clamp, args.tolerance),
+                    structure=STRUCTURE)
+                frame_masks[bi] = borrowed & own
         per_color_masks[hex_color] = frame_masks
 
     result = []
