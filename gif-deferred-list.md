@@ -163,35 +163,49 @@ don't get re-flagged as forgotten work by a future review.*
 ## 🔔 Reminders / watch-for
 
 ### AUTONOMY BACKLOG — `--recommend` still needs manual correction on these (opened 2026-08-17)
-The end goal is a fully automatic run: `--analyze`/`--recommend` produce correct flags with
-no human tuning. These are the cases where that is still false. **A manual flag tweak is an
-investigation result, not a fix** — the fix belongs in the script. Full detail, with the
-measurements behind each, in `local/HANDOFF-2026-08-17.md` and `references/lessons.md` §16.
+**Six of the nine items below were CLOSED on 2026-08-17** — see `references/lessons.md` §18 for
+the measurements behind each. Remaining open: 5 and 9.
 
-1. **`--pixel-art` emitted on thin-AA vector art** (love 0.425, heart 0.316). Measured
-   destructive on curve-heavy AA art. A near-boundary warning was added, but an autonomous
-   run takes the flag verbatim. Suppress in the 0.30–0.50 band, or find a second
-   discriminator. *(highest value)*
-2. **`--erosion-exempt-max-size` still emitted for love** — persistence classification fixed
-   crystal/gift but not this. Applying it to real design leaves a fringe (v3.3.3 regression).
-3. **heart's `--feather-band-multiplier 1.5`** is the clamp floor and unverified against
-   fringe. Measure with the outer-ring method, NOT `looks_fringed` (see 7).
-4. **gift's white strip is never surfaced as a candidate region** — the working flag
-   (`--protect-outline-color 052a75`) was found by eye.
-5. **gift's sparkle colour never appears at full opacity** — it is `#052a75`, the same navy
-   as the box outline, so one colour is both solid art and a translucent element. The art
-   prior is the plausible basis; ⚠️ read the REVERTED saturation-promotion experiment first.
-6. **GIF `--target-kb` discards `--square-pad`** (`apply_tier` re-crops) — fitted GIF emoji
-   comes back 128×110. WebP/AVIF unaffected.
-7. **`--verify`'s `looks_fringed` is unreliable** — returned False at erosion 0, 1 AND 2,
-   including a level with a visible fringe. It misled a decision and shipped a regression.
-   Replace with the outer-opaque-ring measurement (49.1%/0.2%/0.7% for erosion 0/1/2).
+1. ~~`--pixel-art` emitted on thin-AA vector art~~ — **CLOSED.** Added a second discriminator,
+   `antialiasing_blend_ratio` (are there real background-to-art blends at all?). Synthetic pixel
+   art 0.000; the lowest real asset 1.530. `appears_hard_edged` now needs BOTH measures. The
+   fixture still gets the flag; love and heart no longer do. §18.1
+2. ~~`--erosion-exempt-max-size` emitted for love~~ — **CLOSED.** The classifier was already
+   right (love's 4 buttons ARE detected as design); the SIZE THRESHOLD was the problem — 487px
+   sat above the buttons' own 286–306px, so it would have exempted them anyway. Now suppressed
+   whenever the transient and persistent size ranges overlap. §18.2
+3. ~~heart's `--feather-band-multiplier 1.5` unverified~~ — **CLOSED, and it was actively
+   harmful.** Measured fringe fraction 0.2186 at 1.5 and 0.1831 at 2.5 against 0.0000 at the
+   default — the recommendation was producing the fringe. The `max(1.5, ...)` clamp was the bug.
+   Only recommended at ≥3.0 now; `--protect-band-only` carries the rest (97.7% of the same
+   protection, no fringe). §18.3
+4. ~~gift's white strip never surfaced~~ — **CLOSED.** Not a colour-detection failure: the
+   union-across-frames footprint had merged the strip with a transient pocket (21,184px →
+   25,219px), and nothing encloses a shape that never exists. Added per-frame re-verification.
+   gift now auto-recommends `--protect-outline-color 002864`; protected coverage 0.0 → 0.874,
+   fringe 0.0388 → 0.007. §18.4
+5. **STILL OPEN — gift's sparkle colour never appears at full opacity.** The curved sparkle is
+   `#052a75`, the SAME navy as the box outline, drawn at partial opacity; one colour is
+   simultaneously solid artwork and a translucent element, so marking it fading would stop the
+   outline blocking anything. The 4-dot sparkle separately needs `--fade-color 6969f2` because
+   its true colour never clears the palette frequency floor. **Do:** the per-pixel art prior
+   built for the flood barrier (§16) is the plausible basis — high prior ⇒ outline, low prior ⇒
+   sparkle. ⚠️ Read the REVERTED "saturation promotion" experiment in §16 first; the naive
+   version of this idea is measurably net-harmful. This is the one genuinely unsolved item and
+   it is a research task, not a parameter fix.
+6. ~~GIF `--target-kb` discards `--square-pad`~~ — **CLOSED: did not reproduce.** Measured
+   128×128 with and without `--crop`; padding survives the tier cascade. The original 128×110
+   came from a render script that never passed the flag to the GIF variant. §18.6
+7. ~~`--verify`'s `looks_fringed` is unreliable~~ — **CLOSED.** Replaced with the outer-ring
+   relative metric, and made TRI-STATE: True >0.15, False <0.04, None in between with the
+   reason. The bands overlap across assets (heart's fringed 0.0665 < crystal's clean 0.0830),
+   and tightening the ratio collapses every asset to 0.0000 — a test that cannot fail. Reporting
+   "inconclusive" is the honest answer. §18.5
 8. ~~**AVIF durations cannot be read back**~~ — **RESOLVED 2026-08-17.** Never an AVIF
    limitation: Pillow populates `info['duration']` only in `load()`, and the reader used
    seek-only, so every frame returned 0. Adding `load()` returns the true durations
    (3000 ms, `[220, 20 x122, 340]`). Same root cause as the WebP source-duration shift —
    see `references/lessons.md` §17.
-
 9. **`--verify` has no 8-bit-alpha mode** (opened 2026-08-17, replaces the stale
    duration-based reason). Now that WebP/AVIF durations read correctly, the ONLY thing
    blocking `--verify` on those formats is that its checks are written for 1-bit alpha:
@@ -201,6 +215,16 @@ measurements behind each, in `local/HANDOFF-2026-08-17.md` and `references/lesso
    outer-opaque-ring metric from §16, which is already alpha-aware) rather than lifting the
    refusal. Lifting it without redefining the checks reintroduces exactly the misleading pass
    the refusal exists to prevent.
+
+10. **`--verify`'s leftover-background count flags intentionally protected design**
+    (opened 2026-08-17). On gift, `leftover_background_opaque_px` reports 14,243px on its worst
+    frame; 73% of them are inside the protected white-strip region's own bbox. The strip is
+    background-COLOURED design that is *supposed* to stay opaque, so counting it as leftover
+    background is a false alarm — visually confirmed correct output. `analyze()`'s own leak
+    check agrees (`leaked_pixel_count: 0`). **Do:** exclude pixels inside a verified
+    protected region's per-frame footprint from the leftover count, the same way
+    `bbox_scope`-restricted enclosure already does for part of it. Low severity (a noisy
+    metric, not a bad output) but it undermines trust in an autonomous run's self-check.
 
 ### ~~PARKED: remove the controller from love.gif~~ — CLOSED 2026-08-17 (Harkirat edited it manually; skill rendered the deliverables). Retained below only for the mask-isolation findings, which stay valid if this is ever automated.
 Boundary reconstruction and the encoding path are SOLVED (static-in-canvas divide, degree-6

@@ -41,6 +41,25 @@ reviewed, end-to-end-verified round — squarely major.
   8-bit alpha a recovered fade is legitimately pale and semi-transparent, so
   those checks would flag correct pixels. Verify an 8-bit-alpha output by
   compositing it over the background AND over a dark solid instead (§16).
+- **Four `--recommend` outputs that were wrong are now right** (full evidence:
+  `references/lessons.md` §18). `--pixel-art` gained the blend-ratio
+  discriminator above. `--erosion-exempt-max-size` is suppressed when the
+  transient and design size ranges OVERLAP, because the flag is a size
+  threshold and cannot then separate them — classifying regions correctly is
+  not enough on its own. `--feather-band-multiplier` is only recommended at
+  ≥3.0: below that it narrows the band so far that the antialiasing ramp stops
+  being removed, and the old `max(1.5, …)` clamp was itself producing a fringe
+  (measured 0.2186 at 1.5 vs 0.0000 at the default). Outline-colour
+  verification now retries PER FRAME when the union-across-frames footprint
+  fails, which is what was hiding a real, protectable region behind
+  `candidate_outline_color: null`.
+- **`--verify`'s `edge_fringe_check` is now tri-state.** `looks_fringed` is
+  `true` / `false` / **`null`**, with `verdict_basis` giving the reason. The
+  metric is the fraction of the outermost opaque ring closer to the background
+  than to any art colour. It separates cleanly within one asset but the ranges
+  overlap across assets, so a middling value reports INCONCLUSIVE instead of
+  guessing. ⚠️ Never use it to choose `--edge-cleanup-erosion`; compare the
+  asset against its own erosion 0/1/2 outputs, or composite over a dark solid.
 - **Frame durations are now read with `im.load()`, not `seek()` alone.**
   Load-bearing for any non-GIF SOURCE: `GifImagePlugin` populates
   `info['duration']` during `seek()`, but WebP/AVIF populate it only in
@@ -147,21 +166,31 @@ quality hit.
 
 **Before choosing settings, always check `--analyze`'s `edge_hardness` field:**
 ```json
-"edge_hardness": {"ratio": 0.0, "appears_hard_edged": true}
+"edge_hardness": {
+  "ratio": 0.0,                      // frame 0, kept for continuity
+  "ratio_max_across_frames": 0.0,    // the one the DECISION uses
+  "antialiasing_blend_ratio": 0.0,   // the second discriminator
+  "appears_hard_edged": true
+}
 ```
-- `ratio` under ~0.5 → hard-edged (pixel art, or any flat art exported with no
-  antialiasing) → use `--pixel-art` (bundles `--no-feather`,
-  `--edge-cleanup-erosion 0`, and nearest-neighbor resizing into one flag).
-- `ratio` of a few units or more → real antialiasing present, normal defaults
-  are correct. Reference: genuine pixel art measured 0.0; real antialiased
-  vector icons measured 4.5 and 17.6. The gap is normally large and clean.
-- **Caveat:** an icon dominated by straight lines can score misleadingly low
-  despite being ordinary antialiased vector art (a straight edge only needs a
-  thin transition band; a curved one needs a wider graduated one). If a ratio
-  comes back hard-edged but the icon is part of a set that otherwise scored
-  normally, or is a professional vector export rather than hand-drawn pixel
-  art, zoom in and look before trusting the ratio alone. See
-  `references/lessons.md` §1 for the confirmed real cases.
+**Two measures must agree before art is called hard-edged, and `appears_hard_edged`
+already applies both** — trust that field over reading `ratio` yourself:
+- `ratio_max_across_frames` under 0.5 — the transition band is empty. Measured
+  across every sampled frame, not frame 0: love ranges 0.290–7.863 and heart
+  0.239–9.008, so a single frame decides nothing.
+- AND `antialiasing_blend_ratio` under 0.15 — there are essentially no genuine
+  background-to-art blend pixels. Genuine pixel art measures **0.000** (it has
+  none by construction); the lowest real vector asset measured **1.530**.
+
+`ratio` alone produced two false positives on real antialiased vector art —
+love 0.425 and heart 0.316 against the 0.5 threshold — because a clean export
+made mostly of straight edges needs only a thin band. `--pixel-art` disables
+feathering and erosion, so applying it there is destructive. The blend ratio
+closes that gap by a margin of KIND (blends exist / do not) rather than degree.
+See `references/lessons.md` §1 and §18.1.
+
+**If `appears_hard_edged` is true → use `--pixel-art`** (bundles `--no-feather`,
+`--edge-cleanup-erosion 0`, and nearest-neighbor resizing into one flag).
 
 If content doesn't fit either bucket well — genuine photographic or full-bleed
 content with no distinguishable background at all (shows up as the "four corner

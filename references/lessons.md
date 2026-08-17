@@ -1574,3 +1574,134 @@ external constraint because nothing had tested the alternative.
   GIF source, so all measured correct (3000 ms, `[220, ..., 340]`) — including a 42-frame
   byte-capped WebP whose merged durations still summed correctly. The bug only ever bit a
   WebP/AVIF *source*, which this job was the first to use.
+
+---
+
+## 18. Closing the autonomy backlog: four recommendations that were wrong, and why
+
+**Worked 2026-08-17**, driven by Harkirat's standing goal that the skill run fully
+autonomously — `--analyze`/`--recommend` producing correct flags with no human tuning. Each
+item below was a case where a manual override was still required. A manual flag tweak is the
+*investigation*, never the fix; the fix is whatever makes the tool reach the same answer itself.
+
+### 18.1 `--pixel-art` on antialiased vector art — a second discriminator, not a moved threshold
+`edge_hardness.ratio` counts pixels in a narrow band just outside the background tolerance. A
+clean vector export built mostly from straight edges needs only a thin antialiasing band, so it
+scores low and reads as pixel art: **love 0.425 and heart 0.316 against a 0.5 threshold**, and
+`--pixel-art` disables feathering and erosion, which is destructive on curved antialiased art.
+
+Moving the threshold was not safe — measured per frame, love ranges **0.290–7.863** and heart
+**0.239–9.008**, and the *median* is below 0.5 for both (0.481, 0.388), so a majority of frames
+look hard-edged on this metric. `analyze()` also measured frame 0 alone, making the answer
+depend on which frame you happened to sample.
+
+The fix asks a different question: **are there real background-to-art blends at all?** Genuine
+pixel art has none by construction — every pixel is a palette colour, never a mixture.
+
+| asset | band ratio (frame 0) | band ratio (max) | blend ratio |
+|---|---|---|---|
+| synthetic pixel art | 0.000 | 0.000 | **0.000** |
+| love | 0.425 | 7.863 | **2.415** |
+| heart | 0.316 | 9.008 | **2.529** |
+| gift | 1.382 | 3.295 | 1.713 |
+| explosion | 6.508 | 10.347 | 1.653 |
+| crystal | 8.228 | 10.920 | 1.530 |
+
+`appears_hard_edged` now requires BOTH the band ratio (max across frames) under 0.5 AND the
+blend ratio under 0.15. The fixture still gets `--pixel-art`; love and heart no longer do. This
+is a margin of KIND (blends exist / do not), not of degree.
+
+### 18.2 `--erosion-exempt-max-size` — classifying regions correctly is not sufficient
+The persistence classifier was already right: on love it correctly identified the four
+controller buttons as DESIGN (497 of 1070 regions, present in ~every frame at a stable
+286–306px). The suggestion was still wrong, because **the flag is a size threshold** — it
+exempts every region at or below it. Computed from the transient regions, it came out at
+**487px, above the buttons' own size**, so it would have exempted the design anyway and
+reintroduced the v3.3.3 fringe.
+
+The rule now: if the suggested threshold reaches the smallest PERSISTENT region, the transient
+and design size ranges overlap and **no threshold separates them** — so recommend nothing and
+say why, rather than picking a value from one side of an overlap. love is suppressed; heart and
+gift (no persistent regions at all) still get it.
+
+**The general lesson: a correct classification does not imply a usable parameter.** Check that
+the knob you are about to set can actually express the distinction you just made.
+
+### 18.3 `--feather-band-multiplier` — the clamp was manufacturing the bug
+The flag narrows the feather band so a near-background SOLID art colour falls outside it. But
+the same band is what gives the antialiasing ramp its partial alpha, so past a point the ramp
+stops being removed and survives as a visible fringe. The old value was
+`max(1.5, dist/tolerance - 0.5)`, and that clamp silently crossed the line:
+
+| asset | tint distance | multiplier | fringe fraction |
+|---|---|---|---|
+| explosion, gift | 57–58 | 3.3 (band 15–49.5) | clean — the case the flag was built for |
+| **heart** | **27** | **1.3, clamped up to 1.5** (band 15–22.5) | **0.2186 — fringed** |
+
+heart also measured 0.1831 at 2.5, against **0.0000 at the default 4.0**. So the recommendation
+was itself producing the fringe that backlog item 3.3 suspected.
+
+`--protect-band-only` — already recommended alongside it — solves the same problem without the
+cost: measured on heart it keeps **117,027 of the 119,810** near-background solid pixels the
+multiplier keeps (97.7%) with **no fringe**. The multiplier is now only recommended when the
+computed value is ≥3.0; below that the evidence says so and points at `--protect-band-only`.
+
+**The clamp was the tell.** A clamp that fires is a value the formula could not produce
+honestly — it satisfied the formula while failing the thing the formula was for.
+
+### 18.4 gift's white strip — the union footprint, not the colour detection
+`--analyze` reported the strip as design (`enclosure_ratio` 1.0) but returned
+`candidate_outline_color: None`, so nothing protected it and `--verify` came back with
+**`protected_region_coverage` 0.0** — the region was deleted outright. The working flag
+(`--protect-outline-color 052a75`) had been found by eye.
+
+The colour detection was fine. The FOOTPRINT was wrong: `comp_footprint` is a union across
+sampled frames, and the union had merged the strip with a neighbouring transient pocket,
+inflating it from **21,184px to 25,219px**. Nothing encloses the inflated shape, so
+verification correctly failed — on a region that isn't real. Measured directly: `052a75`/
+`002864` encloses the strip's own footprint in **40 of 40** sampled frames.
+
+The fix re-verifies against what is ACTUALLY enclosed in each frame (footprint ∩ that frame's
+own enclosed-background mask) and accepts a colour only if it verifies in ≥90% of them. This
+keeps the conservatism the original note argued for — still a verified containment check, just
+run on inputs that correspond to something real. gift now auto-recommends
+`--protect-outline-color 002864`; coverage went **0.0 → 0.874** and fringe **0.0388 → 0.007**.
+
+**The union limitation was documented in the code for months as "no cheap, universally reliable
+way to distinguish these two cases from the union shape alone."** That was true and remains
+true — the escape was not to distinguish them from the union shape, but to stop relying on the
+union for this particular question.
+
+### 18.5 `looks_fringed` — replaced, and deliberately made tri-state
+The old check asked whether an edge-ring pixel was within `tolerance` of the background colour.
+A pale fringe pixel is a BLEND, tens of units from pure background, so it passed: the check
+returned False at erosion 0, 1 AND 2 on the same asset, including a level with a fringe visible
+by eye, and that false negative was trusted and shipped a regression (§16).
+
+The replacement asks a RELATIVE question — is the pixel closer to the background than to any
+real art colour? — over the outermost opaque ring only. Measured:
+
+| asset | erosion 0 | erosion 1 | erosion 2 |
+|---|---|---|---|
+| love | 0.2647 | 0.0765 | 0.0755 |
+| heart | 0.0665 | 0.0000 | 0.0000 |
+| gift | 0.4000 | 0.0372 | 0.0362 |
+| crystal | 0.1681 | 0.0830 | 0.0823 |
+
+It separates cleanly WITHIN each asset — every erosion-0 value is 2–4× its own clean baseline —
+but the ranges **OVERLAP across assets**: heart's fringed 0.0665 sits below crystal's clean
+0.0830, because art with a baked-in fade legitimately carries pale near-background pixels at its
+boundary. Tightening the ratio does not rescue it: tested at 0.6, 0.4 and 0.25 of the art
+distance, and **0.4 and below collapse every asset to 0.0000** — a test that cannot fail, which
+§16 already names as the worst possible outcome.
+
+So the check reports **True above 0.15, False below 0.04, and None in between with the reason** —
+because inventing a single global threshold here is precisely how the previous version earned
+its false negative. An unverifiable answer must present as unverified, never as a pass.
+
+### 18.6 One backlog item was not real
+"GIF `--target-kb` discards `--square-pad`" did not reproduce: measured at 128×128 with and
+without `--crop`, the padding survives the whole tier cascade. The original 128×110 observation
+was a render script that never passed `--square-pad` to the GIF variant in the first place.
+**A backlog item is a hypothesis until it is reproduced** — this one cost two commands to
+falsify and would have cost a speculative fix to "solve."

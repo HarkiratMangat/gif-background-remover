@@ -279,6 +279,60 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
     }
 
 
+def measure_antialiasing_presence(rgb, bg_rgb, palette, tolerance=15, ring=3):
+    """
+    Fraction of near-boundary pixels that are TRUE blends of the background and
+    one of the art's own flat colours, per pixel of boundary perimeter.
+
+    This is the second discriminator `edge_hardness.ratio` needed and lacked.
+    That ratio counts pixels in a narrow band just outside the background
+    tolerance, so a clean vector export made mostly of straight edges -- which
+    needs only a thin antialiasing band -- scores LOW and reads as pixel art.
+    Two real assets scored 0.425 and 0.316 against a 0.5 threshold and would
+    have had --pixel-art applied, which disables feathering and erosion and is
+    destructive on curved antialiased art.
+
+    Asking instead "are there real background-to-art blends here at all?"
+    separates the two cleanly, because genuine pixel art has NONE by
+    construction -- every pixel is a palette colour, never a mixture.
+    Measured (mean over sampled frames):
+
+        synthetic pixel art  0.000      <- the fixture from SS1
+        love                 0.538
+        explosion            1.221
+        crystal              1.226
+        gift                 1.395
+        heart                1.581
+
+    Zero versus 0.538 is a far wider margin than 0.425 versus 0.5, and it is a
+    margin of KIND (blends exist / do not) rather than of degree.
+    """
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    dist = np.abs(rgb.astype(int) - np.asarray(bg_rgb).astype(int)).max(axis=-1)
+    hard_bg = dist <= tolerance
+    boundary = ndimage.binary_dilation(hard_bg) & ~hard_bg
+    boundary_count = int(boundary.sum())
+    if boundary_count == 0:
+        return 0.0
+    near = ndimage.binary_dilation(hard_bg, iterations=ring) & ~hard_bg
+    v = rgb[near].astype(np.float32) - bg
+    palette = np.asarray(palette, dtype=np.float32).reshape(-1, 3)
+    if v.size == 0 or len(palette) == 0:
+        return 0.0
+    is_blend = np.zeros(len(v), dtype=bool)
+    for pc in palette:
+        c = pc - bg
+        L = float(c @ c)
+        if L < 1.0:
+            continue
+        t = (v @ c) / L
+        res = np.linalg.norm(v - t[:, None] * c, axis=1)
+        # t bounded away from 0 and 1 so the endpoints themselves (pure
+        # background, pure art colour) are not counted as evidence of a blend.
+        is_blend |= (t > 0.12) & (t < 0.88) & (res < 14.0)
+    return round(float(is_blend.sum()) / boundary_count, 3)
+
+
 def get_source_transparency_mask(im0):
     """
     If the current (already-seeked) frame's source GIF carries a native
@@ -518,6 +572,28 @@ def analyze(input_path, max_samples=40, tolerance=15):
     _transient = [sz for sz in all_small_sizes if not _is_persistent(sz)]
     _persistent = [sz for sz in all_small_sizes if _is_persistent(sz)]
 
+    # --erosion-exempt-max-size is a SIZE threshold: it exempts every removed
+    # region at or below it. So it can only separate incidental noise from
+    # design if the two size ranges do not overlap. Classifying regions
+    # correctly is not enough on its own -- on love the four controller buttons
+    # ARE correctly identified as persistent design (497 of 1070 regions), and
+    # the suggestion computed from the transient regions still came out at 487,
+    # well above the buttons' own 286-306px, so applying it would have exempted
+    # the design anyway and reintroduced the v3.3.3 fringe. When the ranges
+    # overlap the honest answer is that no threshold works, not a threshold
+    # picked from one side of the overlap.
+    _exempt_suppressed = None
+    _exempt_suggestion = int(max(_transient) * 1.1) + 1 if _transient else 0
+    if _exempt_suggestion and _persistent:
+        _pmin = min(_persistent)
+        if _exempt_suggestion >= _pmin:
+            _exempt_suppressed = (
+                f"a threshold of {_exempt_suggestion}px (from the largest transient "
+                f"region, {max(_transient)}px) would also exempt PERSISTENT regions, "
+                f"the smallest of which is {_pmin}px -- the transient and design size "
+                f"ranges overlap, so no single size threshold separates them")
+            _exempt_suggestion = 0
+
     small_removed_regions = {
         'sizes_sample': sorted(all_small_sizes, reverse=True)[:20],
         'count': len(all_small_sizes),
@@ -528,7 +604,9 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'persistent_count': len(_persistent),
         'transient_count': len(_transient),
         'max_transient_region_px': max(_transient) if _transient else 0,
-        'suggested_erosion_exempt_max_size': int(max(_transient) * 1.1) + 1 if _transient else 0,
+        'min_persistent_region_px': min(_persistent) if _persistent else None,
+        'suggested_erosion_exempt_max_size': _exempt_suggestion,
+        'erosion_exempt_suppressed_reason': _exempt_suppressed,
     }
 
     union_mask = np.zeros((H, W), dtype=bool)
@@ -626,6 +704,51 @@ def analyze(input_path, max_samples=40, tolerance=15):
         outline_color, outline_filled_area, outline_shape = find_verified_outline_color(
             true_footprint_frame_rgb, bg_rgb, true_footprint, tolerance)
 
+        # PER-FRAME FALLBACK for exactly the union-overstatement case the note
+        # above describes. When the union merges a real design region with
+        # incidental pockets that exist in different frames, the merged
+        # footprint is enclosed by nothing, so verification fails on a region
+        # whose real shape has a perfectly good outline.
+        #
+        # Measured on gift.gif: the white strip is reported as design
+        # (enclosure_ratio 1.0) but got candidate_outline_color None, so nothing
+        # protected it and --verify came back with protected_region_coverage
+        # 0.0 -- while 052a75/002864 encloses the region's own 21,184px
+        # footprint in 40 of 40 sampled frames. The union had inflated it to
+        # 25,219px by merging a neighbouring transient pocket.
+        #
+        # So: re-verify against what is ACTUALLY enclosed in each frame
+        # (footprint INTERSECTED with that frame's own enclosed-background
+        # mask), and accept a colour only if it verifies in >=90% of the frames
+        # where the region really appears. That keeps the conservatism the note
+        # argues for -- it is still a verified containment check, run more times
+        # and on cleaner inputs, not a guess.
+        if outline_color is None and ratio >= 0.9:
+            _votes = {}
+            _checked = 0
+            for _i in sample_idxs[:15]:
+                _frgb = all_rgb_frames[_i]
+                _fm = color_mask(_frgb, bg_rgb, tolerance)
+                _lb, _ = ndimage.label(_fm, structure=STRUCTURE)
+                _border = (set(_lb[0, :]) | set(_lb[-1, :])
+                           | set(_lb[:, 0]) | set(_lb[:, -1]))
+                _border.discard(0)
+                _here = comp_footprint & _fm & ~np.isin(_lb, list(_border))
+                if _here.sum() < 20:
+                    continue
+                _checked += 1
+                _c, _, _ = find_verified_outline_color(_frgb, bg_rgb, _here, tolerance)
+                if _c:
+                    _votes[_c] = _votes.get(_c, 0) + 1
+            if _checked and _votes:
+                _best = max(_votes, key=_votes.get)
+                if _votes[_best] / _checked >= 0.9:
+                    outline_color = _best
+                    _om = color_mask(true_footprint_frame_rgb,
+                                     hex_to_rgb(_best), 40)
+                    outline_shape = ndimage.binary_fill_holes(_om)
+                    outline_filled_area = int(outline_shape.sum())
+
         outline_enclosure_all_frames = None
         outline_background_leak = None
         if outline_color is not None:
@@ -686,12 +809,39 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'note': note,
         })
 
+    # Edge hardness across SAMPLED FRAMES, not frame 0 alone. Frame 0 is not
+    # representative on animated art: love's ratio ranges 0.290-7.863 across its
+    # 124 frames and heart's 0.239-9.008 across 35, so which frame you happen to
+    # measure decides the answer. `ratio` stays frame 0 for continuity with
+    # every previously recorded number; the DECISION uses the max, because
+    # antialiasing is a property of the artwork -- if any frame clearly shows a
+    # ramp, the art is antialiased no matter how many frames hide it.
+    _eh0 = measure_edge_hardness(rgb0, bg_rgb, tolerance)
+    _eh_ratios = [measure_edge_hardness(all_rgb_frames[i], bg_rgb, tolerance)['ratio']
+                  for i in sample_idxs]
+    _eh_max = max(_eh_ratios) if _eh_ratios else _eh0['ratio']
+    _art_palette = build_art_palette([all_rgb_frames[i] for i in sample_idxs], bg_rgb)
+    _blend_ratio = max(
+        (measure_antialiasing_presence(all_rgb_frames[i], bg_rgb, _art_palette, tolerance)
+         for i in sample_idxs), default=0.0)
+    # BOTH must agree before calling something hard-edged. The band ratio alone
+    # produced two false positives on real vector art (SS18); requiring an
+    # actual absence of background-to-art blends is what closes them.
+    _hard = (_eh_max < 0.5) and (_blend_ratio < 0.15)
+    edge_hardness = dict(_eh0)
+    edge_hardness.update({
+        'ratio_max_across_frames': round(float(_eh_max), 3),
+        'ratio_min_across_frames': round(float(min(_eh_ratios)), 3) if _eh_ratios else None,
+        'antialiasing_blend_ratio': _blend_ratio,
+        'appears_hard_edged': bool(_hard),
+    })
+
     return {
         'n_frames_total': n_frames,
         'frames_sampled': len(sample_idxs),
         'detected_bg_color': rgb_to_hex(bg_rgb),
         'source_has_pre_existing_transparency': 'transparency' in im.info,
-        'edge_hardness': measure_edge_hardness(rgb0, bg_rgb, tolerance),
+        'edge_hardness': edge_hardness,
         'tumble_risk': tumble_risk,
         'band_interior_regions': band_interior_regions,
         'small_removed_regions': small_removed_regions,
@@ -713,19 +863,33 @@ def recommend(input_path, tolerance=15):
     region_notes = []
     flags = []
 
-    if report['edge_hardness']['appears_hard_edged']:
-        _hardness = float(report['edge_hardness']['ratio'])
+    _eh = report['edge_hardness']
+    _hardness = float(_eh['ratio'])
+    _hard_max = float(_eh.get('ratio_max_across_frames', _hardness))
+    _blend = float(_eh.get('antialiasing_blend_ratio', 0.0))
+    if _eh['appears_hard_edged']:
         flags.append('--pixel-art')
         evidence.append(
-            f"Hard-edged art detected (edge_hardness ratio {_hardness:.3f}) -- "
-            f"recommending --pixel-art."
-            + ("" if _hardness < 0.30 else
-               " NEAR THE 0.5 BOUNDARY -- do not accept this unreviewed: a clean vector "
-               "export whose shapes are mostly straight lines needs only a thin "
-               "antialiasing band and can score low while being ordinary antialiased art. "
-               "A real asset measured 0.425 and --pixel-art would have been destructive "
-               "there. Zoom in on a CURVED edge and confirm there is no 1-2px ramp before "
-               "using this (references/lessons.md SS1 and SS16)."))
+            f"Hard-edged art detected -- recommending --pixel-art. Two independent "
+            f"measures agree: the transition band is empty in every sampled frame "
+            f"(edge_hardness ratio {_hardness:.3f}, max across frames "
+            f"{_hard_max:.3f}), AND there are essentially no background-to-art blend "
+            f"pixels (antialiasing_blend_ratio {_blend:.3f}, below the 0.15 floor). "
+            f"Genuine pixel art measures 0.000 on the second; the lowest real vector "
+            f"asset measured 0.538.")
+    elif _hard_max < 0.5:
+        # The exact false positive SS18 documents: a thin-antialiasing vector
+        # export whose band ratio reads as hard-edged. Reported as evidence
+        # rather than silently dropped, so the run is auditable.
+        evidence.append(
+            f"NOT recommending --pixel-art despite a low edge_hardness ratio "
+            f"({_hardness:.3f}, max across frames {_hard_max:.3f}, under the 0.5 "
+            f"hard-edged threshold): real background-to-art blends ARE present "
+            f"(antialiasing_blend_ratio {_blend:.3f}, above the 0.15 floor), so this "
+            f"is antialiased vector art with a thin band -- typical of shapes made "
+            f"mostly of straight edges -- not pixel art. --pixel-art here would "
+            f"disable feathering and erosion and damage the ramp "
+            f"(references/lessons.md SS1, SS18).")
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
@@ -840,15 +1004,53 @@ def recommend(input_path, tolerance=15):
                    if r.get('classification') == 'solid_tint' and r.get('mean_distance_from_bg')]
     _at_risk = [d for d in _tint_dists if tolerance < d <= _band_top]
     if _at_risk:
-        _safe = max(1.5, (min(_at_risk) / tolerance) - 0.5)
-        flags.append(f"--feather-band-multiplier {_safe:.1f}")
-        evidence.append(
-            f"A SOLID art colour sits {min(_at_risk):.0f} from the background, inside the default "
-            f"feather band ({tolerance:.0f}..{_band_top:.0f}) -- it would be given partial alpha "
-            f"and dithered away in a GIF even though it is not the background. Recommending "
-            f"--feather-band-multiplier {_safe:.1f} so the band stops short of it. (For a WebP/AVIF "
-            f"output this cannot happen: --recover-fade-alpha identifies it as a solid palette "
-            f"colour and keeps it opaque. See references/lessons.md SS16.)")
+        # ⚠️ The band cannot be narrowed arbitrarily far. Narrowing it protects the
+        # tint, but the SAME band is what gives the antialiasing ramp its partial
+        # alpha -- past a point the ramp stops being removed and survives as a
+        # visible pale fringe. Which side you land on depends on how far the tint
+        # sits from the background, and the old max(1.5, ...) clamp silently
+        # crossed that line:
+        #
+        #   tint at 57-58 (explosion, gift) -> 3.3 -> band 15..49.5, ramp still
+        #       removed. This is the case the flag was built for and it works.
+        #   tint at 27 (heart)              -> 1.3, CLAMPED UP to 1.5 -> band
+        #       15..22.5. Measured fringe fraction 0.2186 at 1.5 and 0.1831 at
+        #       2.5, against 0.0000 at the default 4.0 -- a real fringe, produced
+        #       by the recommendation itself.
+        #
+        # The clamp was the bug: it manufactured a value that satisfied the
+        # formula while failing the thing the formula was for. Below 3.0 the tint
+        # is close enough to the background that --protect-band-only must carry
+        # it instead -- measured on heart, band-only alone keeps 117,027 of the
+        # 119,810 near-background solid pixels the multiplier keeps (97.7%) with
+        # NO fringe, so the multiplier buys ~2% more protection at the cost of a
+        # visibly fringed edge.
+        _computed = (min(_at_risk) / tolerance) - 0.5
+        if _computed >= 3.0:
+            flags.append(f"--feather-band-multiplier {_computed:.1f}")
+            evidence.append(
+                f"A SOLID art colour sits {min(_at_risk):.0f} from the background, inside the "
+                f"default feather band ({tolerance:.0f}..{_band_top:.0f}) -- it would be given "
+                f"partial alpha and dithered away in a GIF even though it is not the background. "
+                f"Recommending --feather-band-multiplier {_computed:.1f} so the band stops short "
+                f"of it while still reaching {tolerance * _computed:.0f}, far enough to keep "
+                f"removing the antialiasing ramp. (For a WebP/AVIF output this cannot happen: "
+                f"--recover-fade-alpha identifies it as a solid palette colour and keeps it "
+                f"opaque. See references/lessons.md SS16.)")
+        else:
+            evidence.append(
+                f"A SOLID art colour sits {min(_at_risk):.0f} from the background, inside the "
+                f"default feather band ({tolerance:.0f}..{_band_top:.0f}), but NOT recommending "
+                f"--feather-band-multiplier: the value that would clear it is {_computed:.1f}, "
+                f"which narrows the band to {tolerance:.0f}..{tolerance * max(_computed, 1.5):.0f} "
+                f"and stops the antialiasing ramp being removed -- measured on a real asset, that "
+                f"produces a fringe fraction of 0.219 against 0.000 at the default. "
+                + ("--protect-band-only is already recommended above and carries this case "
+                   "instead (measured: 97.7% of the same protection, no fringe)."
+                   if tint_widths and not outline_colors else
+                   "Protect this colour explicitly (--protect-band-only or "
+                   "--protect-outline-color) rather than narrowing the band.")
+                + " See references/lessons.md SS18.")
 
     elif tint_widths and outline_colors:  # documented: combining the two shrinks protection
         evidence.append(
@@ -909,6 +1111,16 @@ def recommend(input_path, tolerance=15):
             f"{small['persistent_count']} further small region(s) were seen in ~every "
             f"frame at a stable size and are treated as DESIGN, not incidental noise, so "
             f"they are excluded from this suggestion.")
+    elif small.get('erosion_exempt_suppressed_reason'):
+        evidence.append(
+            f"NOT recommending --erosion-exempt-max-size despite "
+            f"{small['transient_count']} transient small region(s): "
+            f"{small['erosion_exempt_suppressed_reason']}. The flag exempts every "
+            f"region at or below its threshold, so exempting the noise here would "
+            f"also exempt {small['persistent_count']} design region(s) and leave the "
+            f"fringe that regression v3.3.3 documents. Protect the design explicitly "
+            f"(--protect-outline-color / --protect-region) instead of raising the "
+            f"threshold.")
     elif small.get('persistent_count'):
         evidence.append(
             f"{small['persistent_count']} small removed region(s) found, but every one is "
@@ -2099,6 +2311,9 @@ def verify(input_path, output_path, tolerance=15):
     leftover_bg_counts = []
     fringed_pixel_fractions = []
     bg_masks = []
+    # Art palette for the fringe metric below. Built from the INPUT, whose flat
+    # colours are the reference the ring is compared against.
+    _fringe_palette = build_art_palette(in_rgb[::max(1, n // 8)] or in_rgb[:1], bg_rgb)
     for i in range(n):
         bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
         bg_masks.append(bg_mask)
@@ -2129,20 +2344,85 @@ def verify(input_path, output_path, tolerance=15):
         # this check exists for) can't move a whole-silhouette mean
         # anywhere near `tolerance`. A per-pixel fraction is scale-free and
         # localized regardless of the art's own dominant colors.
-        edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=2) & (out_alpha[i] > 0)
+        # iterations=1: the OUTERMOST opaque ring only. That is exactly the ring
+        # erosion removes, and measured at 2 it dilutes the signal with pixels one
+        # step further in that erosion never touches (love erosion-0 reads 0.2647
+        # at ring 1 versus 0.1726 at ring 2, against an unchanged clean baseline).
+        edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=1) & (out_alpha[i] > 0)
         if edge_ring.any():
-            ring_dist = np.linalg.norm(
-                out_rgb[i][edge_ring].astype(float) - np.array(bg_rgb, dtype=float), axis=-1)
-            fringed_pixel_fractions.append(float((ring_dist <= tolerance).mean()))
+            # ⚠️ This used to ask whether a ring pixel was WITHIN `tolerance` of
+            # the background colour, which is far too strict to detect a real
+            # fringe: a pale fringe pixel is a BLEND, tens of units away from
+            # pure background, so it passed. That version returned
+            # looks_fringed=False at erosion 0, 1 AND 2 on the same asset --
+            # including a level with a fringe visible by eye -- and the false
+            # negative was trusted and shipped a regression (SS16).
+            #
+            # The question that actually discriminates is RELATIVE: is this
+            # ring pixel closer to the background than to any real art colour?
+            # Measured on the asset that exposed the false negative, erosion
+            # 0/1/2: 49.1% / 0.2% / 0.7%.
+            ring_px = out_rgb[i][edge_ring].astype(np.float32)
+            d_bg = np.linalg.norm(ring_px - np.asarray(bg_rgb, np.float32), axis=-1)
+            _pal = np.asarray(_fringe_palette, np.float32).reshape(-1, 3)
+            if len(_pal):
+                d_art = np.linalg.norm(
+                    ring_px[:, None, :] - _pal[None, :, :], axis=-1).min(axis=1)
+                fringed_pixel_fractions.append(float((d_bg < d_art).mean()))
+            else:
+                fringed_pixel_fractions.append(float((d_bg <= tolerance).mean()))
 
     report['leftover_background_opaque_px'] = {
         'max_per_frame': max(leftover_bg_counts) if leftover_bg_counts else 0,
         'worst_frame_index': int(np.argmax(leftover_bg_counts)) if leftover_bg_counts else None,
         'total_frames_with_any': sum(1 for c in leftover_bg_counts if c > 0),
     }
+    _fringe_mean = float(np.mean(fringed_pixel_fractions)) if fringed_pixel_fractions else None
+    if _fringe_mean is None:
+        _fringe_verdict, _fringe_basis = None, 'no opaque edge ring found in any frame'
+    elif _fringe_mean > 0.15:
+        _fringe_verdict, _fringe_basis = True, (
+            f'{_fringe_mean:.4f} is above 0.15, higher than every measured clean output '
+            f'(worst clean 0.0830) -- a real pale fringe')
+    elif _fringe_mean < 0.04:
+        _fringe_verdict, _fringe_basis = False, (
+            f'{_fringe_mean:.4f} is below 0.04, lower than every measured fringed output '
+            f'(faintest fringed 0.0665) -- edge is clean')
+    else:
+        _fringe_verdict, _fringe_basis = None, (
+            f'{_fringe_mean:.4f} falls in the 0.04-0.15 band where fringed and clean outputs '
+            f'OVERLAP across assets (art with a baked-in fade carries pale near-background '
+            f'pixels at its boundary legitimately). INCONCLUSIVE -- do not use this to choose '
+            f'--edge-cleanup-erosion. Compare this asset against its own erosion 0/1/2 outputs, '
+            f'or composite over a dark solid and look')
     report['edge_fringe_check'] = {
-        'mean_fringed_pixel_fraction': round(float(np.mean(fringed_pixel_fractions)), 4) if fringed_pixel_fractions else None,
-        'looks_fringed': bool(fringed_pixel_fractions and np.mean(fringed_pixel_fractions) > 0.02),
+        'mean_fringed_pixel_fraction': round(_fringe_mean, 4) if _fringe_mean is not None else None,
+        'metric': 'fraction of outermost opaque ring closer to background than to any art colour',
+        # TRI-STATE, and deliberately so. Measured across 4 real assets at
+        # erosion 0 (fringed) vs 1 and 2 (clean):
+        #
+        #   asset     er0      er1      er2
+        #   love      0.2647   0.0765   0.0755
+        #   heart     0.0665   0.0000   0.0000
+        #   gift      0.4000   0.0372   0.0362
+        #   crystal   0.1681   0.0830   0.0823
+        #
+        # The metric separates cleanly WITHIN each asset (every er0 is 2-4x its
+        # own clean baseline) but the ranges OVERLAP across assets: heart's
+        # fringed 0.0665 sits below crystal's clean 0.0830, because an asset
+        # with a baked-in fade carries pale near-background pixels at its
+        # boundary legitimately. Tightening the ratio does not rescue it --
+        # tested at 0.6, 0.4 and 0.25 of the art distance, and 0.4 and below
+        # collapse every asset to 0.0000, a test that cannot fail.
+        #
+        # So no single global threshold is honest here, and inventing one is how
+        # this check earned its previous false negative. Above 0.15 is above
+        # every measured clean value; below 0.04 is below every measured fringed
+        # value; in between the check reports None and says why, rather than
+        # guessing. An unverifiable answer must present as unverified
+        # (SS13/SS16/SS17), never as a pass.
+        'looks_fringed': _fringe_verdict,
+        'verdict_basis': _fringe_basis,
     }
 
     # Protected-region coverage: the opposite failure direction from
