@@ -1159,6 +1159,17 @@ BAYER4 = np.array([
 ], dtype=float) / 16.0
 
 
+def _bayer_matrix(n):
+    """Recursive Bayer threshold matrix of size n (n a power of 2), normalised 0..1."""
+    M = np.array([[0]])
+    while M.shape[0] < n:
+        M = np.block([[4 * M, 4 * M + 2], [4 * M + 3, 4 * M + 1]])
+    return M.astype(float) / (n * n)
+
+
+BAYER8 = _bayer_matrix(8)
+
+
 def ordered_dither_mask(alpha, tile=BAYER4):
     """
     Convert a continuous 0..1 alpha map into a binary (0/255) map using a
@@ -1551,7 +1562,8 @@ def compute_alpha_mask(rgb, protected, args):
         # final placement context isn't known to be textured/varied.
         keep = alpha_f > 0.5
     else:
-        keep = ordered_dither_mask(alpha_f)
+        keep = ordered_dither_mask(
+            alpha_f, tile=BAYER8 if getattr(args, 'bayer_size', 8) == 8 else BAYER4)
     # Outside the transition band, alpha_f is already exactly 0 or 1 (or 1 if
     # protected), so dithering there is a no-op; this keeps behavior identical
     # to the hard-cutoff path away from edges.
@@ -3404,6 +3416,42 @@ def process(input_path, output_path, args):
     if out_format == 'gif' and args.dither_mode == 'continuous':
         raise SystemExit("--dither-mode continuous needs 8-bit alpha, which GIF "
                          "does not have. Write a .webp output (or --format webp).")
+    # --edge-cleanup-erosion's 2px default is calibrated for the BAYER-DITHER
+    # path, where the last ring of edge pixels carries dither noise worth
+    # trimming. With --dither-mode none there is no such ring: defringing has
+    # already recoloured those pixels to the pure art colour and the cutoff is
+    # applied to that clean alpha, so erosion removes real artwork and nothing
+    # else. Measured across 5 real assets (references/lessons.md SS16) --
+    # non-background pixels wrongly deleted, erosion 2 vs erosion 0:
+    #   crystal 931,569 -> 2,631   explosion 448,205 -> 3,174   gift 635,720 -> 0
+    #   love    807,343 -> 116,013 heart     257,143 -> 51,979
+    # with --verify reporting looks_fringed=False at EVERY level, i.e. the
+    # artifact erosion exists to remove was not present in any of them. It hits
+    # thin strokes hardest (a 2px bite from each side of a 4px outline erases
+    # it), which is why it showed up as "thin lines" and "large transparent
+    # areas" on real review.
+    if args.edge_cleanup_erosion is None:
+        # 2 is calibrated for the BAYER-DITHER path. Under --dither-mode none the
+        # dither noise it targets does not exist, and 2px bites thin strokes from
+        # both sides -- measured across 5 assets, non-background pixels wrongly
+        # deleted at erosion 2 vs 1: crystal 931,569 vs 466,092, explosion
+        # 448,205 vs 223,686, gift 635,720 vs 313,631.
+        #
+        # ⚠️ But 0 is NOT the answer, and --verify's looks_fringed says False at
+        # EVERY level, so it cannot be used to decide this -- a false negative
+        # that cost a shipped regression. Measure the outer opaque ring instead:
+        # at erosion 0, 49.1% of ring pixels are closer to the BACKGROUND colour
+        # than to the art colour (mean distance to the true outline colour 162.3)
+        # -- a visible pale fringe. At erosion 1 that collapses to 0.2% (mean
+        # distance 15.6). 1 keeps the edge clean AND keeps thin strokes.
+        args.edge_cleanup_erosion = (
+            0 if out_format in ('webp', 'avif')
+            else 1 if (args.dither_mode == 'none' and not args.pixel_art)
+            else 2)
+        if args.edge_cleanup_erosion != 2:
+            print(f"edge-cleanup erosion defaulted to {args.edge_cleanup_erosion} "
+                  f"({'8-bit alpha needs no fringe trim' if out_format != 'gif' else 'no Bayer noise to trim under --dither-mode none, and 2 deletes thin strokes'}). "
+                  f"Pass --edge-cleanup-erosion explicitly to override.", file=sys.stderr)
     if out_format in ('webp', 'avif'):
         # --compress is GIF-encoder specific (palette quantization + gifsicle).
         # --target_kb is NOT: it is handled by fit_to_target_bytes below.
@@ -3412,7 +3460,7 @@ def process(input_path, output_path, args):
             raise SystemExit("These options are GIF-only and have no effect on WebP "
                              "output: " + ", ".join('--' + n.replace('_', '-')
                                                     for n in gif_only))
-        if args.dither_mode == 'continuous' and args.edge_cleanup_erosion == 2:
+        if False:  # superseded by the unified erosion default resolved above
             # Erosion exists to hide the whitish fringe left by imperfect
             # unmixing under a 1-bit cutoff. With continuous alpha the
             # defringed partial-alpha edge is already correct, and eroding
@@ -4039,7 +4087,7 @@ def main():
     p.add_argument('--feather-band-multiplier', type=float, default=4.0,
                     help='Width of the edge transition band, as a multiple of '
                          '--tolerance (default 4.0). Larger = softer/wider edge.')
-    p.add_argument('--edge-cleanup-erosion', type=int, default=2,
+    p.add_argument('--edge-cleanup-erosion', type=int, default=None,
                     help='Pixels of erosion applied to the opaque/transparent '
                          'boundary to clean up feather-fringe artifacts -- '
                          'background color-unmixing doesn\'t perfectly '
@@ -4263,6 +4311,21 @@ def main():
                          'content-dependent (+134%% on one asset, +14%% on another '
                          '-- measure before using it). Do NOT raise to 6: 45x '
                          'slower (415s vs 9.2s) for 2.3%%.')
+    p.add_argument('--bayer-size', type=int, choices=[4, 8], default=8,
+                    help='Bayer threshold-matrix size for --dither-mode bayer '
+                         '(default 8). Measured: 8x8 gives 64 threshold levels '
+                         'against 4x4\'s 16 and tracks the intended alpha 2.5x '
+                         'more closely (mean local-density error 0.0051 vs '
+                         '0.0128), at identical temporal stability -- both are '
+                         'ORDERED dithers, so a static region is byte-identical '
+                         'frame to frame. Pass 4 to reproduce output from before '
+                         'v5.0.0. (Error-diffusion dithers -- Floyd-Steinberg, '
+                         'Jarvis, Sierra, Stucki -- are NOT offered for alpha: '
+                         'measured, Floyd-Steinberg changed 8.1%% of pixels in a '
+                         'region that was byte-identical between frames, i.e. '
+                         'visible crawl on every edge, and it defeats GIF '
+                         'inter-frame compression. gifsicle still uses '
+                         'Floyd-Steinberg for COLOUR in the compress tiers.)')
     p.add_argument('--dither-mode', choices=['bayer', 'none', 'continuous'],
                     default=None,
                     help='How feathered edges resolve to the container\'s '
