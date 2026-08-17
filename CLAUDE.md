@@ -20,6 +20,9 @@ collaboration layer on top of both.
   Anthropic's progressive-disclosure convention for skills — this is what loads into context
   whenever the skill triggers, so it stays focused on "what to do," not "why," or "what we tried
   before").
+- `references/version-history.md` — per-version detail for every release before the current one,
+  moved out of SKILL.md in v5.0.0 (it had grown to 241 of that file's 896 lines). SKILL.md keeps
+  only the current version's entry plus the versioning convention itself.
 - `references/lessons.md` — long-form bug postmortems, tool-evaluation writeups (gifski vs.
   pngquant, etc.), and measured evidence. Read on demand — see the memory folder's
   `feedback_check_lessons_before_rediagnosing.md` for when. Has its own table of contents.

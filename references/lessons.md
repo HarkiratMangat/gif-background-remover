@@ -28,6 +28,7 @@ scratch risks retrying an approach already known to fail.
 13. [The save message asserted a frame count it never read back](#13-the-save-message-asserted-a-frame-count-it-never-read-back)
 14. [Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element](#14-punching-one-same-colour-interior-hole-while-protecting-a-same-colour-same-size-range-animated-design-element)
 15. [A second, independent solution to §14's same problem — `--remove-region`, and where it needs help](#15-a-second-independent-solution-to-14s-same-problem---remove-region-and-where-it-needs-help)
+16. [Escaping GIF's 1-bit alpha: recovering a baked-in fade, and WebP/AVIF output](#16-escaping-gifs-1-bit-alpha-recovering-a-baked-in-fade-and-webpavif-output)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -38,6 +39,9 @@ scratch risks retrying an approach already known to fail.
 | Flicker or a hole in a protected region | §3 (real bug) or §9 (bbox-vs-mask measurement artifact — check which first) |
 | A shape totally erased / near-zero survival | §4 |
 | Blurry or degraded fine detail after resize/compress | §5 |
+| A fade/glow/sparkle that ends as an opaque pale blob, or pops out abruptly | §16 (GIF cannot hold it — change format) |
+| Scattered speckle dots where a fading element disappears | §16 |
+| A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
 | Confused why alpha looks all-or-nothing | §7 |
 | A reported animation length that seems wrong | §9, §13 |
@@ -370,6 +374,13 @@ alpha at all. This isn't a Pillow limitation specifically — it's the GIF forma
 transparency index, the same underlying fact section 6 above cites from gifski's maintainer in a
 different context (gifski's alpha-thresholding behavior on transparent PNG input is a symptom of
 this same format limitation, not an unrelated gifski quirk).
+
+**⚠️ Updated by §16 (2026-08-17).** Everything in this section is still true *of GIF*, but it is no
+longer the end of the story. The real fix for a translucent/fading element is to stop using GIF:
+WebP and AVIF both store 8-bit alpha, and `--recover-fade-alpha` can reconstruct alpha that a GIF
+export already flattened. Read §16 before reaching for the bake-a-flat-blend workaround below —
+that workaround is now the fallback for when the deliverable *must* be a GIF, not the default
+answer.
 
 **Workaround for "I want it to look like the background bleeds through"**: if the final background
 color is fixed and known ahead of time (e.g. a specific Discord button color), bake a literal flat
@@ -1007,3 +1018,150 @@ frames without needing to know the drift's magnitude in advance.
   same-colored decoration wants `--remove-region`. A moving hole with no reliable external tracking
   step wants the geometric-gate approach. A moving hole where NEITHER geometric separation nor
   tracking tooling is available is a real gap this skill does not yet close.
+
+
+## 16. Escaping GIF's 1-bit alpha: recovering a baked-in fade, and WebP/AVIF output
+
+Real job, 2026-08-17: `love.gif`, 640×640, 124 frames, a gamepad-in-a-heart sticker with yellow
+pulses that expand outward from the heart's outline while fading out. The ask was to remove the
+white background while keeping the white controller buttons — and, because the requester had
+already worked out that GIF cannot express a fade against transparency, to deliver WebP instead.
+That prediction was correct, and provably so.
+
+### The fade was flat-opacity on one solid colour — so it is EXACTLY recoverable
+Measured before choosing any approach: each pulse frame carries ~30,000 pixels at a *single*
+blend fraction of pure `#fdcb50`, and across the animation those fractions are
+**1.0 → 0.8 → 0.6 → 0.4 → 0.2**. Not a gradient, not a blur — a global opacity ramp that the GIF
+export flattened against white. Since `px = a·C + (1−a)·W` with `C` and `W` both known, `a` is
+arithmetic, not estimation.
+
+**The falsifier that made this trustworthy:** frame 0 has no pulse. If the classifier were sloppy
+it would report phantom yellow there. It returned **zero** pixels. Any "detector" for this should
+be checked against a frame where the answer is known to be nothing — a detector that cannot fail
+has not been tested.
+
+### Why NO GIF setting can represent it
+Yellow sits 182.6 (Euclidean RGB) from white. The feather band is `--tolerance`(15) →
+`× --feather-band-multiplier`(4) = 15…60.
+
+| Fade stage | Distance from white | What GIF did |
+|---|---|---|
+| α 0.2 | 36.5 | inside band → dithered, then erosion ate it (**99% destroyed**) |
+| α 0.4 | 73 | above band → **opaque pale cream** |
+| α 0.6 | 110 | above band → **opaque pale cream** |
+| α 0.8 | 146 | above band → **opaque pale cream** |
+| α 1.0 | 182.6 | opaque yellow — correct |
+
+**And it cannot be tuned around.** Widening the band to catch α 0.8 means reaching past 146 — but
+a real solid art colour, the lavender controller body, sits at **121.7**. Any band wide enough to
+catch the fade dissolves genuine artwork. The fade's range *straddles* an art colour, so no single
+distance threshold separates them. That is the structural argument; it generalises to any asset
+where a fading element passes through the colour-distance of a solid one.
+
+A second, uglier symptom appeared at the faintest stage: dithering α 0.2 produced a sparse Bayer
+pattern, the 2px erosion then removed 99% of it, and the survivors were left stranded as isolated
+**speckle dots** scattered where the pulse should have faded to nothing. `--verify` flagged this as
+`small_region_inflation` (a 9px input region → 638px out, 70×).
+
+### The fix: unmix against the art's own palette, not against a distance threshold
+`--recover-fade-alpha` asks a different question per pixel: *is this explained as the background
+blended with ONE known art colour?* That separates cleanly where a distance threshold cannot —
+measured on frame 36, yellow came back 99.2% partial-alpha while every other palette colour was
+~99% fully opaque.
+
+**⚠️ The palette build order is load-bearing, and getting it wrong silently reproduces the bug.**
+A fading element's intermediate stages cover tens of thousands of pixels per frame, so they rank as
+*dominant colours* and get admitted as solid palette entries of their own (`#feeab9`, `#fee096`,
+`#fdd573` all appeared alongside the true `#fdcb50`). Every faded pixel then unmixes against its own
+stage at α≈1.0 and renders **fully opaque** — the exact GIF artifact, now inside a format that
+didn't need to have it. Fix: consider candidates **furthest from the background first** (a fade
+stage is always nearer the background than the colour it fades from), and reject any candidate
+already explained as a blend of the background and an accepted colour.
+
+Two further guards, both from real failures during this build:
+- **Fade detection must scan every frame.** Sampling every 10th frame for speed silently stopped
+  detecting the fade and produced a plausible-but-wrong file. That is §10's own "verify against
+  every frame, not a spot-check sample" rule reasserting itself. Unmixing is ~50ms/frame; a full
+  scan is affordable and a sample is not worth the failure mode.
+- **A palette-coverage guard is mandatory, because the failure is silent.** On gradient or
+  photographic content every pixel becomes a residual case, gets forced opaque, and the run
+  *reports success having recovered nothing*. The script now warns below 90% coverage (this asset:
+  98.7%).
+
+### Format findings (all measured on this asset, 640×640 / 124 frames unless noted)
+
+| Format | Size | Encode | RGB error | Alpha error |
+|---|---|---|---|---|
+| WebP lossless `-m 4` | 2114 KB | 22.2s | **0 (exact)** | **0 (exact)** |
+| WebP lossless `-m 0` | 4944 KB | 2.6s | 0 | 0 |
+| WebP lossy q95 | 3617 KB | 6.9s | 1.51 | 0 |
+| WebP lossy q85 | 2675 KB | 6.7s | 1.93 | 0 |
+| AVIF q100 | 5034 KB | 7.0s | 1.89 | 0 |
+| AVIF q95 | 2146 KB | 7.5s | 1.92 | ±20 |
+| **AVIF q85** | **1331 KB** | 7.1s | 2.03 | ±31 |
+| AVIF q70 | 785 KB | 5.6s | 2.28 | ±50 |
+
+- **WebP lossy is pointless at native resolution** — q85 (2675 KB) and q95 (3617 KB) are both
+  *bigger* than lossless (2114 KB), because lossy injects noise into large flat regions and that
+  defeats inter-frame prediction. **But the ordering REVERSES once downscaled**: at 128×128,
+  lossless was 1190 KB against lossy q80's 650 KB. Neither claim is general — the crossover is what
+  matters.
+- **AVIF `quality=100` is a trap**: not lossless (max RGB delta 145) *and* the largest file of all.
+- **AVIF fits ~3× the frames under a hard cap.** Discord's 256 KB emoji limit: AVIF held all 124
+  frames at 128×128 (244 KB, q70/q85); WebP had to drop to 42 frames. Confirmed live by the
+  requester that Discord accepts *and animates* AVIF emoji.
+- **AVIF's alpha "error" is not where the max-delta suggests.** Despite ±31–50 maxima, every fade
+  stage reproduced with median alpha exactly right (255/204/152/102/50); on the faintest stage the
+  mean error was 0.81/255 (1.6% relative) at q85. The outliers sit on hard edges, not in the fade
+  body. Worth measuring per-feature rather than trusting a global max.
+- **`-m 6` is never worth it, but `-m 0` is content-dependent.** Here `-m 6` cost 415s against
+  `-m 4`'s 9.2s (**45×**) to save 2.3%; `-m 0` was 8.5× faster but **+134%** size. Dior's Builds
+  measured the same knob on gradient-bed nameplate frames and got `-m 0` at only **+14%** (and
+  `-m 6` *worse on both axes*). Same flag, opposite verdicts — **measure `-m` per asset class; only
+  "avoid `-m 6`" transfers.**
+
+### Two footguns that make a wrong result look like a passing one
+- **Pillow returns duration 0 for every frame when READING an animated WebP.** A naive timing check
+  therefore passes vacuously against a file whose timing is actually broken. Read the container
+  instead (`webpmux -info`); `read_webp_durations()` does this and returns `None` rather than
+  guessing when webpmux is absent. Same class as §9's Pillow-duration issue, different format.
+  For the same reason `--verify` now **refuses** a non-GIF output rather than reporting a pass it
+  cannot substantiate.
+- **Resizing destroyed the recovered alpha, and the result looked *better* for it.** `resize_rgba_
+  frames` re-binarized alpha (`a > 127`) and resized RGB without premultiplying. A 128px emoji came
+  back with **14 distinct alpha levels, 99.4% fully binary** — the fade silently gone — and the file
+  was a pleasingly small 97 KB *because* the pulses had been deleted. Caught only by testing
+  end-to-end and counting alpha levels. 8-bit-alpha output now premultiplies before resampling,
+  unpremultiplies after, and skips the post-resize erosion (which exists to trim 1-bit-cutoff fuzz
+  that no longer occurs). **A smaller-than-expected file is a symptom to investigate, not a win.**
+
+### `--recommend` gave three suggestions on this asset and two were wrong
+1. **`--pixel-art`** — `edge_hardness` 0.425 reads "hard-edged", but zooming 8× showed a real 1–2px
+   antialiasing ramp. This is exactly §1's caveat (a clean vector export with a thin AA band scores
+   low); `--pixel-art` would have disabled feathering and erosion on curve-heavy art.
+2. **`--erosion-exempt-max-size 487`** — the "1070 small removed regions" **were the controller
+   buttons**, i.e. the very design the user asked to preserve. The ≤500px ceiling exists to keep
+   protected regions out of this measurement but assumes design regions are *large*; four ~287px
+   dots sailed under it. Applying the flag to real design skips normal edge cleanup and leaves a
+   fringe — the v3.3.3 regression, recurring with a new signature.
+   **Fix shipped:** classify by **persistence**, not size (per §14's logic — design is physically
+   constant, incidental gaps are transient). A region present in ≥90% of frames is treated as design
+   and excluded from the suggestion. ⚠️ Fixed-width bins were tried first and are *measurably wrong*:
+   the buttons measure 286–306px and straddle a 25px bin edge, scoring 47.6% and 83.9% so that
+   neither half cleared the threshold despite being present in every frame. Cluster by **relative
+   tolerance** (±15%) instead.
+3. `--protect-outline-color 002864` — correct, verified across all 124 frames.
+
+### Check whether your input is already a degraded proxy
+The requester also had `love.mp4`. It was tested rather than assumed, and it is the **worse**
+source: 512×512 (vs the GIF's 640×640) and, decisively, H.264 ringing plus 4:2:0 chroma subsampling
+scatter the fade off its flat levels (IQR 0.04–0.13, peak-bin fraction 0.23–0.80) where the GIF puts
+~30,000 pixels at one exact value. A flat 256-colour GIF can be a *better* recovery source than a
+24-bit video.
+
+But ask the question anyway, early: this whole pipeline is archaeology on a flattened artifact, and
+if an original with real alpha exists (After Effects / Lottie / Rive / SVG), exporting from it beats
+any recovery. Dior's Builds' nameplate work is the cautionary version — a session concluded an asset
+"genuinely has no alpha channel" when the alpha was there all along and ffmpeg's *default decoder
+choice* was discarding it (`-c:v libvpx-vp9` recovered 234 distinct alpha values). **A tool's
+default reading of an asset is not the asset.**
