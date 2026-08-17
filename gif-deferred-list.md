@@ -231,6 +231,32 @@ the measurements behind each. Remaining open: 5 and 9.
     `bbox_scope`-restricted enclosure already does for part of it. Low severity (a noisy
     metric, not a bad output) but it undermines trust in an autonomous run's self-check.
 
+11. **Replace the erosion-exempt SIZE threshold with per-region masks** (opened 2026-08-17
+    during the §20 audit — a better fix than the guard shipped in §18.2). The overlap guard
+    picks the safer side of a conflict rather than dissolving it: when transient noise and
+    design occupy the same size range, love gets no exemption at all, so the v3.1.0
+    small-region inflation bug can return. **The machinery to do it properly already exists** —
+    `find_tiny_removed_regions` produces per-frame MASKS and
+    `erode_alpha_edge_exempting_tiny_regions` consumes masks, so a size threshold is not
+    actually required. **Do:** classify each region persistent-vs-transient (the classifier is
+    already correct), build the exemption mask from the transient regions ONLY, and drop the
+    size threshold entirely. That exempts exactly the noise regardless of how big they are or
+    what size the design happens to be.
+
+12. **gift's protected-region coverage is 0.874, not 1.0** (opened 2026-08-17). §18.4 took it
+    from 0.0, which is a real fix, but 12.6% of the region still is not opaque and I did not
+    check why. It may be legitimate (frames where the strip is genuinely occluded) or a real
+    remainder. **Do:** identify which frames and which pixels account for the gap before
+    treating item 4 as fully closed. "Improved" was reported; "resolved" was not established.
+
+13. **The whole threshold set rests on one art family** (opened 2026-08-17, §20.6). Five flat
+    vector icons on white plus a self-authored pixel-art fixture. No dark-background asset, no
+    real-world pixel art, no photographic-ish source was tested. The blend-ratio margin (0.000
+    vs 1.530) is wide; the rest (feather ≥3.0, fringe bands 0.04/0.15, floor tolerance 0.02,
+    post-render margin 0.05) are 4–5 points from one style. **Do:** re-measure against a
+    genuinely different asset before trusting any of the narrow constants on new content —
+    especially a non-white background, which the ring metric has never seen.
+
 ### ~~PARKED: remove the controller from love.gif~~ — CLOSED 2026-08-17 (Harkirat edited it manually; skill rendered the deliverables). Retained below only for the mask-isolation findings, which stay valid if this is ever automated.
 Boundary reconstruction and the encoding path are SOLVED (static-in-canvas divide, degree-6
 fit at 0.33px RMS, no GIF round-trip). **Unsolved: isolating the controller mask on frames

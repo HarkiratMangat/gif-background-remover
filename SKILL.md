@@ -41,7 +41,9 @@ reviewed, end-to-end-verified round — squarely major.
   8-bit alpha a recovered fade is legitimately pale and semi-transparent, so
   those checks would flag correct pixels. Verify an 8-bit-alpha output by
   compositing it over the background AND over a dark solid instead (§16).
-- **`--auto`: a closed loop that verifies its own OUTPUT, not just the source.**
+- **`--auto`: TWO PASSES that verify the OUTPUT, not just the source.**
+  ⚠️ Not a loop — there is no iteration construct and no counter. Worst case is
+  two renders and exactly one correction, bounded by the code's shape.
   Runs `--recommend`, applies its flags (only where you left that option at
   its default — explicit flags always win, and it prints what it skipped),
   renders, then RE-MEASURES the written file and re-renders once if the

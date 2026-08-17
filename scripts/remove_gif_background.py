@@ -4067,6 +4067,13 @@ def process(input_path, output_path, args, diagnostics=None):
                 print(f"auto: --edge-cleanup-erosion {args.edge_cleanup_erosion} -> {_picked}",
                       file=sys.stderr)
                 args.edge_cleanup_erosion = _picked
+        # ⚠️ process() works on a COPY of args, so anything resolved in here is
+        # invisible to the caller. Report the value actually used through the
+        # diagnostics sink -- auto_run escalates from it, and reading it off the
+        # caller's args instead produced a re-render at the SAME erosion level
+        # while reporting a different one (caught in testing).
+        if diagnostics is not None:
+            diagnostics['erosion_used'] = args.edge_cleanup_erosion
         if exempt_max is not None and exempt_max > 0:
             tiny_masks = (_tiny_for_cal if _tiny_for_cal is not None
                           else find_tiny_removed_regions(alpha_frames, exempt_max))
@@ -4460,6 +4467,22 @@ def apply_pixel_art_preset(args):
         args.edge_cleanup_erosion = 0
 
 
+def typed_option_names(argv=None):
+    """
+    The long-option names the user ACTUALLY typed, as attribute names.
+
+    argparse records no provenance, so comparing a parsed value against the
+    default cannot tell "user passed the default explicitly" from "user passed
+    nothing". Any feature that promises explicit flags win has to read argv.
+    """
+    out = set()
+    for tok in (sys.argv[1:] if argv is None else argv):
+        name = tok.split('=', 1)[0]
+        if name.startswith('--'):
+            out.add(name[2:].replace('-', '_'))
+    return out
+
+
 def post_render_fringe_check(input_path, output_path, tolerance=15):
     """
     Re-measure the fringe metric on the ENCODED file, not on the in-memory
@@ -4488,8 +4511,27 @@ def post_render_fringe_check(input_path, output_path, tolerance=15):
 
 def auto_run(input_path, output_path, args, parser):
     """
-    The closed loop: analyse -> recommend -> render -> RE-verify the rendered
-    file -> correct and re-render if the output disagrees with the prediction.
+    TWO PASSES, not a loop: analyse -> recommend -> render -> re-verify the
+    RENDERED file -> at most ONE corrective re-render.
+
+    ⚠️ There is deliberately no iteration construct here. Worst case is two
+    renders, bounded by the code's shape rather than by a counter, so there is
+    no counter that could fail to increment and no runaway. Two is the right
+    number for a reason, not out of caution:
+      * Pass 1 already corrects everything predictable from the source, and the
+        erosion calibration is EXHAUSTIVE over its candidate set -- it measures
+        all of them rather than stepping toward an answer, so iterating it
+        would add nothing.
+      * Pass 2 exists for exactly one thing the first pass structurally cannot
+        see: the encoder. Palette quantization and lossy edge shifts are a
+        single discrete effect, not something that compounds.
+      * There is no third class of error a third pass would address; it would
+        re-measure the same encoder on the same input and learn nothing new.
+
+    If anyone ever does turn this into a real loop, it MUST also carry: an
+    explicit iteration cap, the keep-the-better-render rule implemented below
+    (each pass can make things worse), and a monotonic-progress check, since
+    escalating erosion has diminishing returns and eventually destroys artwork.
 
     Harkirat's framing, and the reason this exists: the manual tweaks were only
     ever an investigation layer, so anything learned there belongs in the script
@@ -4506,25 +4548,55 @@ def auto_run(input_path, output_path, args, parser):
 
     base = parser.parse_args([input_path, output_path])
     rec_ns = parser.parse_args([input_path, output_path] + rec_tokens)
+
+    # Which options did the user ACTUALLY type? Comparing against the default
+    # is not good enough: a user who explicitly passes the default value is
+    # indistinguishable from one who passed nothing, and --auto would then
+    # override a deliberate choice while claiming explicit flags always win.
+    # argparse keeps no provenance, so read it off argv directly.
+    _typed = typed_option_names()
+
     applied, overridden = [], []
     for k in vars(rec_ns):
         rv, dv, uv = getattr(rec_ns, k), getattr(base, k), getattr(args, k, None)
         if rv == dv:
             continue
-        if uv == dv:
+        if k in _typed:
+            if uv != rv:
+                overridden.append(
+                    f"--{k.replace('_', '-')}: recommended {rv}, you set {uv} -- keeping yours")
+        elif uv == dv:
             setattr(args, k, rv)
             applied.append(f"--{k.replace('_', '-')} {rv}")
         elif uv != rv:
-            overridden.append(f"--{k.replace('_', '-')}: recommended {rv}, you set {uv} -- keeping yours")
+            overridden.append(
+                f"--{k.replace('_', '-')}: recommended {rv}, you set {uv} -- keeping yours")
     for line in rec['evidence']:
         print("  evidence: " + line[:220].replace("\n", " "), file=sys.stderr)
-    print(f"  recommended format: {rec.get('recommended_format')}", file=sys.stderr)
+    _recfmt = rec.get('recommended_format')
+    print(f"  recommended format: {_recfmt}", file=sys.stderr)
+    # The container is the single most consequential decision and --auto does
+    # NOT make it -- the user named the output file. But proceeding silently
+    # when the analysis says this asset cannot be represented in that container
+    # would be the tool knowingly shipping a wrong result.
+    _outfmt = resolve_output_format(output_path, args)
+    if _recfmt == 'webp-or-avif' and _outfmt == 'gif':
+        print("  ⚠️  FORMAT CONFLICT: this source has a translucent element that was "
+              "flattened against the background, and GIF's 1-bit alpha CANNOT represent "
+              "it -- the faded stages will render as opaque pale blobs or vanish, and no "
+              "setting fixes that. You asked for a .gif, so that is what will be written. "
+              "Re-run with a .webp or .avif output plus --recover-fade-alpha for a correct "
+              "result (references/lessons.md SS16).", file=sys.stderr)
     print(f"  applying: {' '.join(applied) if applied else '(nothing beyond defaults)'}",
           file=sys.stderr)
     for line in overridden:
         print(f"  {line}", file=sys.stderr)
 
-    args.auto_erosion = True
+    # Do NOT re-enable calibration when the user typed an erosion value -- main()
+    # already turned it off for exactly that reason, and unconditionally setting
+    # it back here would silently override them (caught in testing: an explicit
+    # --edge-cleanup-erosion 2 was still being recalibrated down to 1).
+    args.auto_erosion = 'edge_cleanup_erosion' not in _typed
     diag = {}
     print("=== AUTO 2/3: rendering ===", file=sys.stderr)
     process(input_path, output_path, args, diagnostics=diag)
@@ -4543,22 +4615,78 @@ def auto_run(input_path, output_path, args, parser):
           file=sys.stderr)
     # The comparison is against THIS asset's own pre-encode floor, never a
     # global constant -- the same reason calibrate_edge_cleanup_erosion exists.
+    # 0.05 is not an absolute threshold -- it is a margin ABOVE THIS ASSET'S OWN
+    # pre-encode floor, so the comparison stays within-asset (the whole point of
+    # SS19). The size of the margin is calibrated: across five real assets the
+    # largest benign encoder gap measured 0.0021, so 0.05 is ~24x the worst
+    # observed agreement. Measured on flat vector icon art over white; an art
+    # style far outside that corpus may warrant re-measuring.
     if floor is not None and post > floor + 0.05:
-        newe = (args.edge_cleanup_erosion or 0) + 1
+        _used = diag.get('erosion_used')
+        if _used is None:
+            _used = args.edge_cleanup_erosion or 0
+        newe = _used + 1
         print(f"  DISAGREEMENT: the encoded file is {post - floor:.4f} above the floor the "
               f"in-memory calibration predicted -- the encoder reintroduced edge pixels the "
-              f"calibration could not see. Re-rendering once at "
-              f"--edge-cleanup-erosion {newe}.", file=sys.stderr)
+              f"calibration could not see. Re-rendering ONCE at "
+              f"--edge-cleanup-erosion {newe} (up from {_used}).", file=sys.stderr)
+        # Preserve the first render. A correction is not guaranteed to help, and
+        # overwriting a better file with a worse one and merely printing a warning
+        # would leave the inferior result on disk -- the same failure shape as
+        # reporting a pass that was never verified (SS13/SS17).
+        _keep = output_path + '.pass1'
+        shutil.copyfile(output_path, _keep)
         args.edge_cleanup_erosion = newe
         args.auto_erosion = False          # do not re-calibrate over the escalation
-        process(input_path, output_path, args)
-        post2 = post_render_fringe_check(input_path, output_path, tolerance=args.tolerance)
-        print(f"  after correction: {post2}"
-              + ("" if post2 is None or post2 <= post else
-                 "  -- WARNING: not an improvement; the earlier render may have been better"),
-              file=sys.stderr)
+        try:
+            process(input_path, output_path, args)
+            post2 = post_render_fringe_check(input_path, output_path,
+                                             tolerance=args.tolerance)
+            if post2 is not None and post2 < post:
+                print(f"  after correction: {post2} -- improved, keeping the corrected render.",
+                      file=sys.stderr)
+            else:
+                shutil.copyfile(_keep, output_path)
+                print(f"  after correction: {post2} -- NOT an improvement over {post}. "
+                      f"Reverted: the file on disk is the FIRST render "
+                      f"(--edge-cleanup-erosion {_used}). The encoder disagreement is "
+                      f"real but more erosion is not the remedy; inspect this asset by hand.",
+                      file=sys.stderr)
+        finally:
+            if os.path.exists(_keep):
+                os.remove(_keep)
     else:
         print("  the rendered file agrees with the calibration -- no correction needed.",
+              file=sys.stderr)
+
+    # Fringe is only one of the things that can be wrong. For a GIF output the
+    # full verify() is available and free, and it covers the duration/frame-count
+    # class that SS17 was -- so report all of it rather than implying that a clean
+    # fringe reading means a clean file.
+    if resolve_output_format(output_path, args) == 'gif':
+        try:
+            _v = verify(input_path, output_path, tolerance=args.tolerance)
+            _lb = _v.get('leftover_background_opaque_px', {})
+            _tm = _v.get('timing', {}) or {}
+            print(f"  full verify -- leftover background (worst frame): "
+                  f"{_lb.get('max_per_frame')}", file=sys.stderr)
+            _pc = [p for p in (_v.get('protected_region_coverage') or [])
+                   if p.get('mean_opacity_fraction') is not None]
+            if _pc:
+                _worst = min(_pc, key=lambda x: x['mean_opacity_fraction'])
+                print(f"  full verify -- worst protected-region coverage: "
+                      f"{_worst['mean_opacity_fraction']}", file=sys.stderr)
+            if _tm:
+                print(f"  full verify -- timing: {_tm}", file=sys.stderr)
+        except SystemExit:
+            pass
+        except Exception as _exc:
+            print(f"  full verify unavailable ({_exc}) -- reporting the fringe check only, "
+                  f"not a clean bill of health.", file=sys.stderr)
+    else:
+        print("  (8-bit-alpha output: only the alpha-aware fringe check ran. "
+              "verify()'s leftover-background and protected-coverage checks are still "
+              "1-bit assumptions -- backlog item 9 -- so this is NOT a full verification.)",
               file=sys.stderr)
 
 
@@ -4993,7 +5121,18 @@ def main():
     if sum([args.analyze, args.recommend, args.verify, args.auto]) > 1:
         p.error('Use only one of --analyze, --recommend, --verify, or --auto at a time')
     if args.auto:
+        if args.batch:
+            p.error('--auto processes a single file; use --batch without --auto, or '
+                    'run --auto per file')
         args.auto_erosion = True
+    # An explicitly typed --edge-cleanup-erosion outranks the calibration. Gating
+    # this on the parsed value would not work: the user may have typed the default
+    # on purpose, and that is indistinguishable from silence without argv.
+    if args.auto_erosion and 'edge_cleanup_erosion' in typed_option_names():
+        args.auto_erosion = False
+        print(f"--edge-cleanup-erosion {args.edge_cleanup_erosion} was given explicitly, "
+              f"so erosion auto-calibration is OFF for this run (your value wins).",
+              file=sys.stderr)
 
     if args.analyze:
         if not args.input_gif:

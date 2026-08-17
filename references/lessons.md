@@ -1778,3 +1778,90 @@ reading high: the branch fires, re-renders, and re-measures to 0.0.
   I had written the manual version of it into the inconclusive verdict's own advice text
   ("compare this asset against its own erosion 0/1/2 outputs") without noticing that a machine
   could simply do it.
+
+---
+
+## 20. Auditing §19: five defects found by reviewing my own work
+
+**2026-08-17**, after Harkirat asked how many times `--auto` would loop and then asked for a
+full audit. The loop question alone surfaced a wording error; the audit surfaced four more
+defects, three of which the tests as written would never have caught.
+
+### 20.1 I called straight-line code "a loop"
+`auto_run` has no `while`, no recursion, and no counter — it calls `process()`, measures, and
+calls it at most once more. I described it as "the closed loop" in the summary, the docstring
+and the handoff, **in the exact context where the distinction mattered**: a question about
+runaway risk. Harkirat caught it. A future reader would have gone looking for an iteration cap
+that does not exist, or added one.
+
+Bounded-by-shape is stronger than bounded-by-counter — there is no state that can fail to
+increment. And two passes is principled rather than cautious: pass 1's calibration is
+EXHAUSTIVE over its candidate set (it measures every candidate rather than stepping toward an
+answer, so iterating adds nothing), pass 2 exists for the single discrete effect pass 1
+structurally cannot see (the encoder), and no third class of error remains. That reasoning is
+now in the docstring, along with what a future looping version would have to carry.
+
+### 20.2 The correction could ship a WORSE file than the one it replaced
+The corrective re-render overwrote the output in place, then printed a warning if the result was
+not an improvement — leaving the inferior file on disk with the better one already destroyed.
+Now the first render is preserved, the correction is compared against it, and the loser is
+discarded. The message states which render is actually on disk. Same principle as §13/§17:
+report what IS, not what was attempted.
+
+### 20.3 The escalation was computed from a value that was never written back
+`process()` starts with `args = copy.copy(args)`, so every setting it resolves internally —
+including the calibrated erosion — is invisible to the caller. `auto_run` computed
+`newe = (args.edge_cleanup_erosion or 0) + 1` from the CALLER's copy, where the value was still
+`None`. So the "escalation" re-rendered at erosion 1 when pass 1 had already used 1: **not an
+escalation at all**, while reporting one.
+
+Found by reading the test output rather than the assertion — the revert test passed, and the
+message beneath it said "the FIRST render (--edge-cleanup-erosion 0)" when pass 1 had used 1.
+The assertion checked that the branch fired, not that it did the right thing. The resolved value
+now travels back through the diagnostics sink.
+
+**A passing test plus an implausible number in its output is a failing test.**
+
+### 20.4 "Explicit flags always win" was false, twice over
+I put that guarantee in the help text and the docstring. Two separate holes:
+1. `--auto` decided "the user expressed no opinion" by comparing against the default, so a user
+   who explicitly typed the default value was indistinguishable from one who typed nothing, and
+   got overridden. argparse keeps no provenance; `typed_option_names()` now reads argv.
+2. Worse, and caught only by testing it: an explicitly typed `--edge-cleanup-erosion 2` was
+   still recalibrated down to 1, because the calibration is gated on `auto_erosion` and
+   `auto_run` set that flag unconditionally — re-enabling what `main()` had just turned off.
+
+The second one is the instructive half: I "fixed" the guarantee in the flag-application code and
+declared it done, while the actual override lived somewhere else entirely. **Fixing the
+mechanism you were thinking about is not the same as fixing the behaviour.** Only running the
+command proved it.
+
+### 20.5 `--auto` knew the format was wrong and said nothing
+`recommend()` returns `webp-or-avif` for four of five corpus assets, with evidence that GIF
+structurally cannot carry a baked-in fade. `--auto` printed that and then rendered a GIF anyway
+if that is what the output path said. The single most consequential decision — the container —
+was the one `--auto` did not act on. It now prints a prominent FORMAT CONFLICT warning. It still
+does not override the user's chosen filename, which is right: the user named the file. But
+proceeding silently when the analysis says the result will be wrong is not.
+
+Related, same audit: pass 2 only measured fringe. For a GIF output the full `verify()` is
+available and free, and it covers the duration/frame-count class that §17 was — so `--auto` now
+runs it and reports leftover background, protected coverage and timing, rather than letting a
+clean fringe reading imply a clean file. For 8-bit-alpha outputs it says explicitly that only
+the alpha-aware check ran and this is NOT a full verification.
+
+### 20.6 Limits of this session's calibration, stated plainly
+Every threshold set in §18–§19 was calibrated on **five assets from one art family** (flat
+vector icons on white, from one emoji set) plus a synthetic pixel-art fixture **I wrote myself**.
+That fixture confirms the discriminator does not fire on art with literally zero antialiasing,
+but it is not independent evidence about real-world pixel art, which often carries some AA or a
+palette dither. The blend-ratio margin (0.000 vs 1.530) is wide enough to survive that; the
+narrower constants (feather ≥3.0, fringe bands 0.04/0.15, floor tolerance 0.02, post-render
+0.05) rest on 4–5 points from one style, and no dark-background asset was tested at all.
+
+Also worth recording honestly: **every GIF asset calibrated to erosion 1.** That is the correct
+answer being stable, not degeneracy — the WebP path returns 0 from the same code, which proves
+the rule is not stuck. But it means the calibration mostly re-derives a constant for this corpus,
+and its 2/3 branches have never been exercised on real content. Its genuine value is that it
+DERIVES rather than assumes, and adapts across alpha depths — not that it finds a different
+answer per asset.
