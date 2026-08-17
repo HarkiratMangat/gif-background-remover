@@ -2265,7 +2265,8 @@ def unmix_against_palette(rgb, bg_rgb, palette):
     return k.reshape(shape), t[n, k].reshape(shape), res.reshape(shape)
 
 
-def build_art_palette(rgb_frames, bg_rgb, sample_stride=8):
+def build_art_palette(rgb_frames, bg_rgb, sample_stride=8, protect_parents=None,
+                      force_include=None):
     """
     The small set of SOLID colours the art is actually drawn from.
 
@@ -2281,6 +2282,22 @@ def build_art_palette(rgb_frames, bg_rgb, sample_stride=8):
     stage is always closer to the background than the colour it fades from),
     and reject any candidate already explained as a blend of the background and
     an accepted colour.
+
+    ⚠️ That rejection is too aggressive on its own, and the failure is severe.
+    A SOLID art colour can legitimately sit on the line between the background
+    and another art colour -- a pale tint, a light shade of a mid-tone. Rejecting
+    it means it never becomes a palette entry, so it gets unmixed as
+    "background + its parent" and rendered SEMI-TRANSPARENT. Confirmed on a real
+    asset (crystal.gif): #d2dcfd is a genuine solid colour that is also exactly
+    43% #93b2f4 over white, and 1,092,411 solid pixels across 130 frames came out
+    at alpha ~109/255 instead of 255 -- the background visibly showing through
+    the artwork.
+
+    The discriminator is the PARENT: a fade stage's parent is a fading colour, a
+    solid tint's parent is not. `protect_parents` is the set of parent colours
+    whose blends may be rejected (i.e. the detected fading colours). None means
+    reject every blend -- correct ONLY for the provisional first pass that exists
+    to find the fading colours in the first place.
     """
     bg = np.asarray(bg_rgb, dtype=np.float32)
     sample = np.concatenate(
@@ -2291,7 +2308,10 @@ def build_art_palette(rgb_frames, bg_rgb, sample_stride=8):
             if n >= floor and np.linalg.norm(c.astype(np.float32) - bg) > 40]
     cand.sort(key=lambda cn: -float(np.linalg.norm(cn[0] - bg)))
 
-    palette = []
+    # force_include seeds the palette so a manually named colour survives even
+    # when it is too rare to clear the frequency floor -- see the fade_hexes
+    # branch in recover_fade_alpha_frames for the real case.
+    palette = [np.asarray(c, dtype=np.float32) for c in (force_include or [])]
     for col, _n in cand:
         v = col - bg
         explained = False
@@ -2300,11 +2320,36 @@ def build_art_palette(rgb_frames, bg_rgb, sample_stride=8):
             dd = float(d @ d)
             t = min(max(float(v @ d) / dd, 0.0), 1.0)
             if float(np.linalg.norm(v - t * d)) < FADE_RESIDUAL_TOLERANCE:
+                if protect_parents is not None and not any(
+                        float(np.linalg.norm(prev - q)) < 1e-6 for q in protect_parents):
+                    continue          # parent is solid art -> this is a real colour
                 explained = True
                 break
         if explained or any(np.linalg.norm(col - q) < 30 for q in palette):
             continue
         palette.append(col)
+
+    # ⚠️ SATURATION PROMOTION WAS TRIED HERE AND REVERTED (2026-08-17) -- do not
+    # re-attempt without reading this. The idea: an element drawn at constant
+    # partial opacity never appears at full strength, so its TRUE colour can fall
+    # under the frequency floor while its blended stage clears it; the blend then
+    # enters the palette as "solid" and renders OPAQUE PALE. Real case, gift.gif:
+    # a sparkle at ~27% opacity put #d1dcfb in the palette instead of #6969f2, so
+    # it turned whitish instead of staying translucent purple.
+    #
+    # The attempted fix walked each accepted colour's background->colour ray
+    # looking for a more saturated colour present at a lower count, and promoted
+    # to it. MEASURED NET-HARMFUL across the corpus:
+    #   * crystal.gif: promoted the genuinely-solid #d2dcfd to #8599f5, which
+    #     re-broke the exact semi-transparency bug the two-pass palette fixes.
+    #   * explosion.gif: emitted a duplicate palette entry (#93b2f4 twice).
+    #   * gift.gif: only reached #c4d0f2, still not the true #6969f2.
+    # Root reason it cannot work from a histogram alone: "pale colour is a blend
+    # of a rarer saturated colour" and "pale colour is solid art that happens to
+    # be collinear with a saturated colour" are INDISTINGUISHABLE in colour
+    # statistics. Separating them needs evidence this function does not have
+    # (e.g. per-region temporal behaviour). --fade-color is the working escape
+    # hatch meanwhile, and it injects the named colour into the palette.
     return np.array(palette, dtype=np.float32)
 
 
@@ -2353,7 +2398,42 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
     outline and the pulse ring into an opaque white band.
     """
     say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
-    palette = build_art_palette(rgb_frames, bg_rgb)
+    # TWO PASSES. Pass 1 rejects every background-blend candidate, which is what
+    # makes the fading colours findable at all. Pass 2 rebuilds the palette
+    # KEEPING solid near-background tints, rejecting only blends whose PARENT is
+    # actually a fading colour -- see build_art_palette's docstring for the real
+    # bug this closes.
+    provisional = build_art_palette(rgb_frames, bg_rgb)
+    if len(provisional) == 0:
+        raise SystemExit(
+            "--recover-fade-alpha found no solid art colours distinct from the "
+            "background. This path assumes flat-colour art (vector icon/sticker "
+            "style); it cannot work on photographic or heavily-gradient content.")
+    if fade_hexes:
+        # --fade-color ADDS the colour when it isn't already present, rather than
+        # snapping to the nearest existing entry. Confirmed necessary on a real
+        # asset (gift.gif): a translucent sparkle drawn at ~27% opacity means its
+        # TRUE colour (#6969f2) barely exists at full strength anywhere in the
+        # animation, so it never clears the frequency floor -- only its blended
+        # stage (#d1dcfb) does, which then gets admitted as a solid colour and
+        # renders OPAQUE PALE. Snapping to the nearest entry would just re-select
+        # that same wrong pale colour; the point of the override is to name the
+        # colour the detector could not see.
+        _want = [np.array(hex_to_rgb(h), dtype=np.float32) for h in fade_hexes]
+        parents = []
+        for w in _want:
+            dists = np.linalg.norm(provisional - w, axis=1)
+            i = int(np.argmin(dists))
+            if float(dists[i]) <= 12.0:
+                parents.append(provisional[i])
+            else:
+                provisional = np.vstack([provisional, w[None, :]])
+                parents.append(w)
+    else:
+        parents = [provisional[i] for i in
+                   sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))]
+    palette = build_art_palette(rgb_frames, bg_rgb, protect_parents=parents,
+                                force_include=parents if fade_hexes else None)
     if len(palette) == 0:
         raise SystemExit(
             "--recover-fade-alpha found no solid art colours distinct from the "
@@ -2376,7 +2456,8 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         say("fading colours (from --fade-color): " +
             ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in sorted(fading)))
     else:
-        fading = detect_fading_colors(rgb_frames, bg_rgb, palette)
+        fading = {i for i, c in enumerate(palette)
+                  if any(float(np.linalg.norm(c - q)) < 1e-6 for q in parents)}
         say("fading colours (auto-detected): " +
             (', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i])
                        for i in sorted(fading)) or 'none'))

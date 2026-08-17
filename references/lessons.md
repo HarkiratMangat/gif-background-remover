@@ -1197,8 +1197,22 @@ genuinely explained as 43% `#93b2f4` over white (residual 3.6). It survived only
 **interior**, where topological protection keeps it opaque. **A near-background solid colour that
 appears at the silhouette edge would be unmixed to partial alpha and go semi-transparent.** The
 impostor-rejection rule that fixes the fade-stage bug creates this one; they are the same mechanism
-pointed in opposite directions. Not hit on any corpus asset — recorded so the next occurrence is
-recognised rather than re-derived.
+pointed in opposite directions.
+
+**⚠️ This WAS hit, on `crystal` itself — an earlier draft of this section claimed "not hit on any
+corpus asset" and was wrong.** A single-frame spot-check sampled a frame where that colour happened
+to sit interior; compositing the whole animation over a checkerboard exposed it immediately.
+Measured: **1,092,411 solid-source pixels across 130 frames rendered at alpha ~109/255 instead of
+255** — the background visibly showing through the artwork. *Lesson within the lesson: a
+single-frame spot-check is not a test for a defect that depends on position. Composite every frame
+over a checkerboard AND a flat colour before believing an asset is clean.*
+
+**Fix shipped — a two-pass palette.** The discriminator is the PARENT: a fade stage's parent is a
+fading colour, a solid tint's parent is not. Pass 1 rejects every background-blend candidate (that
+is what makes the fading colours findable at all); pass 2 rebuilds the palette KEEPING solid
+near-background tints, rejecting only blends whose parent is a detected fading colour. Result:
+1,092,411 → 0 wrongly-translucent solid pixels, with love.gif's fade ramp and frame-0 falsifier
+unchanged.
 
 **Format conclusions, now measured on 5 assets rather than 1:**
 
@@ -1252,3 +1266,55 @@ is therefore immune regardless, and adopting it means adding an external-binary 
 main output path with a Pillow fallback to maintain — for a benefit not demonstrable on any asset
 tested. **`-exact` is the lever if a halo is ever actually observed.** Recorded so this is not
 re-litigated from scratch.
+
+### A translucent element whose TRUE colour never appears at full strength
+Found on `gift.gif` after the user spotted the four-dot sparkle turning *whitish* as it faded.
+
+The sparkle is drawn at a roughly **constant ~27% opacity**, so pure `#6969f2` barely exists
+anywhere in the animation. It therefore never clears `build_art_palette`'s frequency floor, while
+its *blended* stage `#d1dcfb` (thousands of pixels every frame) sails over it. The blend is then
+admitted as a SOLID palette colour and rendered fully opaque — a pale lavender, which reads as
+white-ish. The fade information was not lost by the encoder here; it was lost by the palette builder
+picking the wrong endpoint of the ray.
+
+**This is the mirror image of the fade-stage-impostor bug:** there, a blend was wrongly admitted as
+solid *while the true colour was present*; here, a blend is wrongly admitted as solid *because the
+true colour is absent*. Same symptom, opposite cause.
+
+**Fix: `--fade-color` now INJECTS the named colour into the palette** instead of snapping to the
+nearest existing entry. Snapping was useless for exactly this case — the nearest entry *is* the
+wrong pale colour, and `#6969f2` sits 155 away, past the match tolerance, so the flag simply errored
+out. `--recover-fade-alpha --fade-color 6969f2,fd6050` produces the correct translucent sparkle.
+
+**⚠️ An automatic fix was attempted and REVERTED — do not re-attempt without reading this.**
+"Saturation promotion": for each accepted colour, walk its background→colour ray looking for a more
+saturated colour present at a lower count, and promote to it. Measured net-harmful across the corpus:
+- `crystal.gif`: promoted the genuinely-solid `#d2dcfd` to `#8599f5`, **re-breaking the exact
+  semi-transparency bug the two-pass palette had just fixed**.
+- `explosion.gif`: emitted a duplicate palette entry (`#93b2f4` twice).
+- `gift.gif`: only reached `#c4d0f2` — still not the true `#6969f2`.
+
+Root reason it cannot work from colour statistics alone: *"pale colour is a blend of a rarer
+saturated colour"* and *"pale colour is solid art that happens to be collinear with a saturated
+colour"* are **indistinguishable in a histogram**. Separating them needs evidence the palette
+builder does not have (per-region temporal behaviour). `--fade-color` is the working escape hatch,
+and the auto-detector should be expected to miss this class.
+
+### Is WebP/AVIF worth it when there is NO partial transparency?
+Yes — measured, including on `explosion`, which has no fading element at all:
+
+| Asset | Original GIF | plain GIF out | WebP lossless | AVIF q85 |
+|---|---|---|---|---|
+| explosion | 1506 KB | 1057 KB | 1216 KB | **665 KB** |
+| crystal | 1189 KB | 1061 KB | 1417 KB | **392 KB** |
+
+1. **Edge quality** — GIF's 1-bit alpha forces every antialiased silhouette pixel to be dithered or
+   cut; WebP/AVIF keep the real antialiasing. Applies to *every* asset, fade or not.
+2. **Size** — AVIF q85 beat the plain GIF output on both.
+3. **Protection comes free** — `--recover-fade-alpha` derives protection topologically, so interior
+   detail stays opaque with no flags at all. Visible in the corpus preview: `gift`'s plain-GIF
+   output has its white box stripes punched TRANSPARENT (they are background-coloured and nothing
+   protected them), while the WebP/AVIF outputs keep them correctly opaque with zero user input.
+
+**Ship GIF only when the destination requires GIF.** Otherwise AVIF q85 is smaller and better, and
+WebP lossless is the bit-exact master.
