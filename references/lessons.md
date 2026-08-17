@@ -1495,3 +1495,82 @@ Ranking (Harkirat's, 2026-08-17):
 Always report frame counts beside file sizes — under a cap, frames are what actually gets
 spent.
 
+---
+
+## 17. A WebP source silently shifted every frame duration by one
+
+**Found 2026-08-17** on the first job whose SOURCE was a WebP rather than a GIF — Harkirat had
+manually removed the gamepad from `love.gif` and supplied a lossless WebP export of the result.
+Not found by a test; found because the save line printed a total that disagreed with the source.
+
+### What happened
+The script read the 124-frame source, processed it correctly, and wrote a WebP whose durations
+were:
+
+| | durations | total |
+|---|---|---|
+| source | `[220, 20 x122, 340]` | 3000 ms |
+| output | `[100, 220, 20 x122]` | 2760 ms |
+
+The list is **shifted one position right**: a 100 ms frame that exists nowhere in the source is
+prepended, and the final 340 ms frame is dropped. The animation ran 240 ms short with every
+frame's timing off by one.
+
+### Root cause — a Pillow API difference that fails silently
+`GifImagePlugin` populates `info['duration']` inside `seek()`. `WebPImagePlugin` populates it
+only inside `load()`. The script used the same seek-then-read pattern for both:
+
+```python
+im.seek(i)
+durations.append(im.info.get('duration', 100))   # WebP: returns the PREVIOUS frame's value
+```
+
+On a GIF this is correct and always has been. On a WebP it returns whatever the last *loaded*
+frame left behind — a one-position lag, with Pillow's 100 ms default standing in for the frame
+that was never read. No exception, no warning; just wrong numbers.
+
+**Four call sites shared the bug**, and they concealed each other:
+`process()`'s source loader (wrote the wrong output), `load_gif_rgba_frames`,
+`read_animation_timing`, and — critically — `describe_written_timing`, the readback added in
+§13 precisely to stop the script asserting timing it had not verified. Because the readback
+used the same lagged pattern, *intended* and *written* agreed with each other and the script
+reported **"durations preserved exactly."** §13's fix was correct in design and still could not
+catch this: a readback written with the same faulty assumption as the writer confirms the
+assumption, not the file.
+
+### The fix
+One helper, used at all four sites:
+
+```python
+def frame_duration_ms(im, default=0):
+    im.load()                              # load-bearing: WebP/AVIF set duration only here
+    return im.info.get('duration', default)
+```
+
+Verified: the GIF path is **byte-identical** before and after (compared against the retained
+`love_transparent.gif` baseline), so this is a pure no-op wherever it already worked, and the
+WebP output now round-trips `[220, 20 x122, 340]` element-wise, not merely by total.
+
+### It also closed a separate open item
+The autonomy backlog carried "AVIF durations cannot be read back — Pillow exposes none." That
+was the *same* bug wearing a different symptom: seek-only on an AVIF returns `0` for every
+frame, so `read_animation_timing` summed to zero and honestly reported the timing as
+unverifiable. With `load()` it returns `[220, 20 x122, 340]`, total 3000 ms. **The item was
+never an AVIF limitation at all** — it was this missing call, and it sat on the backlog as an
+external constraint because nothing had tested the alternative.
+
+### Lessons
+- **A readback only verifies if it reads the file by a genuinely different path than the write.**
+  Sharing a helper, an assumption, or an API quirk with the writer turns verification into an
+  echo. This is §13's lesson one level deeper: §13 stopped the script asserting what it never
+  read; §17 shows that reading it back through the same flawed lens is still not evidence.
+- **Format plugins differ in WHEN they populate metadata, not just what.** A pattern proven on
+  GIF carried to WebP/AVIF without re-testing, and the failure was silent because both APIs
+  return a plausible integer.
+- **"Cannot be done" on a backlog deserves one falsification attempt before it is recorded as a
+  constraint.** This one cost a single `load()` call and had been written down as a property of
+  Pillow.
+- **Scope check before claiming impact:** every previously delivered file was rendered from a
+  GIF source, so all measured correct (3000 ms, `[220, ..., 340]`) — including a 42-frame
+  byte-capped WebP whose merged durations still summed correctly. The bug only ever bit a
+  WebP/AVIF *source*, which this job was the first to use.

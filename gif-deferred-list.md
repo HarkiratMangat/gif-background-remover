@@ -186,10 +186,23 @@ measurements behind each, in `local/HANDOFF-2026-08-17.md` and `references/lesso
 7. **`--verify`'s `looks_fringed` is unreliable** — returned False at erosion 0, 1 AND 2,
    including a level with a visible fringe. It misled a decision and shipped a regression.
    Replace with the outer-opaque-ring measurement (49.1%/0.2%/0.7% for erosion 0/1/2).
-8. **AVIF durations cannot be read back** — Pillow exposes none, so timing reports as
-   unverified. Encoder writes them correctly (confirmed by real Discord playback).
+8. ~~**AVIF durations cannot be read back**~~ — **RESOLVED 2026-08-17.** Never an AVIF
+   limitation: Pillow populates `info['duration']` only in `load()`, and the reader used
+   seek-only, so every frame returned 0. Adding `load()` returns the true durations
+   (3000 ms, `[220, 20 x122, 340]`). Same root cause as the WebP source-duration shift —
+   see `references/lessons.md` §17.
 
-### PARKED: remove the controller from love.gif (direct request, NOT skill training)
+9. **`--verify` has no 8-bit-alpha mode** (opened 2026-08-17, replaces the stale
+   duration-based reason). Now that WebP/AVIF durations read correctly, the ONLY thing
+   blocking `--verify` on those formats is that its checks are written for 1-bit alpha:
+   "leftover background" tests for an opaque background-coloured pixel, "fringe" for a pale
+   ring — and a recovered fade is legitimately both. **Do:** give each check a partial-alpha
+   definition (leftover background = alpha≈255 AND background-coloured; fringe = the
+   outer-opaque-ring metric from §16, which is already alpha-aware) rather than lifting the
+   refusal. Lifting it without redefining the checks reintroduces exactly the misleading pass
+   the refusal exists to prevent.
+
+### ~~PARKED: remove the controller from love.gif~~ — CLOSED 2026-08-17 (Harkirat edited it manually; skill rendered the deliverables). Retained below only for the mask-isolation findings, which stay valid if this is ever automated.
 Boundary reconstruction and the encoding path are SOLVED (static-in-canvas divide, degree-6
 fit at 0.33px RMS, no GIF round-trip). **Unsolved: isolating the controller mask on frames
 26–34**, where it touches the heart outline. Four approaches measured — see the handoff.

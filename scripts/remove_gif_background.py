@@ -192,6 +192,28 @@ def gifsicle_optimize(path, level='lossless', timeout=60):
         return False
 
 
+def frame_duration_ms(im, default=0):
+    """
+    Duration in ms of the frame `im` is CURRENTLY seeked to.
+
+    The im.load() is load-bearing, not defensive. GifImagePlugin populates
+    info['duration'] during seek(), so seek-then-read has always worked for a
+    GIF -- but WebPImagePlugin populates it only in load(), so on a WebP the
+    same pattern returns the PREVIOUS frame's value: a silent one-position
+    lag that no exception ever reports.
+
+    Measured on a real 124-frame WebP source (references/lessons.md SS17): the
+    durations read back as [100, 220, 20 x122] against a true
+    [220, 20 x122, 340] -- a bogus 100ms frame prepended, the final 340ms
+    frame dropped, and every WebP/AVIF written from a WebP source came out
+    240ms short with its timing shifted by one frame. It stayed invisible
+    because the readback used this same lagged pattern, so intended and
+    written agreed with each other and the script reported success.
+    """
+    im.load()
+    return im.info.get('duration', default)
+
+
 def average_frame_delay(durations):
     return sum(durations) / max(len(durations), 1)
 
@@ -1875,7 +1897,7 @@ def describe_written_timing(output_path, intended_durations):
                     im.seek(i)
                 except EOFError:
                     break
-                written.append(im.info.get('duration') or 0)
+                written.append(frame_duration_ms(im) or 0)
                 i += 1
     except Exception as exc:
         # Readback is a reporting nicety, never a reason to fail a job that
@@ -1914,7 +1936,7 @@ def load_gif_rgba_frames(path):
     rgb_frames, alpha_frames, durations = [], [], []
     for i in range(n):
         im.seek(i)
-        durations.append(im.info.get('duration', 100))
+        durations.append(frame_duration_ms(im, 100))
         arr = np.array(im.convert('RGBA'))
         # .copy(): a bare slice is a VIEW into arr, so without copying,
         # every element of rgb_frames/alpha_frames keeps its own frame's
@@ -1970,10 +1992,16 @@ def align_input_to_output_frames(in_durations, out_durations):
 def verify(input_path, output_path, tolerance=15):
     if not str(output_path).lower().endswith('.gif'):
         raise SystemExit(
-            "--verify only understands GIF output. Its timing and frame-alignment "
-            "checks read GIF durations, which return 0 for WebP (Pillow does not "
-            "expose them on read) -- so running it on a WebP/AVIF would report a "
-            "VACUOUS pass rather than a real one. For an 8-bit-alpha output, check "
+            "--verify only understands GIF output. Its checks assume 1-BIT alpha: "
+            "\"leftover background\" means an OPAQUE pixel still matching the "
+            "background colour, and \"fringe\" means a pale ring that should have "
+            "been cut -- under 8-bit alpha a recovered fade is legitimately BOTH "
+            "pale and semi-transparent, so those checks would flag correct pixels "
+            "and report a MISLEADING result rather than a real one. (Before "
+            "2026-08-17 this message blamed Pillow for not exposing WebP "
+            "durations; that was wrong -- it exposes them after load(), see "
+            "lessons SS17. The 1-bit-alpha assumption is the real reason.) "
+            "For an 8-bit-alpha output, check "
             "instead: (a) `webpmux -info out.webp` for real frame count/durations, "
             "(b) that compositing the output over the background reproduces the "
             "source, and (c) that the recovered alpha levels match the source's "
@@ -2785,7 +2813,7 @@ def read_animation_timing(path):
         total = 0
         for i in range(n):
             im.seek(i)
-            total += im.info.get('duration', 0) or 0
+            total += frame_duration_ms(im, 0) or 0
         if total > 0:
             return n, total
         # Pillow reports 0 for animated WebP; fall back to the container.
@@ -3551,7 +3579,7 @@ def process(input_path, output_path, args):
 
     for i in range(n_frames):
         im0.seek(i)
-        durations.append(im0.info.get('duration', 100))
+        durations.append(frame_duration_ms(im0, 100))
         source_trans_mask = get_source_transparency_mask(im0)  # BEFORE convert('RGB')
         frame = im0.convert('RGB')
         rgb = np.array(frame)

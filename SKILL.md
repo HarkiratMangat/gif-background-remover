@@ -35,8 +35,21 @@ reviewed, end-to-end-verified round — squarely major.
   PERSISTENCE (present in ~every frame at a stable size = design) rather than
   size alone — the old ≤500px ceiling let four ~287px buttons through and
   recommended erosion-exempting the very detail the user asked to preserve.
-- **`--verify` refuses a non-GIF output** instead of reporting a vacuous pass
-  (its timing checks read GIF durations, and Pillow returns 0 for WebP).
+- **`--verify` refuses a non-GIF output** instead of reporting a misleading
+  pass. Its checks assume 1-bit alpha — "leftover background" means an OPAQUE
+  background-coloured pixel, "fringe" means a pale ring to cut — and under
+  8-bit alpha a recovered fade is legitimately pale and semi-transparent, so
+  those checks would flag correct pixels. Verify an 8-bit-alpha output by
+  compositing it over the background AND over a dark solid instead (§16).
+- **Frame durations are now read with `im.load()`, not `seek()` alone.**
+  Load-bearing for any non-GIF SOURCE: `GifImagePlugin` populates
+  `info['duration']` during `seek()`, but WebP/AVIF populate it only in
+  `load()`, so seek-only returns the PREVIOUS frame's value. A real
+  124-frame WebP source came back `[100, 220, 20 ×122]` against a true
+  `[220, 20 ×122, 340]` — one bogus frame prepended, the last one dropped,
+  output 240 ms short — and the readback shared the same flaw, so the script
+  reported "durations preserved exactly." Fixed at all four read sites; the
+  GIF path is byte-identical. Full case: `references/lessons.md` §17.
 
 The default GIF codepath is unchanged — confirmed byte-identical on a real
 fixture before and after every edit in this round.
