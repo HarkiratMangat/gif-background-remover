@@ -786,6 +786,29 @@ def recommend(input_path, tolerance=15):
             "Band-interior region(s) show a uniform solid-tint signature (constant across "
             "frames) -- recommending --protect-band-only to keep them fully opaque instead "
             "of allowlist-only protection.")
+    # A SOLID art colour whose distance from the background falls inside the
+    # feather band (tolerance .. tolerance*multiplier) is given partial alpha and
+    # then dithered/eroded away -- it vanishes from a GIF output even though it is
+    # not the background colour at all. Confirmed on real assets: #d2dcfd (dist
+    # 57) and #d1dcfb (dist 58) against the default band of 15..60 wiped the pale
+    # interior of an explosion and the white strip of a gift box. --protect-band-
+    # only alone did NOT save them; narrowing the band so the colour falls OUTSIDE
+    # it does. Compute that multiplier instead of leaving it to be rediscovered.
+    _band_top = tolerance * 4.0
+    _tint_dists = [r.get('mean_distance_from_bg') for r in report.get('band_interior_regions', [])
+                   if r.get('classification') == 'solid_tint' and r.get('mean_distance_from_bg')]
+    _at_risk = [d for d in _tint_dists if tolerance < d <= _band_top]
+    if _at_risk:
+        _safe = max(1.5, (min(_at_risk) / tolerance) - 0.5)
+        flags.append(f"--feather-band-multiplier {_safe:.1f}")
+        evidence.append(
+            f"A SOLID art colour sits {min(_at_risk):.0f} from the background, inside the default "
+            f"feather band ({tolerance:.0f}..{_band_top:.0f}) -- it would be given partial alpha "
+            f"and dithered away in a GIF even though it is not the background. Recommending "
+            f"--feather-band-multiplier {_safe:.1f} so the band stops short of it. (For a WebP/AVIF "
+            f"output this cannot happen: --recover-fade-alpha identifies it as a solid palette "
+            f"colour and keeps it opaque. See references/lessons.md SS16.)")
+
     elif tint_widths and outline_colors:
         evidence.append(
             f"{len(tint_widths)} solid-tint band-interior region(s) observed, but a "

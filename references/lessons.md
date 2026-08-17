@@ -1318,3 +1318,60 @@ Yes — measured, including on `explosion`, which has no fading element at all:
 
 **Ship GIF only when the destination requires GIF.** Otherwise AVIF q85 is smaller and better, and
 WebP lossless is the bit-exact master.
+
+### A SOLID art colour inside the feather band is silently deleted from a GIF
+Found when the user reviewed the corpus GIFs and reported colours missing from the *interior* of
+`explosion` and `crystal`, and a white strip missing from `gift` — regions that are not the
+background colour and should never have been touched.
+
+Cause: the feather band runs `--tolerance` (15) to `× --feather-band-multiplier` (4) = **15…60**.
+Any solid colour whose distance from the background lands in that window is given partial alpha and
+then dithered/eroded away. Measured on these assets:
+
+| Colour | Distance from white | Fate under the default band |
+|---|---|---|
+| `#d2dcfd` (explosion, crystal interior) | 57.0 | **inside 15–60 → deleted** |
+| `#d1dcfb` (gift strip region) | 57.9 | **inside 15–60 → deleted** |
+| `#93b2f4` (crystal mid-tone) | 133.1 | outside → survives |
+| `#bb9bf1` (love lavender) | 121.7 | outside → survives |
+
+That is why *half* of crystal's colours survived and half did not — the survivors were simply
+further from white. Same structural shape as the fade problem in §16: a colour-distance window that
+cannot separate "background blend" from "real art".
+
+**`--protect-band-only` alone did NOT fix it** (tried first, measured: explosion still lost 13.8% of
+its opaque pixels versus the WebP reference). What works is narrowing the band so the colour falls
+outside it — `--feather-band-multiplier 3.0` took explosion from 13.8% → **3.0%** and gift from
+16.1% → **2.1%** loss, where the remaining few percent is ordinary 1-bit edge antialiasing.
+
+**Fix shipped:** `--recommend` now reads `band_interior_regions`' `solid_tint` distances and, when
+one falls inside the band, emits a computed `--feather-band-multiplier` that stops short of it,
+with evidence naming the colour and its distance. Previously it had all the data and never did the
+arithmetic.
+
+**This class cannot occur in a WebP/AVIF output at all**: `--recover-fade-alpha` identifies such a
+colour as a solid palette entry and keeps it fully opaque. The GIF path needs per-asset flag tuning
+that the new path derives on its own.
+
+⚠️ **Process lesson, and the more important half.** These outputs were generated with NO flags as a
+naive size baseline, then placed in a review folder beside properly-processed WebP/AVIF files
+without being labelled as naive. The user reasonably read them as the skill's real GIF output. A
+baseline that is not labelled a baseline is a false claim about the tool. Label deliberately-naive
+artifacts, or do not ship them next to real ones.
+
+### Objective way to compare a GIF output against a WebP one
+Rather than arguing about which colours "look" missing: the WebP output is verified-correct, so
+**pixels opaque in the WebP but transparent in the GIF are exactly what the GIF lost.** Per-frame
+average across the corpus after proper flags:
+
+| Asset | opaque in WebP | lost in GIF | % lost | top lost colour |
+|---|---|---|---|---|
+| love | 147,978 | 2,979 | 2.0% | `#052a75` (edge) |
+| heart | 159,056 | 2,946 | 1.9% | `#052a75` (edge) |
+| gift | 94,217 | ~2,000 | 2.1% | `#052a75` (edge) |
+| explosion | 127,497 | ~3,800 | 3.0% | `#052a75` (edge) |
+| crystal | 103,880 | 3,510 | 3.4% | `#052a75` (edge) |
+
+When the top lost colour is the OUTLINE colour and the loss is 2–3%, the GIF is correct and you are
+seeing the unavoidable cost of 1-bit alpha on antialiased edges. When the top lost colour is an
+interior fill (`#ffffff`, `#d2dcfd`) and the loss is >10%, something is genuinely misconfigured.
