@@ -57,6 +57,26 @@ def main():
             if not os.path.exists(r):
                 fails.append(f'{f}: pointer to missing {r}')
 
+    # 6. the frontmatter description must claim the skill's PRIMARY function and every
+    # format it supports on BOTH sides. Two real defects motivated this, found by Harkirat
+    # within minutes of each other: the description named GIF as the input NINE times while
+    # the reader is format-agnostic and a WebP source had been processed that same session;
+    # and an earlier audit of this very string built its checklist from the NEW capabilities
+    # and never tested "remove the background", the skill's whole purpose. A checklist that
+    # omits the primary case manufactures confidence -- so the primary case is asserted here.
+    desc = re.search(r'^description: (.+)$', sk, re.M)
+    if not desc:
+        fails.append('SKILL.md has no frontmatter description -- the skill cannot trigger')
+    else:
+        d = desc.group(1).lower()
+        if not re.search(r'remove\b.{0,20}\bbackground|background removal', d):
+            fails.append('description never states the PRIMARY function (removing a background)')
+        for fmt in ('gif', 'webp', 'avif'):
+            if fmt not in d:
+                fails.append(f'description never mentions {fmt.upper()}, which the script supports')
+        if 'animated image' not in d and 'gif, webp or avif' not in d:
+            fails.append('description implies a single input format; the reader is format-agnostic')
+
     toc = {int(n) for n in re.findall(r'^(\d+)\. \[', le, re.M)}
     cov = set()
     for t in re.findall(r'^\| .+ \| (§[^|]+) \|$', le, re.M):
