@@ -487,6 +487,22 @@ def get_source_transparency_mask(im0):
     real color data there to make a foreground/background call on in the
     first place.
     """
+    # An RGBA/LA source keeps its transparency in the ALPHA CHANNEL, not in a
+    # palette index, and has no 'transparency' info key at all -- so every
+    # spelling below used to return None for a plain transparent PNG. That is
+    # the inverse-spelling failure this project keeps hitting: two exotic forms
+    # were handled and the most common one was not. Measured cost, 2026-08-18:
+    # a real itch.io sprite (98.5% fully transparent, (0,0,0) padding under it)
+    # went in with 7,130 opaque pixels and out with 4,675, because
+    # detect_bg_color read the padding colour and color_mask then matched the
+    # sprite's own 2,455 black outline pixels -- 7,130 - 2,455 = 4,675 exactly.
+    #
+    # ONLY alpha == 0 counts. A partially transparent pixel is a real
+    # antialiasing ramp with real colour in it; treating a soft edge as "the
+    # source declared this nothing" would throw away the very ramp SS28.5 exists
+    # to preserve.
+    if im0.mode in ('RGBA', 'LA', 'PA'):
+        return np.array(im0.convert('RGBA'))[..., 3] == 0
     if 'transparency' not in im0.info:
         return None
     trans_index = im0.info['transparency']
@@ -502,6 +518,94 @@ def get_source_transparency_mask(im0):
         return None
     raw = np.array(im0) if im0.mode == 'P' else np.array(im0.convert('P'))
     return raw == trans_index
+
+
+SOURCE_ALPHA_BAND_DEFAULT = 2
+
+
+def source_transparency_is_the_background(source_trans_mask, rgb, bg_rgb, tolerance):
+    """
+    Is the source's own transparency already standing in for the background?
+
+    Two conditions, both cheap, each blocking a DIFFERENT wrong engagement:
+
+      1. the transparent region touches the frame border -- that is what makes
+         it the outside rather than an interior hole. A source whose only
+         transparent pixels are punched holes still has a real painted
+         background that must be removable.
+      2. the modal RGB sitting UNDER those transparent pixels matches the
+         detected background colour. This tests the failure mechanism directly
+         instead of by proxy: when it holds, `detect_bg_color` did not find a
+         background, it found padding, and "remove every pixel of that colour"
+         is a meaningless instruction that happens to also match real art.
+
+    Returns (bool, reason). The reason string is reported, because a silent
+    change to the core removal path is exactly what this project's own history
+    says goes wrong.
+    """
+    if source_trans_mask is None or not source_trans_mask.any():
+        return False, 'source declares no fully transparent pixels'
+    touches = bool(source_trans_mask[0].any() or source_trans_mask[-1].any()
+                   or source_trans_mask[:, 0].any() or source_trans_mask[:, -1].any())
+    if not touches:
+        return False, ('the source transparency never touches the frame border, so it reads as '
+                       'interior holes rather than the background')
+    under = rgb[source_trans_mask]
+    if under.size == 0:
+        return False, 'no colour data under the transparent pixels'
+    packed = (under[:, 0].astype(np.uint32) << 16) | (under[:, 1].astype(np.uint32) << 8) | under[:, 2]
+    vals, counts = np.unique(packed, return_counts=True)
+    modal = int(vals[int(np.argmax(counts))])
+    modal_rgb = ((modal >> 16) & 255, (modal >> 8) & 255, modal & 255)
+    if max(abs(int(a) - int(b)) for a, b in zip(modal_rgb, bg_rgb)) > tolerance:
+        return False, (f'the colour under the source transparency is {rgb_to_hex(modal_rgb)}, which is '
+                       f'not the detected background {rgb_to_hex(tuple(bg_rgb))} -- so the background '
+                       f'is real paint, not padding')
+    share = float(counts.max()) / float(counts.sum())
+    return True, (f'{rgb_to_hex(tuple(bg_rgb))} is the padding colour under the source\'s own '
+                  f'transparency ({share:.0%} of {int(source_trans_mask.sum())} transparent pixels) '
+                  f'and that transparency reaches the frame border')
+
+
+def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band):
+    """
+    The region colour-based removal is allowed to touch on an already-transparent
+    source: the source's transparent pixels, plus a `band`-pixel cleanup ring --
+    but ONLY when that ring cannot also be artwork.
+
+    ⚠️ The blunt ring was measured and it is HARMFUL. On a real itch.io sprite,
+    survival by band was: 0px -> 100.0% (alpha byte-identical to the source),
+    1px -> 70.7%, 2px -> 68.1%, unrestricted -> 65.6%. A 2px ring recovered only
+    184 of the 2,455 pixels the unrestricted path destroyed, because pixel art's
+    black outline sits DIRECTLY against its black padding: the ring IS the
+    outline. A compromise that keeps two thirds of the damage is not a fix.
+
+    So the ring is gated on a margin of KIND rather than a tuned radius: does the
+    background colour also occur in the artwork's INTERIOR, away from the
+    boundary? If it does, that colour is design, the ring would eat design, and
+    the scope collapses to exactly the source's own transparency. If it does not,
+    the only pixels of that colour anywhere are hugging the transparent boundary
+    -- which is what a leftover matte fringe from an earlier, imperfect cut looks
+    like -- and removing them is the whole point of not simply refusing.
+
+    Returns (scope_mask, reason).
+    """
+    if band <= 0:
+        return source_trans_mask, ('removal confined to exactly the pixels the source already '
+                                   'declared transparent (--source-alpha-band 0)')
+    ring = ndimage.binary_dilation(source_trans_mask, structure=np.ones((3, 3), bool),
+                                   iterations=int(band)) & ~source_trans_mask
+    interior = ~source_trans_mask & ~ring          # opaque art, away from the boundary
+    if interior.any() and color_mask(rgb[interior].reshape(1, -1, 3), bg_rgb, tolerance).any():
+        return source_trans_mask, (f'the {band}px cleanup band was DROPPED: '
+                                   f'{rgb_to_hex(tuple(bg_rgb))} also occurs in the artwork away '
+                                   f'from the transparent boundary, so the band would delete design '
+                                   f'-- measured at 2px on a real sprite, it recovered 184 pixels '
+                                   f'and destroyed 2,271')
+    return (source_trans_mask | ring), (f'a {band}px cleanup band is included: '
+                                        f'{rgb_to_hex(tuple(bg_rgb))} occurs nowhere in the artwork '
+                                        f'except hugging the transparent boundary, which is what a '
+                                        f'leftover matte fringe looks like')
 
 
 def warn_if_source_has_transparency(im0, input_path):
@@ -2541,16 +2645,26 @@ def build_band_only_removal_mask(removable_core, band_px):
     return ~removable_core & ~ring
 
 
-def compute_alpha_mask(rgb, protected, args):
+def compute_alpha_mask(rgb, protected, args, removal_scope=None):
     """
     Full alpha decision for one frame, combining the hard background mask
     with (optionally) feathered/dithered edges. Returns (alpha_uint8, rgb_out).
+
+    `removal_scope`, when given, is a boolean mask OUTSIDE of which nothing may
+    be made transparent. It is how an already-transparent source is honoured:
+    the source's own alpha has already answered the question for every pixel it
+    covers, so colour matching is confined to that region plus a thin band
+    around it (the only place a leftover matte fringe can live). Without it, a
+    padding colour that also appears in the artwork deletes the artwork -- see
+    source_transparency_is_the_background.
     """
     bg_rgb = hex_to_rgb(args.bg_color)
 
     if not args.feather:
         bg_mask = color_mask(rgb, bg_rgb, args.tolerance)
         transparent_mask = bg_mask & ~protected
+        if removal_scope is not None:
+            transparent_mask &= removal_scope
         alpha = np.where(transparent_mask, 0, 255).astype(np.uint8)
         return alpha, rgb
 
@@ -2597,6 +2711,13 @@ def compute_alpha_mask(rgb, protected, args):
     # protected), so dithering there is a no-op; this keeps behavior identical
     # to the hard-cutoff path away from edges.
     alpha = np.where(keep, 255, 0).astype(np.uint8)
+    if removal_scope is not None:
+        # Outside the scope, keep BOTH the opacity and the original colour:
+        # estimate_alpha_and_defringe recolours edge pixels to unmix them from
+        # the background, and unmixing art from a padding colour it merely
+        # resembles is the same error one level down.
+        alpha = np.where(removal_scope, alpha, 255).astype(np.uint8)
+        recolored = np.where(removal_scope[..., None], recolored, rgb)
     return alpha, recolored
 
 
@@ -5067,6 +5188,7 @@ def process(input_path, output_path, args, diagnostics=None):
     rgb_frames = []
     alpha_frames = []
     any_source_transparency = False
+    source_alpha_scope_reasons = []
 
     for i in range(n_frames):
         rgb = rgb_frames_raw[i]
@@ -5085,7 +5207,25 @@ def process(input_path, output_path, args, diagnostics=None):
         if getattr(args, 'protect_band_only', None) is not None:
             removable_core = ~protected
             protected = build_band_only_removal_mask(removable_core, args.protect_band_only)
-        alpha, rgb_out = compute_alpha_mask(rgb, protected, args)
+
+        # An already-transparent source has ALREADY decided which pixels are
+        # background. Colour matching may then only clean up a leftover matte
+        # fringe hugging that boundary; anywhere else it is matching padding
+        # against artwork. Restricting rather than refusing is what keeps this
+        # useful on a PARTIAL cut, and it degrades to "change nothing" when the
+        # source's alpha is already complete.
+        removal_scope = None
+        if not getattr(args, 'ignore_source_alpha', False):
+            st = source_trans_masks[i]
+            engaged, why = source_transparency_is_the_background(
+                st, rgb, hex_to_rgb(args.bg_color), args.tolerance)
+            if engaged:
+                band = getattr(args, 'source_alpha_band', SOURCE_ALPHA_BAND_DEFAULT)
+                removal_scope, band_why = build_source_alpha_scope(
+                    st, rgb, hex_to_rgb(args.bg_color), args.tolerance, band)
+                source_alpha_scope_reasons.append(why + '. ' + band_why)
+
+        alpha, rgb_out = compute_alpha_mask(rgb, protected, args, removal_scope=removal_scope)
 
         source_trans_mask = source_trans_masks[i]
         if source_trans_mask is not None and source_trans_mask.any():
@@ -5099,6 +5239,16 @@ def process(input_path, output_path, args, diagnostics=None):
 
         rgb_frames.append(rgb_out)
         alpha_frames.append(alpha)
+
+    if source_alpha_scope_reasons:
+        # The scope's own reason string says what it did; do NOT restate it here.
+        # The first version announced "plus a 2px cleanup band" from the flag value
+        # and then appended a reason saying the band had been DROPPED -- one
+        # sentence contradicting the next, which is how a log stops being read.
+        print(f"SOURCE ALPHA HONOURED on {len(source_alpha_scope_reasons)} of {n_frames} "
+              f"frame(s). {source_alpha_scope_reasons[0]}. "
+              f"Pass --ignore-source-alpha to remove by colour across the whole frame anyway.",
+              file=sys.stderr)
 
     if any_source_transparency:
         print("Preserved the source's own pre-existing transparent pixels "
@@ -6328,6 +6478,22 @@ def main():
                         'flags always win), renders, then RE-VERIFIES the rendered file and '
                         'corrects/re-renders if the encoded result disagrees with what the '
                         'pre-encode calibration predicted. Also enables --auto-erosion.')
+    p.add_argument('--ignore-source-alpha', action='store_true',
+                   help="Remove by COLOUR across the whole frame even when the source is "
+                        "already transparent. Off by default because a transparent source's "
+                        "padding colour routinely also appears in its artwork -- a measured "
+                        "sprite lost 2,455 of its 7,130 opaque pixels that way, all of them "
+                        "black outline. Use this only when you know the source's own alpha is "
+                        "wrong and the colour really is a background.")
+    p.add_argument('--source-alpha-band', type=int, default=SOURCE_ALPHA_BAND_DEFAULT,
+                   metavar='PX',
+                   help=f"How far outside the source's own transparent region colour-based "
+                        f"removal may reach, in pixels (default {SOURCE_ALPHA_BAND_DEFAULT}). "
+                        f"This is where a leftover matte fringe from an earlier, imperfect "
+                        f"background removal lives. 0 confines removal to exactly the pixels "
+                        f"the source already declared transparent, i.e. changes nothing on a "
+                        f"source whose cut is already clean. Ignored unless the source carries "
+                        f"transparency that reads as its background.")
     p.add_argument('--auto-erosion', action='store_true',
                    help='Choose --edge-cleanup-erosion by measuring THIS asset against '
                         'itself (its own erosion 0/1/2/3 curve) instead of a fixed default. '

@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~54,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~56,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -113,6 +113,12 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A sprite with a transparent background loses its black outlines | §28.13 (bg colour inferred from the RGB under the alpha) |
 | Output written to `.jpg`/`.jpeg`/`.bmp` dies in a Pillow traceback | §28.13 (now refused legibly) |
 | A static image is reported as having a timing defect | §28.13 (verify() was comparing a placeholder duration) |
+| An already-transparent source comes back with far fewer opaque pixels | §28.14 (removal is now scoped to the source's own alpha) |
+| A cleanup band around existing transparency eats the outline | §28.14 (the band is vetoed when the bg colour is also design) |
+| A transparent PNG behaves as though it had no source transparency | §28.14 (only the palette-index spelling was handled) |
+| A new threshold passes every corpus and breaks on real files | §28.15 (what each population is blind to) |
+| A corpus label that cannot be wrong | §28.15 (flat plates are excluded, not counted as negatives) |
+| A results JSON looks finished but is stale | §28.15 (fixed output paths; require --out and write .partial) |
 | Considering a NEW pixel-art discriminator | §23.8 (score it against real antialiased icons, not only the labelled corpus) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -1416,3 +1422,58 @@ Two safety nets, and one root cause deliberately left open:
 **The root cause is a design decision, not a bug to patch quietly:** what *should* background removal do when the source already has a transparent background? There is nothing to remove, and inferring a background colour from the bytes under the alpha is guessing. Filed with this measurement rather than fixed, because changing it alters the core removal semantics for every alpha-carrying input and this project has no rendered-output baseline to validate that against — the same reason the uncomposited-RGB item is filed. **What is NOT deferred is the detection of the failure**, which is why both safety nets shipped here.
 
 **Three data-loss classes in one session, all of them invisible to every quality check.** Total destruction (§28.9), partial destruction (here), and the destructive `--pixel-art` misapplication the detector work was originally about. Each was invisible for the same structural reason: **every measure in `verify()` scores how WELL the background was removed, and none of them asked how much of the artwork was still there.**
+
+### 28.14 What removal should DO on an already-transparent source, and why the obvious compromise is harmful
+
+§28.13 measured the damage and filed the semantics decision rather than guessing it. This is that decision, made with rendered evidence.
+
+**The three candidates.** (a) Refuse, the way an alpha-only source now does — there is nothing to remove. (b) Restrict colour-based removal to the region the source's alpha already covers, plus a small band around it, honouring the existing alpha as the answer. (c) Keep the old behaviour but demand an explicit `--bg-color` for any source carrying transparency. (b) was recommended on the reasoning that it is the only one that still helps a source whose transparency is *partial* — a sprite with a transparent background but a leftover matte fringe — and that it degrades to (a) when the alpha is already complete.
+
+**(b) was implemented and the cleanup band, its whole reason for existing, turned out to be harmful.** Survival on the sprite from §28.13, by band radius:
+
+| `--source-alpha-band` | opaque out | survival | alpha identical to source? |
+|---|---|---|---|
+| 0 (i.e. option (a)) | 7,130 | **100.0%** | **yes, byte-identical** |
+| 1 | 5,042 | 70.7% | no |
+| 2 | 4,859 | 68.1% | no |
+| unrestricted (option (c) / pre-fix) | 4,675 | 65.6% | no |
+
+A 2px ring recovered **184** of the 2,455 pixels the unrestricted path destroyed and still destroyed 2,271 of them. The reason is structural rather than a bad radius: **pixel art's outline sits directly against its padding**, so any ring wide enough to catch a fringe is wide enough to be the outline. A compromise that keeps two thirds of the damage is not a fix, and had the band shipped at its proposed default it would have read as one.
+
+**The repair is a margin of KIND, not a smaller radius.** The band is kept, and vetoed automatically whenever the background colour *also occurs in the artwork away from the transparent boundary*. If it does, that colour is design and the ring would eat design, so the scope collapses to exactly the source's own transparency. If it does not, the only pixels of that colour anywhere are hugging the boundary — which is what a leftover matte fringe looks like — and removing them is the point of not simply refusing. Same move as §28.1: localise the test to where the decision actually lives.
+
+**Engagement is gated on two conditions, each blocking a different wrong engagement.** (1) The transparent region must reach the frame border — that is what makes it the outside rather than a punched interior hole, and a source whose only transparency is holes still has a real painted background that must stay removable. (2) The modal RGB *under* the transparent pixels must match the detected background within tolerance — this tests the failure mechanism directly instead of by proxy: when it holds, `detect_bg_color` did not find a background, it found padding.
+
+**Measured across 76 alpha-carrying assets** (the 37 background-removed set plus a 40-file spread across all sprite packs), survival under each scope:
+
+| branch | n | source-alpha only | +2px band, vetoed | unrestricted |
+|---|---|---|---|---|
+| veto fires (colour is also design) | 25 | 100.0% | 100.0% | mean 79.6%, **worst 28.7%** |
+| veto does not fire | 51 | 100.0% | 100.0% | 100.0% (worst 99.9%) |
+
+So the veto identifies exactly the assets that were losing artwork and takes all of them to full survival, while the 51 that were never at risk are untouched. **Both branches fire on real content** — 51 kept, 25 dropped — so neither is a dead path.
+
+**What is NOT proven:** the band's *benefit*. On these 76 real assets the band removes nothing the unrestricted path would not also have left, so its fringe-cleanup value is unexercised — only its risk has been measured and neutralised. It stays because a partial cut is a real case, not because it has been seen to help. ⚠️ Do not quote the band as a feature that works; quote the veto.
+
+**The inverse spelling, again (§28.13's own lesson, one level up).** `get_source_transparency_mask` handled a GIF palette transparency index and an RGB colour tuple, and returned `None` for a plain RGBA source — the most common spelling of all — so every transparent PNG looked like it had no source transparency. Only `alpha == 0` counts: a partially transparent pixel is a real antialiasing ramp with real colour in it, and treating a soft edge as "the source declared this nothing" would throw away the very ramp §28.5 exists to preserve.
+
+**Escape hatch and reporting.** `--ignore-source-alpha` restores the old whole-frame behaviour for a source whose own alpha is wrong. Every run that engages the restriction prints what it did and why on stderr — the first version of that message announced the band from the flag value and then appended a reason saying the band had been dropped, one sentence contradicting the next, which is how a log stops being read.
+
+### 28.15 Labelling the two populations that had been finding the defects
+
+Every threshold in this skill had been scored against 31 labelled assets that are **all fully opaque GIFs**. On the same day, two brand-new rules cleared that scoring and were broken hours later by content the sample did not contain (§28.12). Both alpha-carrying populations are now labelled corpora.
+
+**Method, and the one rule that keeps it honest: no measure from the script was consulted while labelling.** A corpus labelled by the thing under test proves only that the thing agrees with itself — §23's circular fixture. Labels come from edge-dense crops upscaled NEAREST (the method `others/LABELS.json` documents; a centre crop lands on flat fill and makes everything look smooth), at 7x for every asset and three non-overlapping crops at 13x for the eight genuinely ambiguous ones.
+
+**524 sprite-pack files: 493 `pixel_art`, 31 `unsuitable_no_edges`.** Provenance was not trusted on its own — a spread sample from every pack was inspected, which matters most for the one pack that is 410 of the 524 files, i.e. the pack whose label decides the population. Two judgements are worth carrying:
+
+- **30 full-frame colour-grade overlay plates are `unsuitable_no_edges` and EXCLUDED from scoring, not labelled antialiased.** They have 242–256 unique RGB values and **0.0% of horizontal steps ≥40**, so the cliff measure never runs (n=0 on 29 of 30). Calling them antialiased would hand any hard-edge rule 30 free true negatives that test nothing at all and inflate specificity — the falsifier-population trap, arrived at from the other direction. A label that cannot be wrong is not a label.
+- **A 1-colour flat tile is also excluded.** 100% of its steps are 0; no edge exists, so no edge measure has an answer. The honest label is "unverifiable", not a pass.
+
+**37 background-removed assets: 22 `pixel_art`, 15 `antialiased`.** Four of them are the cut-out counterparts of assets already labelled in the opaque corpus, and all four carry the same label their originals do — an independent consistency check on the method. One file has pixel-art *lineage* (its source is labelled pixel art) but is labelled **antialiased**, because it is an upscaled, re-encoded copy whose own pixels are ramped. **A label must describe what a discriminator can see, not the artwork's history.**
+
+**The labelling immediately found something: 4 false positives among the 15 antialiased cutouts**, every one of them a ≤2-level hard-alpha source. A hard-alpha cutout composited over the detected background has a hard silhouette *by construction* — the alpha is binary, so there is no blend band to find — while the art's interior ramps are untouched. §28.12's hard-alpha exception to the density suppression therefore fires on exactly the wrong population. The same shape appears in the vector-emoji set, where 2 of the 3 remaining detections are files with `transparent` in their names.
+
+**One registry, not four scripts.** `extract.py`, `final_run.py`, `sprite_run.py` and `corpus_run.sh` each hardcoded their own directory list, which is *why* two populations existed only inside whichever script had most recently needed them. A single registry now names all five populations, each with an explicit note on **what it is blind to** — the sprite corpus contains no antialiased art and therefore cannot detect a false positive; the emoji set contains no pixel art, so a rule that fires on nothing scores perfectly there. Scoring reports per-population and, for the sprite corpus, per-pack, because a pooled number over a population that is 78% one pack is mostly a statement about that pack.
+
+⚠️ **Two operational traps, both hit.** A results file written to a FIXED path is indistinguishable from a stale one — a "done" was once reported off a leftover file — so a run now requires an explicit output path and writes `<out>.partial` until it finishes. And a render baseline that reads the working-tree script re-reads it **per asset**: the first attempt at a pre-fix baseline had 40 of 106 assets measured against the old code and the rest against the new, because the script was edited mid-run. A baseline must name the exact script it ran.
