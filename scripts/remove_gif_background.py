@@ -4885,10 +4885,25 @@ def auto_run(input_path, output_path, args, parser):
     # argparse keeps no provenance, so read it off argv directly.
     _typed = typed_option_names()
 
+    # Flags that the user's CHOSEN CONTAINER cannot honour must not be applied,
+    # however sound the recommendation. --recover-fade-alpha is correct advice on
+    # a faded asset AND exits with an error on a .gif output, so applying it to a
+    # gif run turns --auto into a crash. Caught by the determinism gate on
+    # 2026-08-18, immediately after --recover-fade-alpha started being
+    # recommended: --auto had produced no file at all on every faded asset
+    # written to .gif. The format conflict is still reported below -- the user is
+    # told the container is wrong; they are just not handed a traceback for it.
+    _out_fmt_early = resolve_output_format(output_path, args)
+    _incompatible = {'recover_fade_alpha'} if _out_fmt_early == 'gif' else set()
+
     applied, overridden = [], []
+    skipped_for_format = []
     for k in vars(rec_ns):
         rv, dv, uv = getattr(rec_ns, k), getattr(base, k), getattr(args, k, None)
         if rv == dv:
+            continue
+        if k in _incompatible and k not in _typed:
+            skipped_for_format.append(f"--{k.replace('_', '-')}")
             continue
         if k in _typed:
             if uv != rv:
@@ -4916,6 +4931,10 @@ def auto_run(input_path, output_path, args, parser):
               "setting fixes that. You asked for a .gif, so that is what will be written. "
               "Re-run with a .webp or .avif output plus --recover-fade-alpha for a correct "
               "result (references/lessons.md SS16).", file=sys.stderr)
+    if skipped_for_format:
+        print(f"  NOT applying {' '.join(skipped_for_format)}: a .gif output cannot carry "
+              f"partial transparency, so the flag would only error. See the format "
+              f"conflict note above.", file=sys.stderr)
     print(f"  applying: {' '.join(applied) if applied else '(nothing beyond defaults)'}",
           file=sys.stderr)
     for line in overridden:
