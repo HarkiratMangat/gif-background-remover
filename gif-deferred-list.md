@@ -110,6 +110,16 @@ Fixed at three layers: `alpha_only_source`/`source_alpha_levels` reported with e
 
 **First slice (S):** assemble a small RGBA-source corpus — the `interface emojis/` PNGs are ready-made (`exchange.png`, `add.png`, `delete.png`, `alert.png` all carry partial alpha) — and diff full `--analyze` reports composited vs not, per check, to find out which checks actually change their answer. Fix only those that do, with the diff as evidence. Until then the honest position is that hardness is right on RGBA input and the rest is unmeasured.
 
+### `[P1 · M · Opus5-High]` Background removal on an ALREADY-TRANSPARENT source eats real art — 65.6% survival measured
+
+**Added 2026-08-18 (v5.5.0). This is data loss on a whole content class, and the detection shipped while the fix did not.** A hard-alpha PNG stores something in RGB under its transparent pixels — on real itch.io sprites, `(0,0,0)`. `detect_bg_color` returns black, `color_mask` matches every black pixel including **the sprite's own outlines**, and a measured sprite went in with 7,130 opaque pixels and out with **4,675 (65.6%)** while `--verify` reported no leftover background, no fringe, no inflation, matching dimensions and exact frame alignment. `references/lessons.md` §28.13
+
+**Shipped in v5.5.0 (the detection half):** `verify()` reports `opaque_survival_vs_transparent_source` and warns under 95%, and `--auto` prints it as `ART LOSS:`. So the failure is now loud instead of silent.
+
+**NOT shipped (the fix), because it is a semantics decision:** what should background removal DO when the source's background is already transparent? Candidates — (a) refuse, the way an alpha-only source now does, since there is nothing to remove; (b) restrict colour-based removal to pixels that were already transparent, honouring the existing alpha as the answer; (c) keep current behaviour but require an explicit `--bg-color` for any source carrying transparency. **(b) is my recommendation** — it is the only one that still helps a source whose transparency is partial, and it degrades to (a) when the alpha is already complete.
+
+⚠️ **Why not just do it:** this changes the core removal path for every alpha-carrying input, and the project has no rendered-output baseline for that class — the same gap as the uncomposited-RGB item. The 524 sprites now make one buildable. **First slice (S):** render 20 of them under each of (a)/(b)/(c), diff the opaque-survival ratio and eyeball the outlines, then choose with evidence.
+
 ### `[P1 · S · Sonnet5-High]` The labelled corpus is 31 fully-opaque GIFs, and the two populations that found today's defects are unlabelled
 
 **Added 2026-08-18 (v5.5.0), and this is now the single highest-value corpus job.** Every threshold in this skill was scored against `others/` — 31 assets, **all fully opaque GIFs, zero with an alpha channel**. On 2026-08-18 Harkirat supplied **524 files from real itch.io sprite packs** (`local/itch.io sprites/`) and 37 background-removed assets (`local/Diors-builds Emojis/others/alphas/`), and those two populations immediately found **two defects that the labelled corpus certified as clean**:

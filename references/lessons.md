@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~53,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~54,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -110,6 +110,9 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Pixel art with 1-px shading at its edges reads as antialiased | §28.11 (hand-antialiased art; no edge-local measure can separate it) |
 | A transparent-background PNG sprite is not detected as pixel art | §28.12 (HEAD detected 0 of 294; fixed) |
 | A sprite SHEET (mostly empty canvas) reads as antialiased | §28.12 (low density from empty space, not blocks) |
+| A sprite with a transparent background loses its black outlines | §28.13 (bg colour inferred from the RGB under the alpha) |
+| Output written to `.jpg`/`.jpeg`/`.bmp` dies in a Pillow traceback | §28.13 (now refused legibly) |
+| A static image is reported as having a timing defect | §28.13 (verify() was comparing a placeholder duration) |
 | Considering a NEW pixel-art discriminator | §23.8 (score it against real antialiased icons, not only the labelled corpus) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -1397,3 +1400,19 @@ The soft-alpha row is the striking one: HEAD detected **none** of 294 real pixel
 **Verified exhaustively rather than by sampling.** Across all 716 scored assets the density suppression was firing on exactly **five**: the four sprite sheets, which the exception now correctly detects, and `add.png` (173 alpha levels), which stays suppressed. Nothing else in any population can change, so the fix is bounded by enumeration, not by a spot check.
 
 **The standing lesson, for the third time today.** [[feedback_falsifier_population]] says to ask which population a measure's failure would live in and check that it is in the sample. Every rule added today was scored against 133 negatives and 25 positives and looked clean; two of them had defects that only a *new* population could show — the alpha-mask level cut (§28.10's sibling, caught by all 524 sprites having ≤4 alpha levels against my cut at 2) and this suppression. **A falsifier population is not a one-time gate you pass; it is only ever as good as the content types it happens to contain.**
+
+### 28.13 Partial destruction: 65.6% survival on a sprite, and every other check passed
+
+**Found in the final gate sweep, on one of the new sprite files.** §28.9 caught TOTAL destruction. This is its sibling: a real itch.io sprite sheet went in with **7,130 opaque pixels and came out with 4,675 — 65.6% survival** — and `--verify` reported no leftover background, no fringe, no inflation, correct dimensions and exact frame alignment. Every check passed on a file that had lost a third of its artwork.
+
+**The mechanism.** A hard-alpha PNG stores *something* in the RGB channels under its transparent pixels, and on these sprites that something is `(0, 0, 0)`. `detect_bg_color` reads the modal colour and returns black; `color_mask` then matches every black pixel in the frame — **including the sprite's own black outlines**, which pixel art uses constantly.
+
+Two safety nets, and one root cause deliberately left open:
+
+- **`verify()` now reports `opaque_survival_vs_transparent_source`** and warns below 95%. It cannot be a blanket ratio: on an ordinary opaque source the whole canvas is "opaque" and a low survival rate is the entire *point* of the tool. It is only meaningful when the SOURCE already carried transparency, because then its opaque area IS the artwork. `--auto` prints it as `ART LOSS:` — §26.7's rule, since a warning in a JSON field nobody prints changes nothing.
+- **An output extension this script cannot write is refused legibly.** `out.jpeg` fell through to GIF, Pillow claimed the extension for its own JPEG handler, and it died inside `SAVE_ALL` as a raw traceback line. Same shape as v5.4.0's `--verify` `FileNotFoundError` fix.
+- **A static source is no longer reported as a timing defect.** Comparing a static input's default 100 ms placeholder against a written PNG's 0 ms printed *"a real timing defect, not encoder frame-coalescing"* on an ordinary single-frame sprite. v5.4.0 added the static-image line to the PROCESS path and left `verify()` comparing durations — **the same split-brain as §28.8's `n_frames`, in the same session that documented it.** Both of `verify()`'s exits now share one `_timing_line` helper; the early dimension-mismatch return had its own copy of the call, which is how one gets fixed and the other does not.
+
+**The root cause is a design decision, not a bug to patch quietly:** what *should* background removal do when the source already has a transparent background? There is nothing to remove, and inferring a background colour from the bytes under the alpha is guessing. Filed with this measurement rather than fixed, because changing it alters the core removal semantics for every alpha-carrying input and this project has no rendered-output baseline to validate that against — the same reason the uncomposited-RGB item is filed. **What is NOT deferred is the detection of the failure**, which is why both safety nets shipped here.
+
+**Three data-loss classes in one session, all of them invisible to every quality check.** Total destruction (§28.9), partial destruction (here), and the destructive `--pixel-art` misapplication the detector work was originally about. Each was invisible for the same structural reason: **every measure in `verify()` scores how WELL the background was removed, and none of them asked how much of the artwork was still there.**

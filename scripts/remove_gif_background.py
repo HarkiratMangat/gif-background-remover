@@ -2838,6 +2838,21 @@ def build_protected_masks_robust(rgb_frames, args):
     return result
 
 
+def _timing_line(output_path, in_durations, out_alpha):
+    """Timing description, or the honest static-image line when there is no animation.
+
+    A static source has no timing to preserve, and comparing its default 100ms placeholder against
+    a written PNG's 0ms produced "a real timing defect, not encoder frame-coalescing" on an
+    ordinary single-frame sprite. v5.4.0 added the static-image line to the PROCESS path and left
+    verify() comparing durations -- the same split-brain that SS28.8 found in `n_frames`, where the
+    processing path was fixed and two other readers were not. Shared by BOTH of verify()'s exits
+    (the early dimension-mismatch return had its own copy of the call). SS28.13
+    """
+    if len(in_durations) <= 1 and len(out_alpha) <= 1:
+        return "1 frame (static image -- no animation timing to verify)"
+    return describe_written_timing(output_path, in_durations)
+
+
 def describe_written_timing(output_path, intended_durations):
     """
     Describe the timing of the file that was ACTUALLY written, by reading it
@@ -3000,7 +3015,7 @@ def verify(input_path, output_path, tolerance=15):
     exercising (a region that should have stayed protected but didn't),
     which nothing in the original design could see at all.
     """
-    in_rgb, _, in_durations = load_animation_rgba_frames(input_path)
+    in_rgb, in_alpha, in_durations = load_animation_rgba_frames(input_path)
     out_rgb, out_alpha, out_durations = load_animation_rgba_frames(output_path)
 
     report = {'input_path': input_path, 'output_path': output_path}
@@ -3013,7 +3028,7 @@ def verify(input_path, output_path, tolerance=15):
         report['output_dims'] = [ow, oh]
         report['note'] = ('Input/output canvas size differs (crop/resize likely used) -- '
                            'pixel-position checks are skipped; only the timing check ran.')
-        report['timing'] = describe_written_timing(output_path, in_durations)
+        report['timing'] = _timing_line(output_path, in_durations, out_alpha)
         return report
 
     report['dimensions_match'] = True
@@ -3410,13 +3425,33 @@ def verify(input_path, output_path, tolerance=15):
     # total destruction has to be stated separately. SS28.9
     _out_opaque = int(sum(int((a > 0).sum()) for a in out_alpha))
     report['output_opaque_px'] = _out_opaque
+    # PARTIAL destruction, the sibling of the empty-output check below. When the SOURCE already
+    # carries transparency, its opaque area IS the artwork -- so the output should keep essentially
+    # all of it, and a big shortfall means colour-based removal ate real art. This cannot be a
+    # blanket ratio: on an ordinary opaque source the whole canvas is "opaque" and a low survival
+    # rate is the entire point of the tool. Measured on a real itch.io sprite sheet whose
+    # transparent region stores RGB (0,0,0): detect_bg_color picks black, and the sprite's black
+    # outlines go with it -- 7,130 opaque px in, 4,675 out, 65.6% survival, with every other check
+    # passing. SS28.13
+    _in_opaque = int(sum(int((a > 0).sum()) for a in in_alpha))
+    _src_had_alpha = any(bool((a < 255).any()) for a in in_alpha)
+    if _src_had_alpha and _in_opaque > 0:
+        _survival = _out_opaque / _in_opaque
+        report['opaque_survival_vs_transparent_source'] = round(_survival, 4)
+        if _survival < 0.95:
+            report['opaque_survival_warning'] = (
+                f"The SOURCE already had transparency, so its {_in_opaque} opaque pixels were the "
+                f"artwork -- and only {_out_opaque} survived ({_survival:.1%}). Colour-based "
+                f"removal has eaten real art: the background colour detected from the RGB stored "
+                f"under the transparent pixels also matches part of the design. Pass an explicit "
+                f"--bg-color, or accept that this source needs no background removal at all.")
     if _out_opaque == 0:
         report['output_is_empty'] = (
             'EVERY pixel of every frame is transparent -- the output is empty, not clean. No '
             'other check here can see this: an empty output has no leftover background, no '
             'fringe and no thin protected region. Read edge_hardness.alpha_only_source and the '
             'detected background colour.')
-    report['timing'] = describe_written_timing(output_path, in_durations)
+    report['timing'] = _timing_line(output_path, in_durations, out_alpha)
     return report
 
 
@@ -3937,6 +3972,18 @@ def resolve_output_format(output_path, args):
     explicit = getattr(args, 'format', None)
     if explicit and explicit != 'auto':
         return explicit
+    # An unrecognised extension falls through to GIF, which is right for a path with no
+    # extension -- but NOT for another image format Pillow will claim by extension. Writing GIF
+    # frames to `out.jpeg` made Pillow pick its JPEG handler and die inside SAVE_ALL, surfacing as
+    # a raw traceback line rather than "that is not a container I can write". Same shape as
+    # v5.4.0's --verify FileNotFoundError fix: a legible refusal beats an internal crash.
+    _low = str(output_path).lower()
+    for _ext in ('.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.ico', '.pdf', '.svg', '.mp4', '.webm'):
+        if _low.endswith(_ext):
+            raise SystemExit(
+                f"ERROR: {output_path!r} asks for {_ext} output, which cannot hold transparency "
+                f"and is not a container this script writes. Choose .gif, .webp, .avif or "
+                f"'.apng'/'.png' (or pass --format).")
     return format_from_path(output_path)
 
 
@@ -5807,6 +5854,15 @@ def auto_run(input_path, output_path, args, parser):
                   f"{_worst['mean_opacity_fraction']}", file=sys.stderr)
         if _tm:
             print(f"  full verify -- timing: {_tm}", file=sys.stderr)
+        # An autonomous run is the only reader of this. SS28.13's survival check is worthless if it
+        # sits in a JSON field nobody prints -- the same reason SS26.7 exists.
+        if _v.get('opaque_survival_warning'):
+            print(f"  full verify -- ART LOSS: {_v['opaque_survival_warning']}", file=sys.stderr)
+        elif _v.get('opaque_survival_vs_transparent_source') is not None:
+            print(f"  full verify -- opaque artwork surviving from the transparent source: "
+                  f"{_v['opaque_survival_vs_transparent_source']:.1%}", file=sys.stderr)
+        if _v.get('output_is_empty'):
+            print(f"  full verify -- {_v['output_is_empty']}", file=sys.stderr)
     except SystemExit:
         pass
     except Exception as _exc:
