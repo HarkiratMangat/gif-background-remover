@@ -56,7 +56,7 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ⚠️ **Do not ship a bare blend-ratio threshold.** It looks tempting — pixel art spans 0.000–1.074 and the antialiased corpus 1.530–2.529, so ~1.3 would score 13 of 14 — but the sole overlap is the jar (antialiased, 0.999) against DFB2A5D7 (pixel art, 1.074), and a threshold justified by a 0.075 gap between two assets is a margin of DEGREE, the exact trap §18 set out to escape and then fell into.
 
-### `[P2 · M · Opus5-High]` Pooled sprite detection is 86.4%, but two packs are at 15% and 25% — the per-pack split the labelling added found it immediately *(filed 2026-08-18)*
+### `[P2 · M · Opus5-High]` Two sprite packs are at 24% and 25% — pooled recall is now 94.1% *(filed 2026-08-18; retitled 2026-08-18 when the pooled figure went 86.4% → 94.1% and the per-cell direction was falsified)*
 
 ⚠️ **PARTIALLY FIXED 2026-08-18 (v5.5.0) — and this item's own recommended direction was FALSIFIED, so do not retry it.** Sprite recall is now **0.941** pooled: Tiny Swords 0.941 → **1.000**, Free City 0.667 → **1.000**, EVil Wizard and Samurai still 1.000. **Tiny RPG (34 files) at 0.235 and CatPackFree (4) at 0.250 are what remain**, and they are the whole reason this item stays open. Corpus-wide, both v5.5.0 hardness changes together: recall 0.870 → **0.939**, specificity 0.953 → **0.987** (`references/lessons.md` §29.5).
 
