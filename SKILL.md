@@ -52,6 +52,14 @@ reviewed, end-to-end-verified round — squarely major.
   overlap in size, which `--erosion-exempt-max-size` structurally cannot handle:
   on a real asset the design sat at 262–306px while the noise reached 442px, so
   no threshold separated them. Auto-recommended exactly there. §21.4
+- **`protected_region_coverage` gained `residual_nonopaque`** — when coverage is
+  below 1.0, it reports whether the non-opaque remainder has the SHAPE of a
+  deliberately punched cutout (persistent, 1–2 blobs, stable size, a small
+  fraction of the footprint) instead of leaving a bare number to re-investigate.
+  `verify()` never sees the render's flags, so it cannot KNOW a cutout was
+  intended — the footprint-fraction ceiling is what stops this excusing a
+  genuine failure. Confirmed on `military-tag.gif`: coverage 0.757, remainder =
+  one 441–457px blob in all 126 frames = the pinhole. §22
 - ⚠️ **`protected_region_coverage` and leftover-background were both measuring
   the wrong footprint** until 2026-08-17 — a bounding RECTANGLE contains real
   background, and counting it made correct output look half-unprotected
@@ -433,11 +441,12 @@ accepted upload type does not prove its clients animate it inline — verify wit
 a real upload before shipping. (Discord accepting *and animating* AVIF emoji was
 confirmed by real test, not assumed.)
 
-⚠️ **`--verify` only understands GIF** and refuses other formats rather than
-reporting a pass it cannot substantiate. For WebP/AVIF check instead:
-`webpmux -info out.webp` for real frame count/durations (Pillow reports 0),
-that compositing the output over the background reproduces the source, and that
-recovered alpha levels match the source's fade stages.
+⚠️ **`--verify` skips EVERY pixel check when the output was cropped or
+resized** (it says so in a `note` field and reports only timing). A pass from a
+cropped output is therefore vacuous — re-render at the source canvas size and
+verify that, then crop. Confirmed 2026-08-17: the delivered `military-tag`
+output is 536x570 against a 640x640 source, so its clean `--verify` had
+substantiated nothing at all. §22
 
 ## Workflow: infer first, then confirm — don't just ask the user upfront
 Don't open by asking the user to specify the background color and protected

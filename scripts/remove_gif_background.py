@@ -2461,6 +2461,7 @@ def verify(input_path, output_path, tolerance=15):
     for r in protected_regions:
         x0, y0, x1, y1 = r['bbox_xyxy']
         opacities = []
+        residual_stats = []
         for i in range(n):
             _scope = np.zeros_like(bg_masks[i])
             _scope[y0:y1 + 1, x0:x1 + 1] = True
@@ -2472,6 +2473,24 @@ def verify(input_path, output_path, tolerance=15):
             if not region_fp.any():
                 continue
             opacities.append(float((out_alpha[i][region_fp] > 0).mean()))
+
+            # Characterise WHAT the non-opaque remainder actually is, so a
+            # sub-1.0 coverage number is self-explaining instead of inviting
+            # a re-investigation. Confirmed on military-tag.gif 2026-08-17:
+            # coverage 0.757 with the whole 24.3% remainder being ONE blob
+            # per frame, 441-457px, in all 126 frames -- the deliberately
+            # punched pinhole, which is background-coloured, enclosed, and
+            # CORRECTLY transparent. §14 predicted exactly this residual
+            # ("would need verify() to know about deliberately-carved
+            # sub-holes, which it currently cannot express"). verify() only
+            # receives an input and an output path, so it cannot read the
+            # render's flags and can never *know* a cutout was intended --
+            # but it can measure whether the remainder has the shape of one.
+            _resid = region_fp & (out_alpha[i] == 0)
+            _rn = int(_resid.sum())
+            if _rn:
+                _rl, _rc = ndimage.label(_resid, structure=STRUCTURE)
+                residual_stats.append((_rn, _rc, int(region_fp.sum())))
         if not opacities:
             protected_coverage.append({
                 'region_id': r['id'],
@@ -2492,11 +2511,43 @@ def verify(input_path, output_path, tolerance=15):
         # nothing ever claimed to protect it. Report the real number
         # either way, but only assert the boolean for verified regions.
         looks_unprotected = (mean_opacity < 0.5) if r['outline_color_verified'] else None
+
+        # A deliberately punched cutout and a genuine protection failure both
+        # show up as non-opaque footprint pixels, but they do NOT look alike:
+        #   - a cutout is a physical feature of the art, so it appears in
+        #     essentially every frame, as one or two blobs, at a stable size,
+        #     and occupies a SMALL fraction of the footprint;
+        #   - a protection failure takes out a large share of the footprint
+        #     (and drives mean_opacity below the 0.5 boolean anyway).
+        # The size-fraction ceiling is what stops this from becoming an excuse
+        # for a real failure -- without it, "persistent and stable" would also
+        # describe a region that is reliably, wholly unprotected in every frame.
+        residual = None
+        if residual_stats and opacities:
+            _fracs = [rn / fp for rn, _rc, fp in residual_stats]
+            _sizes = [rn for rn, _rc, _fp in residual_stats]
+            _mean = sum(_sizes) / len(_sizes)
+            _cv = ((sum((x - _mean) ** 2 for x in _sizes) / len(_sizes)) ** 0.5
+                   / _mean) if _mean else 0.0
+            _mean_frac = sum(_fracs) / len(_fracs)
+            _mean_blobs = sum(rc for _rn, rc, _fp in residual_stats) / len(residual_stats)
+            _present = len(residual_stats) / len(opacities)
+            residual = {
+                'frames_with_residual_fraction': round(_present, 3),
+                'mean_blobs_per_frame': round(_mean_blobs, 2),
+                'mean_residual_px_per_frame': int(round(_mean)),
+                'residual_size_cv': round(_cv, 3),
+                'mean_residual_fraction_of_footprint': round(_mean_frac, 3),
+                'consistent_with_deliberate_cutout': bool(
+                    _present >= 0.9 and _cv <= 0.15
+                    and _mean_blobs <= 2.0 and _mean_frac <= 0.35),
+            }
         protected_coverage.append({
             'region_id': r['id'],
             'frames_with_data': len(opacities),
             'mean_opacity_fraction': round(mean_opacity, 3),
             'looks_unprotected': looks_unprotected,
+            'residual_nonopaque': residual,
         })
     report['protected_region_coverage'] = protected_coverage
 

@@ -29,6 +29,12 @@ scratch risks retrying an approach already known to fail.
 14. [Punching one same-colour interior hole while protecting a same-colour, same-size-range animated design element](#14-punching-one-same-colour-interior-hole-while-protecting-a-same-colour-same-size-range-animated-design-element)
 15. [A second, independent solution to §14's same problem — `--remove-region`, and where it needs help](#15-a-second-independent-solution-to-14s-same-problem---remove-region-and-where-it-needs-help)
 16. [Escaping GIF's 1-bit alpha: recovering a baked-in fade, and WebP/AVIF output](#16-escaping-gifs-1-bit-alpha-recovering-a-baked-in-fade-and-webpavif-output)
+17. [A WebP source silently shifted every frame duration by one](#17-a-webp-source-silently-shifted-every-frame-duration-by-one)
+18. [Closing the autonomy backlog: four recommendations that were wrong, and why](#18-closing-the-autonomy-backlog-four-recommendations-that-were-wrong-and-why)
+19. [`--auto`: verifying the OUTPUT, and calibrating each asset against itself](#19---auto-verifying-the-output-and-calibrating-each-asset-against-itself)
+20. [Auditing §19: five defects found by reviewing my own work](#20-auditing-19-five-defects-found-by-reviewing-my-own-work)
+21. [Four verification defects, and exempting by identity instead of by size](#21-four-verification-defects-and-exempting-by-identity-instead-of-by-size)
+22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -43,6 +49,8 @@ scratch risks retrying an approach already known to fail.
 | Scattered speckle dots where a fading element disappears | §16 |
 | A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
+| `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
+| A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
 | Confused why alpha looks all-or-nothing | §7 |
 | A reported animation length that seems wrong | §9, §13 |
 | Anything on tumbling/rotating/translating content | §10 |
@@ -1952,3 +1960,104 @@ Every asset rendered straight from its own `--recommend` output, then verified:
 Against the previous round: gift leftover 14,243 → 0 and coverage 0.874 → 1.000; crystal coverage
 0.569 → 1.000. No render changed — every one of these was a measurement defect, which is its own
 warning about how much weight a self-check can carry before it has been checked itself.
+
+---
+
+## 22. Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured
+
+**2026-08-17.** Two items were carried in `gif-deferred-list.md` on the premise that
+`military-tag.gif` was "not on this machine". It is — `~/Downloads/Diors-builds Emojis/` — and a
+directory search found it in seconds. **A blocker recorded as "asset unavailable (checked)" is
+worth re-checking before it is inherited by another session**; this one had already survived one
+handoff and would have survived another.
+
+### 22.1 The `protected_region_coverage` false positive is fixed, and reproducing it proved it
+
+The delivered `military-tag_transparent_fixed.gif` is CROPPED (536x570 vs the 640x640 source), so
+`--verify` skips every pixel check on it and reports only timing — a **vacuous pass**, and exactly
+the kind §13/§16/§17 warn about. Re-rendering §14's pipeline uncropped is what makes the check mean
+anything:
+
+```
+--tumble-safe --keep-bg-blob-if-near ff00ff --hole-size-range 400,480 --hole-max-aspect 1.3
+```
+
+| script | `mean_opacity_fraction` | `looks_unprotected` |
+|---|---|---|
+| `fc7443b` (before §21.1's footprint fix) | **0.462** | `true` |
+| `2674693` (after) | **0.757** | `false` |
+
+0.462 reproduces §14's recorded 46.2% exactly, so this is a real reproduction rather than a
+coincidence of two clean runs.
+
+### 22.2 The residual is 100% the punched pinhole — and §14's stated root cause was half wrong
+
+Measuring what the non-opaque remainder actually consists of, per frame:
+
+```
+frame 0:  footprint 4410  non-opaque 441   -> ONE blob, 441px
+frame 60: footprint 3280  non-opaque 457   -> ONE blob, 457px
+total     footprint 435,143   non-opaque 57,229
+```
+
+One blob per frame, in all 126 frames, 441–457px — inside the 423–466px range §14 measured for the
+pinhole via a completely different code path. The remainder is the deliberately punched hole and
+nothing else.
+
+**§14 attributed the false positive to the region's bbox being tied to one reference frame while
+the tag translates and swings.** The bbox is still fixed and the tag still translates, yet no stray
+outer-background pockets appear in the footprint at all. So the bounding-RECTANGLE-vs-enclosed-
+FOOTPRINT mistake was doing all the damage, and the translation half of the diagnosis contributes
+nothing measurable here. Two plausible mechanisms were named; only one was real, and nothing
+distinguished them until the residual was actually decomposed.
+
+### 22.3 `residual_nonopaque`: measuring whether a remainder has the SHAPE of a cutout
+
+`verify()` receives an input path and an output path — not the render's flags — so it can never
+*know* a cutout was intended. §14 concluded this made the case unexpressible. It can, however,
+measure whether the remainder looks like one, which is enough to stop a correct 0.757 from reading
+as an unexplained defect. Falsified against a deliberately unprotected render of the same asset:
+
+| | blobs/frame | size CV | fraction of footprint | verdict |
+|---|---|---|---|---|
+| punched cutout | 1.00 | 0.025 | 0.243 | `true` |
+| no protection at all | 2.13 | 0.586 | 1.000 | `false` |
+
+**The footprint-fraction ceiling (0.35) is the load-bearing guard.** Without it, "persistent and
+stable across every frame" would equally describe a region that is reliably, WHOLLY unprotected —
+the check would excuse the exact failure it exists to catch. Persistence alone is not a
+discriminator here; persistence *at a small, stable fraction* is.
+
+The field is additive: diffing the full pre-change and post-change `--verify` reports on the same
+pair, with the new key removed, comes back identical, so no previously recorded number moved.
+
+### 22.4 The §14 addendum's manual fix is now derived, and the fringe is counted in pixels
+
+§14's addendum records `--erosion-exempt-max-size 519` as the cause of a pale fringe at the punched
+hole, fixed by hand by dropping the flag. Running `--recommend` on the same asset with both
+versions:
+
+| version | suggests |
+|---|---|
+| `v4.0.0` (shipped) | `--erosion-exempt-max-size 519` |
+| this branch | `--erosion-exempt-max-size 371` |
+
+The persistent/transient split (§18) classifies the pinhole as DESIGN
+(`min_persistent_region_px 428`) and sizes the suggestion from the transient regions alone
+(`max_transient_region_px 337`). Counting the pale, technically-opaque pixels adjacent to interior
+holes across all 126 frames:
+
+| render | pale px at hole edges | interior-hole px |
+|---|---|---|
+| `--erosion-exempt-max-size 519` | **807** (worst frame 14) | 57,199 |
+| `--erosion-exempt-max-size 371` | **0** | 83,644 |
+| no exemption flag at all | **0** | 83,644 |
+
+371 is outcome-identical to dropping the flag — the manual fix, reached by the tool. The hole areas
+corroborate independently: 57,199/126 = 454px/frame un-eroded and 83,644/126 = 664px/frame eroded,
+both inside the addendum's separately measured 423–466 and 632–682 bands.
+
+**Takeaway: a defect closed by "drop the flag" is not closed until the tool stops suggesting the
+flag.** The addendum ended with the right output and a recommender that would reproduce the defect
+on the next asset of the same shape — which is what `CLAUDE.md`'s end-goal section means by a manual
+tweak being the investigation rather than the fix.

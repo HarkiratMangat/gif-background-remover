@@ -92,13 +92,23 @@ care, and the byte-identical/behavior-preservation discipline this whole project
 
 ### `[P3 · M · Sonnet5-High]` `--verify`'s `protected_region_coverage` false-positives on a legitimately punched sub-hole inside a translating candidate region
 
-**PROBABLY FIXED 2026-08-17 — needs confirming against this item's own asset.** §21.1 changed
-`protected_region_coverage` to measure the ENCLOSED footprint rather than every background-coloured
-pixel in the bounding rectangle, which is the same mechanism described here: a punched sub-hole is
-background-coloured, correctly transparent, and was counted against the region. Corroboration:
-crystal's coverage went 0.569 → 1.000 with no change to the render. ⚠️ `military-tag.gif` is not on
-this machine, so this is NOT confirmed against the case that opened the item — re-run it when the
-asset is available before closing.
+**✅ CLOSED 2026-08-17 — confirmed against this item's own asset.** `military-tag.gif` IS on this
+machine (`~/Downloads/Diors-builds Emojis/`); the earlier "not on this machine" note was wrong.
+Re-rendering §14's pipeline uncropped and running `--verify` with both scripts: **0.462 →
+0.757**, `looks_unprotected` **true → false**. The 0.462 reproduces §14's recorded 46.2% exactly,
+so this is a real reproduction, not two clean runs agreeing by luck.
+
+⚠️ Verifying against the DELIVERED file would have been a vacuous pass — it is cropped (536x570 vs
+640x640), so `--verify` skips every pixel check and reports only timing.
+
+**The residual 0.757 is correct, and now self-explaining.** Decomposed, the non-opaque remainder is
+ONE blob per frame in all 126 frames, 441–457px — the punched pinhole, which is background-coloured
+and *should* be transparent. A new additive `residual_nonopaque` field reports persistence, blob
+count, size CV and footprint fraction so this reads as a cutout rather than an unexplained defect;
+falsified against a deliberately unprotected render (1.00 blob/cv 0.025/0.243 → cutout; 2.13/0.586/
+1.000 → not). **Correction to the original diagnosis below:** cause (1), the translating bbox,
+contributes nothing measurable here — cause (2) was doing all of it. Full case: `references/
+lessons.md` §22.
 
 **Added:** 2026-08-07, from `military-tag.gif` production job (see `references/lessons.md` §14 for
 the full case).
