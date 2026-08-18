@@ -40,12 +40,6 @@ GIF has **one bit** of alpha — a pixel is fully opaque or fully gone. Every so
 
 Further: when a fade was *authored* against the background and flattened by a GIF export, `--recover-fade-alpha` reconstructs it — unmixing each pixel against the art's own palette so the recovered alpha is arithmetic rather than a guess.
 
-### A background that isn't white
-
-<img src=".github/assets/showcase-colourbg.png" alt="An eyedropper icon on a magenta background, detected and removed" width="100%">
-
-Nothing here is hardcoded to white. The background colour is detected from the source; `--bg-color` only overrides it. ⚠️ Coloured backgrounds are also where the art's own palette can collide with the background — which is why the pixel-art detector below reads *geometry* rather than colour.
-
 ### Knowing what kind of art it is
 
 <img src=".github/assets/showcase-pixelart.png" alt="Pixel art at high zoom: default feathering and erosion round the blocks, --pixel-art keeps every edge square" width="100%">

@@ -167,3 +167,15 @@ It reads GIF, WebP, AVIF, APNG, PNG and JPEG. The name reinforces the GIF-only m
 ### `[P1 · S]` Project hooks are installed but NOT VERIFIED FIRING
 
 `.claude/hooks/` + `.claude/settings.json` were added 2026-08-17. A filesystem tracer proved the hook process **never ran** — neither hook fires, on either event. ⚠️ **The cause is UNKNOWN.** "Project settings load at session start" is NOT it: Dior's Builds disproved that live (`reference_enforcement_hooks` — editing settings.json IS picked up mid-session). Not the `hookEventName` discard bug either, since the process never starts. Most likely a new project settings file needs trusting/approving, but that is unverified. See `.claude/hooks/README.md`. Until confirmed, every gate they encode is MANUAL.
+
+---
+
+### `[P1 · S]` REOPENED — the corpus has no genuine non-white background asset
+
+**2026-08-17.** An earlier probe this session reported "26 non-white background assets" and item 3.2 was treated as self-serviceable on that basis. **That was wrong.** The probe ran `detect_bg_color` on `im.convert('RGB')`, which drops alpha and exposes the GIF's TRANSPARENCY-INDEX palette entry as though it were a painted background. Checked directly afterwards: `Calendar`, `Best`, `Timestamps`, `Settings`, `DMZBuilds` and `eyedropper_blurple_v2_bleed` all have `transparency` in `info` — they are already transparent, and the "background" colour was never there to remove.
+
+Caught when Harkirat asked why a README panel captioned "magenta background" showed a white one: compositing the RGBA frame over white revealed the truth the RGB conversion had hidden.
+
+**So every threshold in this skill is still calibrated on white-background art only**, which is exactly what item 3.2 warned about. The consequence is not hypothetical — §23 found both edge-hardness measures collapse when a solid palette colour sits near the background, and that is far likelier on a coloured one.
+
+**Next action:** ask Harkirat for genuine coloured-background art, or synthesise it honestly by compositing existing transparent assets onto solid colours (which is a fair test for background DETECTION and removal, though not for authored-against-a-colour antialiasing). ⚠️ When auditing for this, check `'transparency' in im.info` FIRST — an RGB conversion will lie to you.
