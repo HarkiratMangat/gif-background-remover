@@ -44,11 +44,21 @@ Further: when a fade was *authored* against the background and flattened by a GI
 
 <img src=".github/assets/showcase-colourbg.webp" alt="A complex 35-frame pixel-art animation on a yellow background, with the yellow detected and removed" width="100%">
 
-*(animated — 35 frames)* A `#ffe75c` yellow filling 64% of every frame, behind a pixel-art creature that twists through the whole animation. Nothing here assumes white.
+*(animated — 35 frames)* A `#ffe75c` yellow filling 64% of every frame, behind a pixel-art creature that twists through the whole animation. **0 background pixels left, 0 artwork pixels lost.** Nothing here assumes white.
 
 Handed to `--auto` with no flags, the skill detected the background colour, recognised the art as hard-edged from its change-line density, and chose **`--pixel-art --tumble-safe --erosion-exempt-max-size 485`** by itself — three separate judgements, none of them supplied.
 
 ⚠️ A coloured background is also where the art's own palette is most likely to collide with it, which is exactly why the detector below reads *geometry* rather than colour.
+
+### Two colours 26 units apart
+
+<img src=".github/assets/showcase-nearcolour.webp" alt="A pokeball opening: its pale interior is preserved even though it is nearly the same colour as the background" width="100%">
+
+*(animated — 76 frames)* The background is `#f7f7f9`. The inside of the pokéball is `#eeeeee`. That is a per-channel gap of **9, 9 and 11** — inside the default tolerance of 15, so no colour rule can tell them apart, and the interior is an open bowl rather than an enclosed pocket.
+
+What separates them is the dark stroke that encloses the shape: `--protect-outline-color 39215a` keeps **95% of that 593,583-pixel interior** while still clearing the background around it.
+
+⚠️ **`--auto` gets this one wrong today** — it reaches for `--protect-band-only`, which assumes the region sits *outside* the removable core, and destroys the interior entirely. Tracked as a P1; the flag that works is the one above.
 
 ### Knowing what kind of art it is
 
