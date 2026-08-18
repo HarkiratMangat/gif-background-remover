@@ -1,134 +1,80 @@
 # Skill version history
 
-Per-version detail for `gif-background-remover`, moved out of `SKILL.md` on
-2026-08-17 (v5.0.0) to keep that file within the progressive-disclosure size
-convention — it had reached 896 lines, of which 241 were this log. SKILL.md
-keeps the CURRENT version's entry and the versioning convention itself; every
-earlier entry lives here.
+Per-version detail for `gif-background-remover`, moved out of `SKILL.md` on 2026-08-17 (v5.0.0) to keep that file within the progressive-disclosure size convention — it had reached 896 lines, of which 241 were this log. SKILL.md keeps the CURRENT version's entry and the versioning convention itself; every earlier entry lives here.
 
-Read this when you need to know what a past version changed or why a rule
-exists at all; `references/lessons.md` has the deeper evidence trail behind
-each one.
+Read this when you need to know what a past version changed or why a rule exists at all; `references/lessons.md` has the deeper evidence trail behind each one.
 
 ---
 
-**v4.0.0** was a **major**
-bump, judged holistically against everything accumulated since v3.2.0 (the
-last real tag), not any single commit's own tier: five new `--analyze`
-checks, `--recommend`, `--verify`, a full prose-compression pass, and now
-one genuinely new capability — **`--remove-region`** (and
-`--remove-region-feather`), the inverse of `--protect-region`: force-removes
-a manually specified region regardless of what `--protect-outline-color`/
-`--protect-region` already decided there. Ported and reconciled from an
-independent claude.ai live-skill session that solved the same real job
-(`military-tag.gif`) a genuinely different way — see `references/
-lessons.md` §15 for the full case, including a real defringing bug that
-session found and fixed (`apply_remove_regions()`'s recolor-before-taper
-step), and an independent confirmation, found while reconciling this repo's
-copy, that the flag's own static-mask caveat is load-bearing: a static
-circle at the drop's own worked-example coordinates missed the true target
-in 76% of frames on this tumbling asset, needing the geometric-gate
-approach from §14 or external per-frame tracking instead. All additive and
-opt-in; the default codepath is unchanged. The full detail of each step
-along the way is preserved below rather than compressed into one entry,
-since each one traces to a real, distinct finding:
+**v4.0.0** was a **major** bump, judged holistically against everything accumulated since v3.2.0 (the last real tag), not any single commit's own tier: five new `--analyze` checks, `--recommend`, `--verify`, a full prose-compression pass, and now one genuinely new capability — **`--remove-region`** (and `--remove-region-feather`), the inverse of `--protect-region`: force-removes a manually specified region regardless of what `--protect-outline-color`/ `--protect-region` already decided there. Ported and reconciled from an independent claude.ai live-skill session that solved the same real job (`military-tag.gif`) a genuinely different way — see `references/ lessons.md` §15 for the full case, including a real defringing bug that session found and fixed (`apply_remove_regions()`'s recolor-before-taper step), and an independent confirmation, found while reconciling this repo's copy, that the flag's own static-mask caveat is load-bearing: a static circle at the drop's own worked-example coordinates missed the true target in 76% of frames on this tumbling asset, needing the geometric-gate approach from §14 or external per-frame tracking instead. All additive and opt-in; the default codepath is unchanged. The full detail of each step along the way is preserved below rather than compressed into one entry, since each one traces to a real, distinct finding:
 
-**v3.3.3** (previous entry, kept for context) was a **correction**: a
-second finding on the same `military-tag.gif` job, found by the user
-zooming into the delivered file (`references/lessons.md` §14 addendum) --
-`--erosion-exempt-max-size`, applied on `--recommend`'s generic small-region
-evidence without checking it corresponded to genuine incidental noise in
-the CHOSEN pipeline, skipped the normal edge-cleanup erosion on a punched
-hole and left a faint off-white antialiasing fringe at its edge. Dropping
-the flag (nothing genuine for it to protect here) let normal erosion clean
-the fringe with only a modest, expected size increase, not runaway
-inflation. No script or flag behavior changed.
+**v3.3.3** (previous entry, kept for context) was a **correction**: a second finding on the same `military-tag.gif` job, found by the user zooming into the delivered file (`references/lessons.md` §14 addendum) -- `--erosion-exempt-max-size`, applied on `--recommend`'s generic small-region evidence without checking it corresponded to genuine incidental noise in the CHOSEN pipeline, skipped the normal edge-cleanup erosion on a punched hole and left a faint off-white antialiasing fringe at its edge. Dropping the flag (nothing genuine for it to protect here) let normal erosion clean the fringe with only a modest, expected size increase, not runaway inflation. No script or flag behavior changed.
 
-**v3.3.2** (previous entry, kept for context) was a **correction**: one new
-confirmed finding documented (`references/lessons.md` §14) from a real job
-(`military-tag.gif`) — punching a small interior hole (a pinhole) while
-protecting a same-colour, overlapping-size-range animated design element
-(a twinkling star) is unreliable via `--keep-bg-blob-if-near`'s colour-
-adjacency alone (an antialiased boundary can coincidentally match a keep
-colour, and more dilation doesn't fix a match already found at low
-dilation); `--hole-size-range`/`--hole-max-aspect`, verified across every
-frame rather than sampled, is the robust discriminator when one blob is
-physically constant and the other animates. Also notes a real
-`--verify` `protected_region_coverage` false-positive on a legitimately
-punched sub-hole within a translating candidate region (tracked in
-`gif-deferred-list.md`, not fixed here). No script or flag behavior changed.
+**v3.3.2** (previous entry, kept for context) was a **correction**: one new confirmed finding documented (`references/lessons.md` §14) from a real job (`military-tag.gif`) — punching a small interior hole (a pinhole) while protecting a same-colour, overlapping-size-range animated design element (a twinkling star) is unreliable via `--keep-bg-blob-if-near`'s colour- adjacency alone (an antialiased boundary can coincidentally match a keep colour, and more dilation doesn't fix a match already found at low dilation); `--hole-size-range`/`--hole-max-aspect`, verified across every frame rather than sampled, is the robust discriminator when one blob is physically constant and the other animates. Also notes a real `--verify` `protected_region_coverage` false-positive on a legitimately punched sub-hole within a translating candidate region (tracked in `gif-deferred-list.md`, not fixed here). No script or flag behavior changed.
 
-**v3.3.1** (previous entry, kept for context) was a **correction**: pure
-prose compression against v3.3.0's own new fields, no behavior change. Every
-manual-check
-paragraph in "Animated/rotating content," the erosion-exempt and fade-detect
-sections, and the Verification checklist that Phase 1 (v3.3.0) made
-mechanically checkable now points at the actual `--analyze`/`--recommend`/
-`--verify` field instead of re-describing how to do it by hand; genuinely
-manual/visual checks and unverified-case fallbacks were left alone.
-`candidate_regions`' `outline_enclosure_all_frames`/`outline_background_leak`
-fields (shipped in v3.3.0, never documented) are now documented, and "Run the
-real processing" now states the exact three-condition gate `--recommend`
-already applies before trusting `outline_color_verified`. `references/
-lessons.md` gained a symptom→section lookup table.
+**v3.3.1** (previous entry, kept for context) was a **correction**: pure prose compression against v3.3.0's own new fields, no behavior change. Every manual-check paragraph in "Animated/rotating content," the erosion-exempt and fade-detect sections, and the Verification checklist that Phase 1 (v3.3.0) made mechanically checkable now points at the actual `--analyze`/`--recommend`/ `--verify` field instead of re-describing how to do it by hand; genuinely manual/visual checks and unverified-case fallbacks were left alone. `candidate_regions`' `outline_enclosure_all_frames`/`outline_background_leak` fields (shipped in v3.3.0, never documented) are now documented, and "Run the real processing" now states the exact three-condition gate `--recommend` already applies before trusting `outline_color_verified`. `references/ lessons.md` gained a symptom→section lookup table.
 
-**v3.3.0** (previous entry, kept for context) was a **minor** bump:
-`--analyze` gained five new checks (tumble/edge-grazing margin, all-frame
-outline-color enclosure verification, outline-fill background-leak
-detection, feather-band interior region detection covering both §10 Bug 4
-and §12's signature, and a small removed-region size histogram), plus two
-new modes — `--recommend` (runs `--analyze` and emits a ready-to-confirm
-command line with evidence) and `--verify <input.gif> <output.gif>` (runs
-the mechanical half of the Verification checklist below: leftover
-background, protected-region coverage, edge fringe, small-region inflation,
-duration/frame-count). All additive and opt-in; the default processing
-codepath is unchanged (verified byte-identical against v3.2.0's output on
-all three real fixtures used to build this). No existing flag's behavior
-changed.
+**v3.3.0** (previous entry, kept for context) was a **minor** bump: `--analyze` gained five new checks (tumble/edge-grazing margin, all-frame outline-color enclosure verification, outline-fill background-leak detection, feather-band interior region detection covering both §10 Bug 4 and §12's signature, and a small removed-region size histogram), plus two new modes — `--recommend` (runs `--analyze` and emits a ready-to-confirm command line with evidence) and `--verify <input.gif> <output.gif>` (runs the mechanical half of the Verification checklist below: leftover background, protected-region coverage, edge fringe, small-region inflation, duration/frame-count). All additive and opt-in; the default processing codepath is unchanged (verified byte-identical against v3.2.0's output on all three real fixtures used to build this). No existing flag's behavior changed.
 
-**v3.2.0** (previous entry, kept for context) was a **minor** bump: one
-confirmed bug fix in the script
-(the save message asserted a frame count it never read back — it restated the
-frame list the script intended to write and claimed "durations preserved
-exactly" without opening the output; on a real 170-frame job it reported 170
-while the file held 168), now fixed by reading the written file back. Plus one
-new confirmed finding documented: art with a fade baked in against the
-background renders as a visible dither mesh, distinct from the flat-composite
-speckle case §10 already covered. Full case histories: `references/lessons.md`
-§12 and §13. No new flags — the fade case is handled by the existing
-`--dither-mode none`.
+**v3.2.0** (previous entry, kept for context) was a **minor** bump: one confirmed bug fix in the script (the save message asserted a frame count it never read back — it restated the frame list the script intended to write and claimed "durations preserved exactly" without opening the output; on a real 170-frame job it reported 170 while the file held 168), now fixed by reading the written file back. Plus one new confirmed finding documented: art with a fade baked in against the background renders as a visible dither mesh, distinct from the flat-composite speckle case §10 already covered. Full case histories: `references/lessons.md` §12 and §13. No new flags — the fade case is handled by the existing `--dither-mode none`.
 
-**v3.2.0 is also the first version validated against real GIF jobs since the
-skill was restructured** — three 640x640 gem icons processed end to end and
-accepted 2026-08-07, exercising `--protect-outline-color` across an
-overlapping-elements animation, `--erosion-exempt-max-size` on small isolated
-removed regions, and `--dither-mode none` on baked-in fades. The v3.0.0 and
-v3.1.0 entries below were live-session exports that had not been reconciled
-into the repo before this version; both are folded in here.
+**v3.2.0 is also the first version validated against real GIF jobs since the skill was restructured** — three 640x640 gem icons processed end to end and accepted 2026-08-07, exercising `--protect-outline-color` across an overlapping-elements animation, `--erosion-exempt-max-size` on small isolated removed regions, and `--dither-mode none` on baked-in fades. The v3.0.0 and v3.1.0 entries below were live-session exports that had not been reconciled into the repo before this version; both are folded in here.
 
-v3.1.0 (previous entry, kept for context) was a **minor** bump: a single
-confirmed bug fix (edge-cleanup erosion inflating small isolated removed
-regions by 50-70x, discovered on a second animated-icon case that didn't even
-need `--tumble-safe`), with a new `--erosion-exempt-max-size` flag. Full case
-history: `references/lessons.md` §11. Doesn't touch the v3.0.0 tumble-safe
-pathway or its flags.
+v3.1.0 (previous entry, kept for context) was a **minor** bump: a single confirmed bug fix (edge-cleanup erosion inflating small isolated removed regions by 50-70x, discovered on a second animated-icon case that didn't even need `--tumble-safe`), with a new `--erosion-exempt-max-size` flag. Full case history: `references/lessons.md` §11. Doesn't touch the v3.0.0 tumble-safe pathway or its flags.
 
-v3.0.0 (previous entry, kept for context) was a **major** bump per the tier
-definition below: a new, end-to-end-verified detection/protection pathway
-for animated content whose foreground shape rotates or translates
-significantly within the canvas (tumbling/falling/spinning icons) — four
-separate, confirmed real bugs found and fixed in one delivery (fixed-position
-regions breaking under tumble; border-touch background detection breaking
-when the foreground grazes the canvas edge; single-frame outline enclosure
-breaking under self-overlapping rotated geometry; allowlist-style feather
-protection missing solid near-background design colors), plus a fifth
-related finding (Bayer dithering reads as noise on flat/solid composite
-backgrounds) and a new `--dither-mode none` option that came out of it. Full
-case history: `references/lessons.md` §10. New flags: `--tumble-safe`,
-`--keep-bg-blob-if-near`, `--hole-size-range`, `--hole-max-aspect`,
-`--protect-band-only`, `--dither-mode`.
+v3.0.0 (previous entry, kept for context) was a **major** bump per the tier definition below: a new, end-to-end-verified detection/protection pathway for animated content whose foreground shape rotates or translates significantly within the canvas (tumbling/falling/spinning icons) — four separate, confirmed real bugs found and fixed in one delivery (fixed-position regions breaking under tumble; border-touch background detection breaking when the foreground grazes the canvas edge; single-frame outline enclosure breaking under self-overlapping rotated geometry; allowlist-style feather protection missing solid near-background design colors), plus a fifth related finding (Bayer dithering reads as noise on flat/solid composite backgrounds) and a new `--dither-mode none` option that came out of it. Full case history: `references/lessons.md` §10. New flags: `--tumble-safe`, `--keep-bg-blob-if-near`, `--hole-size-range`, `--hole-max-aspect`, `--protect-band-only`, `--dither-mode`.
 
-All flags added across both v3.0.0 and v3.1.0 are additive/opt-in —
-confirmed the existing default codepath (no new flags) is byte-identical on
-`--analyze` output against the pre-v3.0.0 script on the same test file, so
-nothing already shipped should regress.
+All flags added across both v3.0.0 and v3.1.0 are additive/opt-in — confirmed the existing default codepath (no new flags) is byte-identical on `--analyze` output against the pre-v3.0.0 script on the same test file, so nothing already shipped should regress.
+
+---
+
+## v5.0.0 — full entry
+
+Moved here from SKILL.md when v5.1.0 restructured it; the skill file keeps a summary.
+
+**Skill version: v5.0.0** (previous: v4.0.0, v3.3.3, v3.3.2, v3.3.1, v3.3.0, v3.2.0, v3.1.0, v3.0.0, v2.2.2, v2.2.1, v2.2, v2.1, v2, v1). This is a **major** bump, reasoned against the tier definitions below rather than pattern-matched: it adds two new OUTPUT FORMATS (WebP and AVIF, both with true 8-bit alpha) and a new alpha-recovery algorithm that solves a case this skill previously documented as structurally impossible (`references/lessons.md` §7, "GIF format has no partial transparency"), plus a byte-cap fitting cascade for those formats and a real `--recommend` logic fix. Multiple new features and a reviewed, end-to-end-verified round — squarely major.
+
+**What v5.0.0 adds**, all from one real job (`love.gif` — full case in `references/lessons.md` §16):
+- **`--recover-fade-alpha`** — reconstructs partial transparency that a GIF export already flattened against the background (a fading glow/sparkle/pulse baked into progressively paler versions of the background colour). Works by unmixing each pixel against the art's own flat palette, so the recovered alpha is arithmetic, not an estimate. `--fade-color` overrides its auto-detection. Requires a `.webp`/`.avif` output.
+- **WebP and AVIF output** — `--format {auto,gif,webp,avif}` (auto reads the output extension), `--webp-lossy`/`--webp-quality`/`--webp-method`, `--avif-quality`, and `--dither-mode continuous` (the default for both new formats) which keeps estimated alpha as real 8-bit transparency.
+- **`--target-kb` now works for WebP/AVIF**, cascading quality → resolution → frames (frames last, since dropping them is the most visible loss), plus `--square-pad` for square emoji/sticker slots.
+- **`--recommend` no longer suggests `--erosion-exempt-max-size` for regions that are actually design.** It now classifies small removed regions by PERSISTENCE (present in ~every frame at a stable size = design) rather than size alone — the old ≤500px ceiling let four ~287px buttons through and recommended erosion-exempting the very detail the user asked to preserve.
+- **`--verify` now accepts WebP/AVIF**, not just GIF. Every check is partial-alpha aware: leftover background counts only ESSENTIALLY OPAQUE (alpha ≥ 250) background-coloured pixels, because on an 8-bit output a pale semi-transparent pixel is a recovered fade or an antialiasing ramp — correct output, not leftover. The report carries a `scope_note` saying so.
+- **`--erosion-exempt-transient`** exempts small removed regions from erosion by IDENTITY rather than size — present in ~every frame at a stable size = design (eroded normally), comes and goes = incidental (exempt). Use it when the two overlap in size, which `--erosion-exempt-max-size` structurally cannot handle: on a real asset the design sat at 262–306px while the noise reached 442px, so no threshold separated them. Auto-recommended exactly there. §21.4
+- **`protected_region_coverage` gained `residual_nonopaque`** — when coverage is below 1.0, it reports whether the non-opaque remainder has the SHAPE of a deliberately punched cutout (persistent, 1–2 blobs, stable size, a small fraction of the footprint) instead of leaving a bare number to re-investigate. `verify()` never sees the render's flags, so it cannot KNOW a cutout was intended — the footprint-fraction ceiling is what stops this excusing a genuine failure. Confirmed on `military-tag.gif`: coverage 0.757, remainder = one 441–457px blob in all 126 frames = the pinhole. §22
+- ⚠️ **`protected_region_coverage` and leftover-background were both measuring the wrong footprint** until 2026-08-17 — a bounding RECTANGLE contains real background, and counting it made correct output look half-unprotected (gift read 0.874 for a fully protected region; 1.000 once restricted to the enclosed footprint). If you are comparing against numbers recorded before that date, they are not comparable. §21.1
+- **`--auto`: TWO PASSES that verify the OUTPUT, not just the source.** ⚠️ Not a loop — there is no iteration construct and no counter. Worst case is two renders and exactly one correction, bounded by the code's shape. Runs `--recommend`, applies its flags (only where you left that option at its default — explicit flags always win, and it prints what it skipped), renders, then RE-MEASURES the written file and re-renders once if the encoded result disagrees with what the pre-encode calibration predicted. Use it when you want the skill to make the call end to end.
+- **`--auto-erosion`: `--edge-cleanup-erosion` chosen by measuring the asset against ITSELF.** The fringe metric has no honest global threshold (§18.5), but within one asset every erosion-0 reading is 2–4× its own clean floor, so the calibration reads the answer off that asset's own curve and picks the SMALLEST erosion already at the floor — removing the fringe without eating thin strokes. It independently reproduces both hand-derived defaults: **1** for the GIF path and **0** for WebP/AVIF, the latter because the metric only counts near-opaque pixels and an 8-bit alpha ramp is legitimately pale. In-memory: one erosion pass per candidate, not one render. Full case: §19.
+- **Four `--recommend` outputs that were wrong are now right** (full evidence: `references/lessons.md` §18). `--pixel-art` gained a blend-ratio discriminator — ⚠️ **which later measurement showed to be partly a REGRESSION**, see the pixel-art bullet below. `--erosion-exempt-max-size` is suppressed when the transient and design size ranges OVERLAP, because the flag is a size threshold and cannot then separate them — classifying regions correctly is not enough on its own. `--feather-band-multiplier` is only recommended at ≥3.0: below that it narrows the band so far that the antialiasing ramp stops being removed, and the old `max(1.5, …)` clamp was itself producing a fringe (measured 0.2186 at 1.5 vs 0.0000 at the default). Outline-colour verification now retries PER FRAME when the union-across-frames footprint fails, which is what was hiding a real, protectable region behind `candidate_outline_color: null`.
+- **Pixel-art detection rebuilt, and scored against a real corpus for the first time.** §18's blend-ratio discriminator rested on the claim that "genuine pixel art has no background-to-art blends by construction" — validated against a synthetic fixture generated in the same session as the theory, which is circular and turned out to be false. Against **37 labelled assets** (25 pixel art, 6 antialiased, plus the 6 vector icons as negatives):
+
+  | rule | correct | pixel art found | false positives |
+  |---|---|---|---|
+  | v4.0.0 (band ratio AND blend ratio) | 17/37 | 5/25 | 0/12 |
+  | + zero-transition-band short-circuit | 19/37 | 7/25 | 0/12 |
+  | + **`change_line_density` < 0.5** | **30/37** | **18/25** | **0/12** |
+
+  `change_line_density` counts how often the image changes as you sweep across it — pixel art is drawn on a coarse grid and enlarged, so it changes only at block boundaries. It reads no colour value, so the palette collisions that break the other two measures cannot reach it, and it is scale-free. Below 0.5 is dispositive; a HIGH value proves nothing, so it can only add a hard-edged verdict, never veto one. ⚠️ The 7 remaining misses are all dithered or photographic pixel art. §23
+- **`--verify`'s `edge_fringe_check` is now tri-state.** `looks_fringed` is `true` / `false` / **`null`**, with `verdict_basis` giving the reason. The metric is the fraction of the outermost opaque ring closer to the background than to any art colour. It separates cleanly within one asset but the ranges overlap across assets, so a middling value reports INCONCLUSIVE instead of guessing. ⚠️ Never use it to choose `--edge-cleanup-erosion`; compare the asset against its own erosion 0/1/2 outputs, or composite over a dark solid.
+- **Frame durations are now read with `im.load()`, not `seek()` alone.** Load-bearing for any non-GIF SOURCE: `GifImagePlugin` populates `info['duration']` during `seek()`, but WebP/AVIF populate it only in `load()`, so seek-only returns the PREVIOUS frame's value. A real 124-frame WebP source came back `[100, 220, 20 ×122]` against a true `[220, 20 ×122, 340]` — one bogus frame prepended, the last one dropped, output 240 ms short — and the readback shared the same flaw, so the script reported "durations preserved exactly." Fixed at all four read sites; the GIF path is byte-identical. Full case: `references/lessons.md` §17.
+
+The default GIF codepath is unchanged — confirmed byte-identical on a real fixture before and after every edit in this round.
+
+---
+
+## Versioning convention (canonical)
+
+Versioning convention (three-part, `v{major}.{minor}.{correction}` — Harkirat's explicit spec, applies both to this internal version log AND to whatever gets said in the file handed back to him after an edit, so the two never drift):
+- **Major** (v2 -> v3): a reviewed, end-to-end-verified round with multiple serious fixes and/or new features/major functionality changes.
+- **Minor** (v2 -> v2.1): a single confirmed bug fix in the script itself that doesn't rise to major.
+- **Correction / very-minor / note** (v2.2 -> v2.2.1): very, very minor — mainly documentation, but NOT required to be documentation-only (corrected 2026-07-16); a genuinely tiny code tweak, too small to be its own minor bump, fits here too. "Mainly docs" describes the common case, not a hard rule.
+
+All three tiers require the same bar before shipping: confirmed root cause (for a fix) or confirmed-true (for a documentation note), and a real fix/finding, not a guess — the SIZE of the change determines which tier, not the rigor applied. **When deciding which tier a change fits, reason it through explicitly against each tier's actual bar for THIS specific change** — don't pattern-match to whichever tier a similar-sounding past change landed in.
+
+**The version number in this file bumps at "push" (finalize + sync to the live claude.ai skill), not at every repo commit (added 2026-07-16).** A working session can commit several real changes to this file without bumping the number yet — those commits are unreleased work toward the next version. Once each real push gets git-tagged with its version (e.g. `v2.2.1`), `git describe --tags` on any later commit shows exactly how many commits past the last real version you are (e.g. `v2.2.1-3-gabc1234` = 3 unpushed commits past v2.2.1) automatically, with zero manual bookkeeping — no separately maintained counter to keep in sync or forget to reset at push time. At push time, judge the CUMULATIVE tier of everything since the last tag as a whole, not the sum of each commit's own tier, and bump once, to that.
+
+**A live-skill-only session's exported `gif-background-remover-temp-vX.X.X.skill` gets its own provisional version bump**, judged the normal way against whatever that session's edit alone falls under (e.g. a notes-only live-session fix is a correction, temp-version-wise). That provisional number is NOT binding on the repo — it gets reconciled later against the repo's own history, a fresh holistic judgment on what the REPO's actual next version should be given everything accumulated since its last real tag, which may land on a different tier than the temp export used.
+
+**If you are running as the standalone skill on claude.ai, you are in an isolated sandbox and this is the whole picture you get (stated here 2026-08-07 because a session cannot read it anywhere else).** You can read these packaged files — this `SKILL.md`, `references/`, `scripts/` — frozen at whatever version was uploaded. You cannot read the development repo, its `CLAUDE.md`, its git history, or any memory folder, and **you cannot write anything to Harkirat's machine.** So an export does not travel on its own: produce the `gif-background-remover-temp-vX.X.X.skill` file, hand it and the full text of anything you changed to Harkirat in the chat, and he moves it across himself. Don't describe a finding as "saved," "synced," or "logged" — in that context the chat is the only persistence there is.
+
+**"Always hand Harkirat the latest full file" applies specifically to a live-skill-only session (claude.ai, no filesystem) — corrected 2026-07-16.** That convention dates from directly editing the live skill in a single claude.ai chat, where the chat WAS the only persistent copy of the file, so handing over the full text after each edit was the only way he'd have a current copy. In a Claude Code / repo session, the file already persists on disk — there's no need to re-paste the whole thing into chat after every edit; just make the edit and say what changed. Full-file handoff still applies when exporting a live-skill-only session's edits as `gif-background-remover-temp-vX.X.X.skill` (see the temp-drop note above), since that context has no other persistence either. Regardless of context, **keep the actual skill `name` unchanged** in the frontmatter.
