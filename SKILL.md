@@ -1,6 +1,6 @@
 ---
 name: gif-background-remover
-description: Remove the background color from an animated GIF while protecting a specific interior region of the design (e.g. a white highlight inside a badge) even when that region is the same color as the background. Handles both antialiased vector icon/sticker/emoji art (the default assumption) and hard-edged pixel art (via --pixel-art, which avoids destructively eroding non-antialiased content). Also handles shrinking an animated GIF to fit a platform's file-size limit (e.g. Discord sticker/emoji uploads, which cap at 256KB) via frame-rate reduction and gifsicle-based compression tiers, and batch-processing multiple GIFs at once from a manifest. Outputs GIF, or WebP/AVIF with true 8-bit partial transparency -- including recovering a fade/glow/sparkle whose translucency was already flattened against the background by a GIF export, which GIF itself cannot represent. Use when the user asks to remove/strip the background from a GIF, make a GIF transparent, cut out a GIF's background, convert a GIF to WebP or AVIF, keep a fading/glowing element translucent, turn a GIF into a sticker or emoji, shrink/compress an animated GIF's file size, or process several GIFs the same way in one go.
+description: Remove the background color from an animated GIF while protecting a specific interior region of the design (e.g. a white highlight inside a badge) even when that region is the same color as the background. Handles both antialiased vector icon/sticker/emoji art (the default assumption) and hard-edged pixel art (via --pixel-art, which avoids destructively eroding non-antialiased content). Also handles shrinking an animated GIF to fit a platform's file-size limit (e.g. Discord sticker/emoji uploads, which cap at 256KB) via frame-rate reduction and gifsicle-based compression tiers, and batch-processing multiple GIFs at once from a manifest. Outputs GIF, or WebP/AVIF with true 8-bit partial transparency -- including recovering a fade/glow/sparkle whose translucency was already flattened against the background by a GIF export, which GIF itself cannot represent. Use when the user asks to remove/strip the background from a GIF, make a GIF transparent, cut out a GIF's background, convert a GIF to WebP or AVIF, keep a fading/glowing element translucent, turn a GIF into a sticker or emoji, shrink/compress an animated GIF's file size, or process several GIFs the same way in one go, or ask the skill to just handle a GIF automatically end to end.
 ---
 
 # GIF Background Remover
@@ -12,8 +12,6 @@ description: Remove the background color from an animated GIF while protecting a
 - **AVIF saved with no capability guard**, while `--recommend` ranks AVIF *first* under a byte cap — so an autonomous run is steered straight at an unchecked dependency and fails after all the work is done. Now checked up front with an actionable message.
 - **`--pixel-art` silently discarded an explicitly typed `--edge-cleanup-erosion`.** Explicit flags now win and the override is reported, matching the contract `--auto` already implements.
 - Plus this restructure: SKILL.md went 928 → ~640 lines, with the deep detail moved into `references/` and this file kept to decisions and flags.
-
-**v5.1.1** is a *correction*: `references/lessons.md` pointed at a path on the development machine and three times at a backlog file, none of which are in this package. Each is now phrased as provenance rather than as a location you might try to open.
 
 **v5.0.0** was the major release: WebP and AVIF output with true 8-bit alpha, `--recover-fade-alpha` (reconstructs partial transparency a GIF export already flattened — a case §7 had recorded as impossible), `--auto`/`--auto-erosion`, a `--verify` overhaul, and a pixel-art detector rebuilt and scored against 37 labelled assets (17/37 → 30/37, zero false positives). Full entry in `references/version-history.md`.
 
@@ -105,8 +103,20 @@ accept the 1-bit-alpha consequences and read the fade section above.
 
 ⚠️ **`--verify` skips EVERY pixel check when the output was cropped or resized** (it says so in a `note` field and reports only timing). A pass from a cropped output is therefore vacuous — re-render at the source canvas size and verify that, then crop. Confirmed 2026-08-17: the delivered `military-tag` output is 536x570 against a 640x640 source, so its clean `--verify` had substantiated nothing at all. §22
 
-## Workflow: infer first, then confirm — don't just ask the user upfront
-Don't open by asking the user to specify the background color and protected region from scratch.
+## Workflow: `--auto` first, manual only when it cannot decide
+Don't open by asking the user to specify the background color and protected region from scratch, and don't hand-assemble flags before trying the path that assembles them for you.
+
+⚠️ **If the SOURCE is a WebP or AVIF rather than a GIF**, read `references/lessons.md` §17 before trusting any timing. Pillow populates `info['duration']` during `seek()` for GIF but only during `load()` for WebP/AVIF, so a seek-only read returns the PREVIOUS frame's value — a real 124-frame source came back one bogus frame prepended and the last dropped, 240 ms short, while the script reported "durations preserved exactly". Fixed in the script, but the failure mode is worth recognising if you see it anywhere else.
+
+### 0. Start with `--auto` unless a check below says otherwise
+```
+python scripts/remove_gif_background.py <input.gif> <output.gif> --auto
+```
+`--auto` runs `--recommend`, applies its flags **only where you left that option at its default** (anything you pass explicitly wins, and it prints what it skipped), renders, then RE-MEASURES the written file and re-renders once if the encoded result disagrees with the pre-encode calibration. It is **two passes, not a loop** — no iteration construct, no counter, worst case two renders and exactly one correction. Add `--auto-erosion` to have `--edge-cleanup-erosion` calibrated against the asset's own fringe curve rather than a global default.
+
+⚠️ **`--auto` does not replace the two checks above it.** Content type and animation style decide whether the defaults are safe *at all*, and `--auto` cannot tell you that a pinhole needs `--hole-size-range` (§14) or that a sub-region needs `--remove-region` (§15). Run those checks first; use `--auto` as the starting point for everything they do not flag, and go manual for what they do.
+
+### The manual path — when `--auto` is refused, overridden, or the checks above flagged something
 
 ### 1. Run analysis first
 ```
@@ -171,6 +181,8 @@ For several GIFs in one invocation, see "Batch processing" below — a JSON mani
 
 *(`--no-gifsicle-optimize` also exists in `--help` output but isn't listed above — it's a confirmed no-op, kept only for backward compatibility with old invocations now that gifsicle only ever runs as part of a `--compress` tier. Don't spend time trying to use it for anything.)*
 
+
+**Output quality/encoder knobs**: `--webp-quality` / `--webp-method` / `--webp-lossy` (WebP), `--avif-quality` (AVIF), `--quantizer pil|pngquant` (GIF palette), `--remove-region-feather` (softness of a `--remove-region` cut), and `--erosion-exempt-transient` (exempt small removed regions from erosion by IDENTITY rather than size — use it when design and incidental regions OVERLAP in size, which a size threshold structurally cannot separate). Defaults are tuned; reach for these only with a measured reason.
 
 **What the individual quality/output flags actually do** — edge feathering and `--feather-band-multiplier`, standalone `--crop`, the printed size report, and `--preview` contact sheets — **is in `references/flag-reference.md`.** Read it when a flag's name is not enough to know whether you want it.
 

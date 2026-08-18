@@ -108,6 +108,8 @@ Whenever a section is ADDED to it:
 3. Keep the "How to read this file" block accurate — a session must be told to grep or extract, never to read the file whole.
 
 ### Release gates — run these BEFORE merging, not after
+0. **`python3 scripts/audit_docs.py` must pass.** It gates the packaged docs against the script: every argparse flag reachable from SKILL.md's instructional BODY (not just its changelog), every `§N` and `references/*.md` pointer resolving, every lessons section reachable from both the ToC and the symptom table. It exists because the docs passed every structural check while SIX flags — including `--auto` and `--auto-erosion`, the autonomy feature this project is aimed at — appeared nowhere but SKILL.md's version changelog. **A changelog reads like documentation and is not.** Proven non-vacuous: reintroducing the real defect makes it exit 1.
+
 The v5.1.1 release exists only because these ran after the v5.1.0 tag instead of before it, which cost two extra version bumps and two extra merges:
 1. **Build the `.skill` and gate the BUILT artifact** — not the working tree. Only the package shows what actually ships: it caught a private path (`local/Diors-builds Emojis/…`) and four pointers to `gif-deferred-list.md`, which is tracked but not packaged. Re-run the gate on every REBUILD; trusting the previous run missed one.
 2. **Every `references/…` pointer in the packaged `SKILL.md` must resolve inside the zip.**

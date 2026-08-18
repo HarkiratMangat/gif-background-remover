@@ -66,6 +66,14 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Scattered speckle dots where a fading element disappears | §16 |
 | A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
+| "there's a white edge / outline / halo around it" | §16 (fringe), §19 (pick erosion by the asset's own curve) |
+| "it looks blurry / soft / smudged after resizing" | §5 (resize degradation), §1 (is it pixel art?) |
+| "the colours look wrong / washed out / banded" | §12 (dither mesh), §6 (quantizer choice) |
+| "it's too big" / "it won't upload" / a platform size limit | §8, and SKILL.md's compression tiers |
+| "it looks chunky / blocky / like it lost detail" | §4, §5 (erosion eating detail), §1 (pixel art misdetected) |
+| "part of the picture disappeared" | §3 (protected-region flicker), §10 (tumbling content) |
+| "it plays too fast / too slow / is cut short" | §13, §17 (duration read from the wrong frame) |
+| "the see-through part went solid" or a glow turned opaque | §16 (GIF cannot hold it — change format) |
 | Output is shorter than the source, or "durations preserved exactly" is a lie | §17 (non-GIF SOURCE: Pillow needs load(), not seek()) |
 | `--recommend` suggested a flag that made the output worse | §18, §20 (four wrong recommendations and why) |
 | A flag had to be tuned by hand to get a good result | §18 (the gap is the bug — the tool should derive it) |
