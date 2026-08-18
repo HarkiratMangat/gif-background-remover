@@ -39,9 +39,9 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Model pick reasoning:** premise Low-risk (the fix shape is well-understood and already proven elsewhere in the same function for a structurally similar problem) · deliberation High (reordering a large function's internals without regressing its existing, already-reviewed checks needs real care, and the byte-identical/behavior-preservation discipline this whole project runs on) → `Sonnet5-XHigh`.
 
-### `[P3 · M · Sonnet5-High]` `--verify`'s `protected_region_coverage` false-positives on a legitimately punched sub-hole inside a translating candidate region
+### ~~`[P3 · M]` `--verify`'s `protected_region_coverage` false-positives on a legitimately punched sub-hole~~ — **CLOSED 2026-08-17** *(heading corrected 2026-08-18: the body said CLOSED while the heading still read open)*
 
-**✅ CLOSED 2026-08-17 — confirmed against this item's own asset.** `military-tag.gif` IS on this machine (`~/Downloads/Diors-builds Emojis/`); the earlier "not on this machine" note was wrong. Re-rendering §14's pipeline uncropped and running `--verify` with both scripts: **0.462 → 0.757**, `looks_unprotected` **true → false**. The 0.462 reproduces §14's recorded 46.2% exactly, so this is a real reproduction, not two clean runs agreeing by luck.
+**✅ CLOSED 2026-08-17 — confirmed against this item's own asset.** `military-tag.gif` IS on this machine (found in the repo's own asset folders); the earlier "not on this machine" note was wrong. Re-rendering §14's pipeline uncropped and running `--verify` with both scripts: **0.462 → 0.757**, `looks_unprotected` **true → false**. The 0.462 reproduces §14's recorded 46.2% exactly, so this is a real reproduction, not two clean runs agreeing by luck.
 
 ⚠️ Verifying against the DELIVERED file would have been a vacuous pass — it is cropped (536x570 vs 640x640), so `--verify` skips every pixel check and reports only timing.
 
@@ -149,7 +149,7 @@ It also produced the largest correctness gain of the session: sprite-pack detect
 
 ## 🔔 Reminders / watch-for
 
-### AUTONOMY BACKLOG — `--recommend` still needs manual correction on these (opened 2026-08-17)
+### AUTONOMY BACKLOG — 8 of 9 CLOSED; only item 5 (gift's sparkle colour) remains *(opened 2026-08-17, heading corrected 2026-08-18)*
 **Six of the nine items below were CLOSED on 2026-08-17** — see `references/lessons.md` §18 for the measurements behind each. Remaining open: 5 and 9.
 
 1. ~~`--pixel-art` emitted on thin-AA vector art~~ — **CLOSED.** Added a second discriminator, `antialiasing_blend_ratio` (are there real background-to-art blends at all?). Synthetic pixel art 0.000; the lowest real asset 1.530. `appears_hard_edged` now needs BOTH measures. The fixture still gets the flag; love and heart no longer do. §18.1
@@ -174,7 +174,7 @@ It also produced the largest correctness gain of the session: sprite-pack detect
 Boundary reconstruction and the encoding path are SOLVED (static-in-canvas divide, degree-6 fit at 0.33px RMS, no GIF round-trip). **Unsolved: isolating the controller mask on frames 26–34**, where it touches the heart outline. Four approaches measured — see the handoff.
 
 
-### Re-test gifsicle's colour dither on a GRADIENT-heavy corpus (opened 2026-08-17)
+### `[P3 · M · Sonnet5-High · ⛓️blocked-by: no gradient-heavy corpus]` Re-test gifsicle's colour dither on a GRADIENT-heavy corpus *(opened 2026-08-17, tagged 2026-08-18)*
 The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot- measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that matter for animation:
 
 | dither | KiB | mean colour err | frame-to-frame instability in static regions |
@@ -275,7 +275,7 @@ It reads GIF, WebP, AVIF, APNG, PNG and JPEG. The name reinforces the GIF-only m
 
 ---
 
-### `[P1 · M]` Thresholds are still calibrated on white-background art — but the corpus DOES have coloured ones
+### ~~`[P1 · M]` Thresholds are still calibrated on white-background art~~ — **CLOSED 2026-08-18, premise REVERSED** *(heading corrected 2026-08-18: the body said CLOSED while the heading still read open)*
 
 **2026-08-17, corrected twice.** The record on this item was wrong in both directions, which is worth stating plainly because the third answer is the actionable one.
 
