@@ -1024,10 +1024,16 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # take the identical path, because there is no partial alpha to composite. SS28.5
     _hardness_frames = dict()
     _partial_alpha_seen = False
+    _alpha_levels = 1
+    _rgb_span = 0
+    _has_transparent_px = False
     for i in sample_idxs:
         im.seek(i)
         _rgba = np.array(im.convert('RGBA'))
         _a = _rgba[..., 3]
+        _alpha_levels = max(_alpha_levels, int(np.unique(_a).size))
+        _rgb_span = max(_rgb_span, int(_rgba[..., :3].max()) - int(_rgba[..., :3].min()))
+        _has_transparent_px = _has_transparent_px or bool((_a == 0).any())
         if not ((_a > 0) & (_a < 255)).any():
             continue
         _partial_alpha_seen = True
@@ -1036,6 +1042,20 @@ def analyze(input_path, max_samples=40, tolerance=15):
                                + np.asarray(bg_rgb, dtype=np.float32) * (1.0 - _f)
                                ).round().clip(0, 255).astype(np.uint8)
     _hf = (lambda i: _hardness_frames.get(i, all_rgb_frames[i]))
+
+    # AN ALPHA-ONLY SOURCE: one flat RGB value over the whole canvas, with the entire image
+    # carried in the alpha channel. A monochrome glyph icon exported this way is extremely
+    # common, and EVERY colour-based measure in this file is meaningless on it -- there is no
+    # background colour to key, no transition band, no blends, and no colour steps at all.
+    # Measured across this project's asset folders: 15 of 137 files are like this, each with
+    # exactly ONE unique RGB value (span 0) and 186-256 distinct ALPHA values.
+    #
+    # Left unhandled it is not a cosmetic misread. detect_bg_color returns that one colour,
+    # color_mask then matches every pixel in the frame, and the render removes the entire
+    # image: measured on `pencil.png`, 69,925 opaque pixels in and ZERO out, while --auto
+    # reported success because an empty output has no leftover background to count. The
+    # RENDER-side guard (_refuse_empty_render) is the backstop; this is the diagnosis.
+    _alpha_only_source = bool(_has_transparent_px and _rgb_span <= 8)
 
     _eh0 = measure_edge_hardness(_hf(0), bg_rgb, tolerance)
     _eh_ratios = [measure_edge_hardness(_hf(i), bg_rgb, tolerance)['ratio']
@@ -1096,7 +1116,24 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # exactly one place.
     _hard_reasons = []
     _soft_notes = []
-    if _no_transition_band_at_all:
+    if _alpha_only_source:
+        # Hardness read from the ALPHA channel, because that is where the whole image is. The
+        # separation is a margin of KIND, not degree: a hard cutout has exactly 2 alpha levels
+        # (0 and 255), while the 15 measured alpha-only icons carry 186-256. No threshold is
+        # being tuned here, and no colour-based rule gets a vote -- each of them would be
+        # reporting on a uniform plane.
+        if _alpha_levels <= 2:
+            _hard_reasons.append(
+                f"the source is an alpha-only mask (one flat RGB value) with {_alpha_levels} "
+                f"alpha levels -- a hard cutout, no ramp anywhere")
+        else:
+            _soft_notes.append(
+                f"the source is an alpha-only mask: one flat RGB value across the canvas, with "
+                f"{_alpha_levels} distinct ALPHA levels. Every colour-based hardness measure is "
+                f"reading a uniform plane and none of them gets a vote; the {_alpha_levels} alpha "
+                f"levels ARE the antialiasing ramp, so this is antialiased art "
+                f"(references/lessons.md SS28.9).")
+    elif _no_transition_band_at_all:
         _hard_reasons.append(
             f"no transition band at all in any sampled frame (edge_hardness ratio max "
             f"{_eh_max:.3f})")
@@ -1115,23 +1152,23 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # still stands alone, which is the one regime where it is the only measure available. SS28.6
     _cliff_contradicts = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
                           and _cliff < PLATEAU_CLIFF_THRESHOLD)
-    if _density < 0.5 and not _cliff_contradicts:
+    if _density < 0.5 and not _cliff_contradicts and not _alpha_only_source:
         _hard_reasons.append(
             f"change_line_density {_density:.3f}, below the 0.5 floor -- the image changes only "
             f"at block boundaries")
-    elif _density < 0.5:
+    elif _density < 0.5 and not _alpha_only_source:
         _soft_notes.append(
             f"change_line_density {_density:.3f} is below the 0.5 hard-edged floor, but "
             f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps "
             f"contradicts it: a pixel grid coarse enough to give that density would give "
             f"plateau-to-plateau edges. Treating the low density as a large flat shape, not "
             f"blocks (references/lessons.md SS28.6).")
-    if _cliff_says_hard:
+    if _cliff_says_hard and not _alpha_only_source:
         _hard_reasons.append(
             f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps, at or "
             f"above the {PLATEAU_CLIFF_THRESHOLD:.2f} floor -- its edges are block-to-block "
             f"cliffs, not antialiasing ramps")
-    if (_eh_max < 0.5) and (_blend_ratio < 0.15):
+    if (_eh_max < 0.5) and (_blend_ratio < 0.15) and not _alpha_only_source:
         _hard_reasons.append(
             f"a thin transition band (ratio max {_eh_max:.3f}) together with essentially no "
             f"background-to-art blend pixels (antialiasing_blend_ratio {_blend_ratio:.3f})")
@@ -1148,6 +1185,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'hard_edged_reasons': _hard_reasons,
         'hard_edged_suppressed_notes': _soft_notes,
         'measured_on_alpha_composite': bool(_partial_alpha_seen),
+        'alpha_only_source': _alpha_only_source,
+        'source_alpha_levels': int(_alpha_levels),
     })
 
     # detect_band_interior_regions runs BEFORE the candidate-region loop and so
@@ -1539,10 +1578,25 @@ def recommend(input_path, tolerance=15):
     if flags:
         suggested += " " + " ".join(flags)
 
+    _not_applicable = None
+    if _eh.get('alpha_only_source'):
+        # An autonomous run pastes suggested_command verbatim, so on this input the field cannot
+        # hold a removal command: there is no background colour to key, and running one empties
+        # the file (SS28.9). None forces every caller to handle it -- run_auto checks this field
+        # before it renders anything.
+        _not_applicable = (
+            f"This source is an ALPHA-ONLY mask: one flat RGB value across the canvas, with the "
+            f"whole image carried in {_eh.get('source_alpha_levels')} levels of alpha. There is no "
+            f"background COLOUR to remove -- its background is already fully transparent. Running "
+            f"background removal would match the single flat colour everywhere and empty the file. "
+            f"If the goal is a smaller file, use --target-kb / --resize-max-dim on it directly; if "
+            f"it is a recolour, that is outside what this skill does.")
+        suggested = None
     return {
         'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
-        'evidence': evidence + region_notes,
+        'not_applicable_reason': _not_applicable,
+        'evidence': ([_not_applicable] if _not_applicable else []) + evidence + region_notes,
         'analysis': report,
     }
 
@@ -3323,8 +3377,45 @@ def verify(input_path, output_path, tolerance=15):
                     })
 
     report['small_region_inflation'] = {'flagged': inflated[:10], 'flagged_count': len(inflated)}
+    # Every other check here is a QUALITY measure, and every one of them reads an empty output as
+    # flawless -- no leftover background, no fringe, no inflation. So the one check that catches
+    # total destruction has to be stated separately. SS28.9
+    _out_opaque = int(sum(int((a > 0).sum()) for a in out_alpha))
+    report['output_opaque_px'] = _out_opaque
+    if _out_opaque == 0:
+        report['output_is_empty'] = (
+            'EVERY pixel of every frame is transparent -- the output is empty, not clean. No '
+            'other check here can see this: an empty output has no leftover background, no '
+            'fringe and no thin protected region. Read edge_hardness.alpha_only_source and the '
+            'detected background colour.')
     report['timing'] = describe_written_timing(output_path, in_durations)
     return report
+
+
+def _refuse_empty_render(alpha_frames, output_path):
+    """Refuse to write an output in which NOTHING is opaque, on any frame.
+
+    "Remove the background" has no valid result that is a fully transparent file, and writing one
+    silently is the worst outcome available: it overwrites whatever was at the output path, and
+    every quality check downstream reads it as perfect -- an empty output has no leftover
+    background to count, no fringe, and no protected region to come back thin. Measured on a real
+    alpha-only PNG (`pencil.png`): 69,925 opaque pixels in, ZERO out, and --auto printed success.
+    SS28.9
+
+    Note the invariant is deliberately whole-file, not per-frame: a genuinely blank frame is
+    normal inside an animation that fades out. Only "no opaque pixel anywhere" is impossible.
+    """
+    if any(bool((a > 0).any()) for a in alpha_frames):
+        return
+    raise SystemExit(
+        f"ERROR: refusing to write {output_path!r} -- every pixel of every frame came out "
+        f"transparent, so the render would destroy the image rather than remove its background. "
+        f"Nothing has been written.\n"
+        f"  The usual causes: the detected --bg-color matched the ARTWORK as well as the "
+        f"background, or the source is an alpha-only mask (one flat RGB value, with the whole "
+        f"image in its alpha channel) and so has no background colour to key at all.\n"
+        f"  Run --analyze and read 'alpha_only_source' and 'background_color', or pass an "
+        f"explicit --bg-color.")
 
 
 def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
@@ -3363,6 +3454,7 @@ def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
     identical indices across frames so static regions compress like the
     static regions they are.
     """
+    _refuse_empty_render(alpha_frames, output_path)
     n_colors = max(2, min(colors, 255))
     palette_colors = min(n_colors, 254)  # leave room for the reserved transparency slot
 
@@ -3841,6 +3933,7 @@ def render_frames_to_webp(rgb_frames, alpha_frames, durations, loop, output_path
     that defeats inter-frame prediction. Reach for lossy only when fitting a
     hard byte cap.
     """
+    _refuse_empty_render(alpha_frames, output_path)
     ims = []
     for rgb_out, alpha in zip(rgb_frames, alpha_frames):
         ims.append(Image.fromarray(
@@ -3872,6 +3965,7 @@ def render_frames_to_avif(rgb_frames, alpha_frames, durations, loop, output_path
     (Diors-Builds settled the same question for WebP only by testing a real
     Discord client on desktop and mobile.)
     """
+    _refuse_empty_render(alpha_frames, output_path)
     # Fail before doing the work, not after. AVIF needs Pillow built with AVIF
     # support (or the pillow-avif-plugin); --recommend actively ranks AVIF FIRST
     # under a byte cap, so an autonomous run is steered straight at this
@@ -3904,6 +3998,7 @@ def render_frames_to_apng(rgb_frames, alpha_frames, durations, loop, output_path
     --recommend still ranks WebP and AVIF ahead of it; APNG is here for the case
     where the destination wants PNG specifically.
     """
+    _refuse_empty_render(alpha_frames, output_path)
     ims = [Image.fromarray(np.dstack([r, a[:, :, None]]).astype(np.uint8), 'RGBA')
            for r, a in zip(rgb_frames, alpha_frames)]
     ims[0].save(output_path, 'PNG', save_all=True, append_images=ims[1:],
@@ -5520,6 +5615,9 @@ def auto_run(input_path, output_path, args, parser):
     """
     print("=== AUTO 1/3: analysing source ===", file=sys.stderr)
     rec = recommend(input_path, tolerance=args.tolerance)
+    if rec.get('not_applicable_reason'):
+        raise SystemExit("ERROR: --auto has nothing to do here, and doing it anyway would "
+                         "destroy the image.\n  " + rec['not_applicable_reason'])
     rec_tokens = shlex.split(rec['suggested_command'])[4:]
 
     base = parser.parse_args([input_path, output_path])

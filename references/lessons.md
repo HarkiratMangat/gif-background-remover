@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~49,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~51,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -103,6 +103,9 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A PNG/WebP source that already has transparency reads as hard-edged | §28.5 (the ramp is in ALPHA; RGB alone cannot see it) |
 | `--recommend`'s `--pixel-art` evidence cites numbers that do not match the verdict | §28.7 (fixed — it now names the rule that fired) |
 | `--analyze` / `--recommend` / `--verify` crashes on a static JPEG | §28.8 (`n_frames` on a bare attribute) |
+| The output file is EMPTY / fully transparent, but every check says it is clean | §28.9 (an empty output scores perfectly on all four quality measures) |
+| A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
+| `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
 | Considering a NEW pixel-art discriminator | §23.8 (score it against real antialiased icons, not only the labelled corpus) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -1288,9 +1291,7 @@ The fix composites over the DETECTED BACKGROUND COLOUR, which reconstructs exact
 
 **How it was found is the transferable part.** The first validation of the cliff measure fed the function frames *I* had composited, sampled 5 per asset. The product reads up to 40 raw frames. Re-scoring through the product's own frame handling was what surfaced the single false positive, and that false positive was the alpha bug. **A measure validated on pixels the product never sees has not been validated** — the same shape as §24 (a path only the sandbox takes) and §23.6 (a fixture that agreed with the theory because both came from me).
 
-⚠️ **The composite fixes the ramps that CARRY COLOUR, and there is a second class it cannot reach.** 18 emoji still come back hard-edged on the branch, all of them through the pre-existing "no transition band at all" rule and all of them identically flagged at HEAD. 15 are RGBA icons whose **RGB is zeroed wherever alpha is low** — a common PNG exporter behaviour. `detect_bg_color` then reads the background as `(0,0,0)` (the transparent region is 12–73% of these images), and compositing over black reproduces black: measured on `pencil.png`, `left.png` and `layer-plus.png`, **100% of the ramp pixels land within the tolerance of the detected background, median distance 0**. The art colour was multiplied out at export; **no measure in RGB space can ever see those ramps, because the information is only in the alpha channel.** The contrast case is `delete.png`, whose ramp does carry colour — 67% of its ramp pixels land inside the band window — which is exactly why the composite rescued it and not the other 15.
-
-**That is the concrete case for §23.9's other suggestion, "measure the alpha ramp's shape".** For an RGBA source the ramp is directly available and needs no inference: 0 < alpha < 255 IS partial coverage, which is what antialiasing is — unlike a blend ratio, it is an observation rather than a proxy, so it would not repeat §23.3's veto problem. It is NOT shipped here for one reason: the population that would falsify it is **RGBA pixel art**, and this project has exactly zero labelled examples of it. Shipping a veto whose failure mode lives in a population with no representation in the sample is the mistake §23.8 exists to prevent. Filed with a named first slice.
+⚠️ **The composite fixes the ramps that CARRY COLOUR, and the class it cannot reach turned out to be a different bug entirely — see §28.9.** 18 emoji still came back hard-edged after the composite landed, all through the pre-existing "no transition band at all" rule and all identically flagged at HEAD. 15 of them are **alpha-only masks**, and chasing that is what found a data-destruction bug. The 3 others are 1-bit-alpha files, covered by the note below. The contrast case worth keeping here is `delete.png`, whose ramp DOES carry colour — 67% of its ramp pixels land inside the band window — which is exactly why the composite rescued it.
 
 ⚠️ **A 1-bit-alpha source is a different case and is NOT a bug.** An already-processed GIF from this tool (`love_transparent.gif`) reads as hard-edged, and correctly: writing the GIF destroyed the ramp, so the FILE genuinely has hard edges even though the ARTWORK is antialiased. Compositing cannot help — there is no partial alpha left to composite. This also means the "presumed antialiased by provenance" emoji population needs stratifying: a processed output is not a counterexample.
 
@@ -1313,3 +1314,19 @@ The rule that resolves it is an **entailment, not a tuned margin**: a density be
 Feeding a real `.jpeg` from the asset folder to `--analyze`: `AttributeError: 'JpegImageFile' object has no attribute 'n_frames'`. The PROCESSING path learned this in v5.2.0 and reads `getattr(im0, 'n_frames', 1)` with a comment naming JPEG explicitly — but `analyze()` and `load_animation_rgba_frames()` were left on the bare attribute, so `--analyze`, `--recommend`, `--auto` and `--verify` all died with a raw traceback on exactly the static-image input v5.2.0 shipped support for.
 
 This is the handoff's **"the inverse spelling is where the bug hides"** in its purest form: the sites that needed fixing were found and fixed, and two that needed the identical fix were not, because no test ever pointed `--analyze` at a JPEG. Red-green verified: the fixed script analyses and recommends on that file, and HEAD still raises the AttributeError.
+
+### 28.9 An alpha-only source: the tool destroyed the image and reported success
+
+**The 15 remaining false positives were all one thing, and it was not a detection problem.** Measured across this project's asset folders: 15 of 137 files have **exactly ONE unique RGB value** (max-minus-min channel span 0) and **186–256 distinct ALPHA levels**. They are monochrome glyph icons exported as a flat fill plus an alpha mask — an entirely ordinary export style. Every colour-based measure in this file is reading a uniform plane on such a file: there is no background colour to key, no transition band, no blends, and no colour steps at all (`plateau_cliff_samples` comes back **0**).
+
+**The misread was the least of it.** `detect_bg_color` returns that one flat colour, `color_mask` then matches every pixel in the frame, and the render removes the whole image. Measured on `pencil.png`: **69,925 opaque pixels in, ZERO out** — and HEAD's `--auto` printed success. The destructive run even coalesced 30 frames down to 1, and nothing objected.
+
+**Why every gate passed.** This is §26.5's rule in its purest form: *a metric that cannot fail is not a check.* Every quality measure in `verify()` asks how WELL the background was removed — leftover background, edge fringe, small-region inflation, protected-region coverage. **An empty output scores perfectly on all four**, because there is no leftover background to count, no fringe to find, no region to come back thin. Not one of them asks whether anything survived.
+
+Three fixes, at three different layers:
+
+- **Detection.** `alpha_only_source` and `source_alpha_levels` are reported, every colour-based rule abstains, and hardness is read off the alpha channel instead. The separation there is a margin of KIND: a hard cutout has exactly **2** alpha levels, these carry **186–256**. Nothing is tuned.
+- **Recommendation.** `--recommend` returns `not_applicable_reason` and sets `suggested_command` to `None`, so an autonomous run cannot paste a command that empties the file, and `--auto` exits with the explanation instead of rendering.
+- **The render itself.** `_refuse_empty_render` runs at the top of all four renderers and refuses to write a file in which nothing is opaque on any frame. The invariant is deliberately whole-file rather than per-frame — a blank frame inside an animation that fades out is normal; "no opaque pixel anywhere" is not. Nothing is written, so a good file at the output path is never overwritten by an empty one. `verify()` also reports `output_opaque_px` and an explicit `output_is_empty`.
+
+**The transferable lesson is about where I was looking.** I had filed these 15 as a P1 blocked on acquiring labelled RGBA pixel art, and was about to build an alpha-ramp *veto* to out-vote the band rules. Asking instead **why** the band was empty — rather than how to overrule it — found the data-destruction bug and made the veto unnecessary: no new measure, no new threshold, and no new corpus needed. **When a measure gives an answer you believe is wrong, establish what it is actually reading before deciding it needs outvoting.** An empty transition band was not weak evidence of hard edges; it was the absence of any evidence at all, on an input where the colour channel is blank by construction.
