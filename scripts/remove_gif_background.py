@@ -567,7 +567,7 @@ def source_transparency_is_the_background(source_trans_mask, rgb, bg_rgb, tolera
                   f'and that transparency reaches the frame border')
 
 
-def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band):
+def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band, reach=None):
     """
     The region colour-based removal is allowed to touch on an already-transparent
     source: the source's transparent pixels, plus a `band`-pixel cleanup ring --
@@ -593,10 +593,21 @@ def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band):
     if band <= 0:
         return source_trans_mask, ('removal confined to exactly the pixels the source already '
                                    'declared transparent (--source-alpha-band 0)')
+    # ⚠️ `reach` is the colour distance the REMOVAL path can actually act at, which is
+    # NOT `tolerance` when feathering is on: estimate_alpha_and_defringe works in a band
+    # of tolerance x --feather-band-multiplier, i.e. 60 at the defaults. Testing the veto
+    # at 15 while removal reaches 60 left the guarantee three quarters short, and it
+    # showed up as real loss: measured over every frame of 57 alpha-carrying assets, the
+    # feather path survived 99.71% mean / 95.24% worst against the non-feather path's
+    # 100.00% / 99.95%. A veto has to be evaluated at the radius of the thing it vetoes.
+    if reach is None:
+        reach = tolerance
     ring = ndimage.binary_dilation(source_trans_mask, structure=np.ones((3, 3), bool),
                                    iterations=int(band)) & ~source_trans_mask
     interior = ~source_trans_mask & ~ring          # opaque art, away from the boundary
-    if interior.any() and color_mask(rgb[interior].reshape(1, -1, 3), bg_rgb, tolerance).any():
+    # color_mask is a pure per-channel comparison (checked: no neighbourhood term), so a
+    # flat pixel list is a valid argument -- but spell it as one rather than as a fake image.
+    if interior.any() and color_mask(rgb[interior], bg_rgb, reach).any():
         return source_trans_mask, (f'the {band}px cleanup band was DROPPED: '
                                    f'{rgb_to_hex(tuple(bg_rgb))} also occurs in the artwork away '
                                    f'from the transparent boundary, so the band would delete design '
@@ -606,6 +617,54 @@ def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band):
                                         f'{rgb_to_hex(tuple(bg_rgb))} occurs nowhere in the artwork '
                                         f'except hugging the transparent boundary, which is what a '
                                         f'leftover matte fringe looks like')
+
+
+def decide_source_alpha_policy(source_trans_masks, rgb_frames, bg_rgb, tolerance, band, reach):
+    """
+    ONE policy for the whole animation. Returns (engaged, band_allowed, reason).
+
+    ⚠️ Deciding this per frame produces FLICKER, and it is not hypothetical: measured
+    over 57 alpha-carrying assets, **17 of them flip the veto branch mid-animation**
+    (one alternates keep/drop/keep/drop across consecutive frames). A scope that
+    changes between frames removes a pixel on frame 3 and keeps it on frame 4 --
+    exactly the frame-to-frame instability this project rejects error-diffusion
+    dithering for.
+
+    The reduction is deliberately asymmetric, on the safe side of each question:
+      * engaged if ANY frame's transparency reads as its background -- a frame where
+        the character happens to cover the border should not switch protection off;
+      * the cleanup band is allowed only if NO frame vetoes it -- one frame in which
+        the background colour is also design is enough to make the ring unsafe for
+        the whole animation.
+    """
+    engaged_frames, veto_frames, first_why, first_veto = 0, 0, None, None
+    for st, rgb in zip(source_trans_masks, rgb_frames):
+        ok, why = source_transparency_is_the_background(st, rgb, bg_rgb, tolerance)
+        if not ok:
+            continue
+        engaged_frames += 1
+        if first_why is None:
+            first_why = why
+        if band > 0:
+            _, band_why = build_source_alpha_scope(st, rgb, bg_rgb, tolerance, band, reach)
+            if band_why.startswith(f'the {band}px cleanup band was DROPPED'):
+                veto_frames += 1
+                if first_veto is None:
+                    first_veto = band_why
+    if not engaged_frames:
+        return False, False, 'no frame\'s transparency reads as its background'
+    n = len(source_trans_masks)
+    reason = (f'{first_why} (holds on {engaged_frames} of {n} frame(s))')
+    if band <= 0:
+        return True, False, reason + '. Removal confined to exactly the source\'s own transparency (--source-alpha-band 0)'
+    if veto_frames:
+        return True, False, (reason + f'. The {band}px cleanup band is DROPPED for the whole '
+                             f'animation because {veto_frames} of {engaged_frames} engaged frame(s) '
+                             f'have that colour in the artwork away from the boundary -- one such '
+                             f'frame makes the ring unsafe for all of them, and deciding per frame '
+                             f'would flicker')
+    return True, True, (reason + f'. A {band}px cleanup band is included: no engaged frame has that '
+                        f'colour in the artwork away from the transparent boundary')
 
 
 def warn_if_source_has_transparency(im0, input_path):
@@ -1170,6 +1229,21 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # RENDER-side guard (_refuse_empty_render) is the backstop; this is the diagnosis.
     _alpha_only_source = bool(_has_transparent_px and _rgb_span <= 8)
 
+    # Does the source's OWN transparency already stand in for its background? If so there is
+    # nothing for colour-based removal to do, and the RGB stored under those pixels is
+    # padding rather than a background colour -- keying on it deletes any artwork that shares
+    # the value, which on real sprites is the black outline (SS28.14). This has to reach
+    # --recommend, not just the renderer: an autonomous run pastes suggested_command
+    # verbatim, and a command that reads as "remove the background" while being a no-op is
+    # the kind of confidently-wrong output this whole project is aimed at.
+    _src_bg_transparent, _src_bg_why = False, None
+    if _has_transparent_px and not _alpha_only_source:
+        im.seek(0)
+        _st0 = get_source_transparency_mask(im)
+        if _st0 is not None and _st0.any():
+            _src_bg_transparent, _src_bg_why = source_transparency_is_the_background(
+                _st0, all_rgb_frames[0], bg_rgb, tolerance)
+
     _eh0 = measure_edge_hardness(_hf(0), bg_rgb, tolerance)
     _eh_ratios = [measure_edge_hardness(_hf(i), bg_rgb, tolerance)['ratio']
                   for i in sample_idxs]
@@ -1317,6 +1391,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'hard_edged_suppressed_notes': _soft_notes,
         'measured_on_alpha_composite': bool(_partial_alpha_seen),
         'alpha_only_source': _alpha_only_source,
+        'source_background_already_transparent': _src_bg_transparent,
+        'source_background_transparent_reason': _src_bg_why,
         'source_alpha_levels': int(_alpha_levels),
         'source_is_hard_alpha_cutout': _hard_alpha_cutout,
     })
@@ -1709,6 +1785,20 @@ def recommend(input_path, tolerance=15):
     suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.{_ext}>"
     if flags:
         suggested += " " + " ".join(flags)
+
+    if _eh.get('source_background_already_transparent'):
+        # Not a not_applicable_reason: unlike an alpha-only source, running the command here is
+        # SAFE (removal is confined to the source's own alpha since SS28.14) and a format/size
+        # conversion is a legitimate reason to run it. What would be dishonest is presenting it
+        # as background removal, so the evidence says plainly that there is nothing to remove.
+        evidence.insert(0, (
+            "NOTHING TO REMOVE: this source's background is ALREADY transparent -- "
+            f"{_eh.get('source_background_transparent_reason')}. Colour-based removal is confined "
+            "to the region that alpha already covers, so the command below will leave the artwork "
+            "intact and change little besides the container. Run it only if you want a format "
+            "change, a size cap, or a leftover matte fringe cleaned up. If a run reports ART LOSS "
+            "on this input, something overrode that confinement -- check --ignore-source-alpha and "
+            "--edge-cleanup-erosion before reaching for --bg-color."))
 
     _not_applicable = None
     if _eh.get('alpha_only_source'):
@@ -2679,6 +2769,17 @@ def compute_alpha_mask(rgb, protected, args, removal_scope=None):
         # reason the bayer/none modes above exist. See references/lessons.md
         # SS16 for the measured case that motivated this.
         alpha = np.clip(np.rint(alpha_f * 255.0), 0, 255).astype(np.uint8)
+        if removal_scope is not None:
+            # ⚠️ THE THIRD RETURN. This branch is the DEFAULT for every 8-bit-alpha
+            # container (line ~5131 sets dither_mode='continuous' for .webp/.avif/
+            # .apng/.png), so it is the one a PNG sprite actually takes -- and the
+            # first version of this scope logic applied it at the other two returns
+            # only. The result: --pixel-art (feather off) survived 100% while a
+            # plain PNG run still lost 2,455 outline pixels, and the log said
+            # "SOURCE ALPHA HONOURED" both times. Exactly the inverse-spelling
+            # failure SS28.13 records, committed while documenting it.
+            alpha = np.where(removal_scope, alpha, 255).astype(np.uint8)
+            recolored = np.where(removal_scope[..., None], recolored, rgb)
         return alpha, recolored
     if dither_mode == 'none':
         # Hard 50% cutoff on the ALREADY-defringed alpha, instead of a
@@ -3564,8 +3665,12 @@ def verify(input_path, output_path, tolerance=15):
                 f"The SOURCE already had transparency, so its {_in_opaque} opaque pixels were the "
                 f"artwork -- and only {_out_opaque} survived ({_survival:.1%}). Colour-based "
                 f"removal has eaten real art: the background colour detected from the RGB stored "
-                f"under the transparent pixels also matches part of the design. Pass an explicit "
-                f"--bg-color, or accept that this source needs no background removal at all.")
+                f"under the transparent pixels also matches part of the design. **This should no "
+                f"longer be reachable on a default run** -- removal is confined to the source's own "
+                f"alpha since SS28.14 -- so seeing it means either --ignore-source-alpha was passed, "
+                f"or the restriction did not engage (its transparency does not reach the frame "
+                f"border, or the colour under it is not the detected background). Check those two "
+                f"conditions before reaching for an explicit --bg-color.")
     if _out_opaque == 0:
         report['output_is_empty'] = (
             'EVERY pixel of every frame is transparent -- the output is empty, not clean. No '
@@ -5190,6 +5295,52 @@ def process(input_path, output_path, args, diagnostics=None):
     any_source_transparency = False
     source_alpha_scope_reasons = []
 
+    # ONE policy for the whole animation. Deciding per frame made 17 of 57 measured
+    # assets flip the veto branch mid-animation, which changes what is removable
+    # between consecutive frames -- flicker, the same instability this project
+    # rejects error-diffusion dithering for. The reach passed here is the distance
+    # the removal path can actually act at, which is tolerance x the feather band
+    # multiplier when feathering is on, not tolerance.
+    _sa_band = int(getattr(args, 'source_alpha_band', SOURCE_ALPHA_BAND_DEFAULT))
+    _sa_reach = (int(round(args.tolerance * getattr(args, 'feather_band_multiplier', 4.0)))
+                 if getattr(args, 'feather', True) else args.tolerance)
+    _sa_engaged = _sa_band_ok = False
+    if not getattr(args, 'ignore_source_alpha', False) and any(
+            m is not None and m.any() for m in source_trans_masks):
+        _sa_engaged, _sa_band_ok, _sa_reason = decide_source_alpha_policy(
+            source_trans_masks, rgb_frames_raw, hex_to_rgb(args.bg_color),
+            args.tolerance, _sa_band, _sa_reach)
+        if _sa_engaged:
+            source_alpha_scope_reasons.append(_sa_reason)
+
+    def _scope_for(st):
+        if not _sa_engaged or st is None or not st.any():
+            return None
+        if not _sa_band_ok:
+            return st
+        return ndimage.binary_dilation(st, structure=np.ones((3, 3), bool),
+                                       iterations=_sa_band)
+
+    # Edge-cleanup erosion exists to trim the mis-coloured ring that the feathering
+    # math leaves behind. When the silhouette came from the SOURCE's own alpha there
+    # is no such ring to trim, and erosion just eats the artwork: measured on a real
+    # sprite written to .gif, 1,642 of 7,130 opaque pixels survived (23.0%) with the
+    # scope working perfectly -- the colour path kept every pixel and erosion then
+    # removed three quarters of them. Same "explicit wins, and we say so" contract
+    # --pixel-art uses.
+    if _sa_engaged and args.edge_cleanup_erosion > 0:
+        if 'edge_cleanup_erosion' in typed_option_names():
+            print(f"NOTE: the source's own alpha defines the silhouette, so edge-cleanup erosion "
+                  f"has nothing to trim -- but you passed {args.edge_cleanup_erosion} explicitly, "
+                  f"so it stands. It will shave {args.edge_cleanup_erosion}px off real artwork.",
+                  file=sys.stderr)
+        else:
+            print(f"edge-cleanup erosion set to 0 (was {args.edge_cleanup_erosion}): the source's "
+                  f"own alpha defines the silhouette, so there is no feathering fringe to trim and "
+                  f"erosion would delete artwork. Pass --edge-cleanup-erosion explicitly to "
+                  f"override.", file=sys.stderr)
+            args.edge_cleanup_erosion = 0
+
     for i in range(n_frames):
         rgb = rgb_frames_raw[i]
         if recovered_rgb is not None:
@@ -5197,8 +5348,30 @@ def process(input_path, output_path, args, diagnostics=None):
             # opaque), so it needs neither protected_masks nor the feather path.
             alpha, rgb_out = recovered_alpha[i], recovered_rgb[i]
             source_trans_mask = source_trans_masks[i]
+            # This branch keys on the background colour too -- build_art_palette
+            # rejects art colours near it and the flood starts from the border --
+            # so it has the SAME data-loss failure, measured at 4,678 of 7,130
+            # opaque (65.6%) on the sprite from SS28.13. It needs its own
+            # treatment rather than the colour path's, because the whole point of
+            # palette unmixing is to produce legitimate PARTIAL alpha for an
+            # interior fade: forcing everything outside the scope fully opaque
+            # would delete the feature. So outside the scope a pixel may keep any
+            # recovered partial alpha but may NOT be made fully transparent --
+            # an interior pixel reaching exactly 0 means "entirely background
+            # coloured", which on a padding-coloured source is the outline.
             if source_trans_mask is not None and source_trans_mask.any():
                 any_source_transparency = True
+                scope = _scope_for(source_trans_mask)
+                if scope is not None:
+                    # Palette unmixing produces legitimate PARTIAL alpha for an
+                    # interior fade, so forcing everything outside the scope fully
+                    # opaque would delete the feature. Outside the scope a pixel may
+                    # keep any recovered partial alpha but may not be made FULLY
+                    # transparent: an interior pixel reaching exactly 0 means
+                    # "entirely background coloured", which on a padding-coloured
+                    # source is the outline. Measured before the fix: 4,678 of 7,130.
+                    alpha = np.where(~scope & (alpha == 0), 255, alpha)
+                    rgb_out = np.where(scope[..., None], rgb_out, rgb)
                 alpha = np.where(source_trans_mask, 0, alpha)
             rgb_frames.append(rgb_out)
             alpha_frames.append(alpha)
@@ -5214,17 +5387,7 @@ def process(input_path, output_path, args, diagnostics=None):
         # against artwork. Restricting rather than refusing is what keeps this
         # useful on a PARTIAL cut, and it degrades to "change nothing" when the
         # source's alpha is already complete.
-        removal_scope = None
-        if not getattr(args, 'ignore_source_alpha', False):
-            st = source_trans_masks[i]
-            engaged, why = source_transparency_is_the_background(
-                st, rgb, hex_to_rgb(args.bg_color), args.tolerance)
-            if engaged:
-                band = getattr(args, 'source_alpha_band', SOURCE_ALPHA_BAND_DEFAULT)
-                removal_scope, band_why = build_source_alpha_scope(
-                    st, rgb, hex_to_rgb(args.bg_color), args.tolerance, band)
-                source_alpha_scope_reasons.append(why + '. ' + band_why)
-
+        removal_scope = _scope_for(source_trans_masks[i])
         alpha, rgb_out = compute_alpha_mask(rgb, protected, args, removal_scope=removal_scope)
 
         source_trans_mask = source_trans_masks[i]
@@ -5245,8 +5408,7 @@ def process(input_path, output_path, args, diagnostics=None):
         # The first version announced "plus a 2px cleanup band" from the flag value
         # and then appended a reason saying the band had been DROPPED -- one
         # sentence contradicting the next, which is how a log stops being read.
-        print(f"SOURCE ALPHA HONOURED on {len(source_alpha_scope_reasons)} of {n_frames} "
-              f"frame(s). {source_alpha_scope_reasons[0]}. "
+        print(f"SOURCE ALPHA HONOURED. {source_alpha_scope_reasons[0]}. "
               f"Pass --ignore-source-alpha to remove by colour across the whole frame anyway.",
               file=sys.stderr)
 

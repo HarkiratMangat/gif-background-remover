@@ -1457,6 +1457,25 @@ So the veto identifies exactly the assets that were losing artwork and takes all
 
 **The inverse spelling, again (§28.13's own lesson, one level up).** `get_source_transparency_mask` handled a GIF palette transparency index and an RGB colour tuple, and returned `None` for a plain RGBA source — the most common spelling of all — so every transparent PNG looked like it had no source transparency. Only `alpha == 0` counts: a partially transparent pixel is a real antialiasing ramp with real colour in it, and treating a soft edge as "the source declared this nothing" would throw away the very ramp §28.5 exists to preserve.
 
+**⚠️ FOUR PATHS, and the first fix reached only one of them. This is the part worth reading.** The scope was written into `compute_alpha_mask`, measured on the sprite with `--pixel-art`, and reported as fixed. A sequential-thinking audit pass then found that every other path still lost the artwork, each for a different reason, and each while the log printed `SOURCE ALPHA HONOURED`:
+
+| path | before the audit | why | after |
+|---|---|---|---|
+| non-feather (`--pixel-art`) | 100.0% | the branch that was actually measured | 100.0% |
+| **8-bit alpha (`.png`/`.webp`/`.avif`/`.apng`)** | **65.6%** | `dither_mode='continuous'` is a **THIRD return** in `compute_alpha_mask`, and the scope was applied at the other two | 100.0% |
+| **`--recover-fade-alpha`** | **65.6%** | that branch `continue`s before the scope code; `build_art_palette` rejects art colours near the background and the flood starts at the border, so it has the same bug in a different spelling | 100.0% |
+| **`.gif` output** | **23.0%** | the scope worked and then `--edge-cleanup-erosion 2` shaved the silhouette | 100.0% |
+
+**The GIF number is the one to remember: 1,642 of 7,130 pixels survived with the scope working perfectly.** Edge-cleanup erosion exists to trim the mis-coloured ring that the *feathering math* leaves behind. When the silhouette came from the source's own alpha there is no such ring, and erosion is pure deletion. It is now set to 0 whenever the source-alpha policy engages, unless typed explicitly — the same "explicit wins, and we say so" contract `--pixel-art` uses.
+
+**And the veto was being tested at the wrong radius.** `tolerance` is 15; the feather path acts across `tolerance × --feather-band-multiplier` = **60**. A veto evaluated at 15 while removal reaches 60 is three quarters short, and it showed: over every frame of 57 assets the feather path survived **99.71% mean / 95.24% worst** against the non-feather path's 100.00% / 99.95%. The veto now takes the reach the running path will actually use. **A veto has to be evaluated at the radius of the thing it vetoes.**
+
+**Per-frame decisions flicker.** Deciding engagement and the veto per frame made **17 of 57 assets flip branch mid-animation** — one alternates keep/drop/keep/drop on consecutive frames — so a pixel would be removed on frame 3 and kept on frame 4. The policy is now computed once for the whole animation, reduced asymmetrically on the safe side of each question: engaged if ANY frame's transparency reads as its background (a frame where the character covers the border must not switch protection off), and the band allowed only if NO frame vetoes it.
+
+**After all four: 100.00% mean and 100.00% worst, on both branches, across 57 assets and every frame of each.** The earlier "all 25 to 100.0%" was true of the one branch it was measured on, which is exactly the §28.5 mistake — a measurement taken on the path you chose rather than the path that runs.
+
+**`--recommend` now says there is nothing to remove.** `analyze()` reports `source_background_already_transparent` with its reason, and the recommendation leads with `NOTHING TO REMOVE`. Deliberately NOT a `not_applicable_reason` like §28.9's: running the command here is safe and a format change or size cap is a real reason to. What would be dishonest is presenting a no-op as background removal, and an autonomous run reads that evidence.
+
 **Escape hatch and reporting.** `--ignore-source-alpha` restores the old whole-frame behaviour for a source whose own alpha is wrong. Every run that engages the restriction prints what it did and why on stderr — the first version of that message announced the band from the flag value and then appended a reason saying the band had been dropped, one sentence contradicting the next, which is how a log stops being read.
 
 ### 28.15 Labelling the two populations that had been finding the defects
