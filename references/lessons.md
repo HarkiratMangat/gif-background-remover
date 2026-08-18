@@ -1249,6 +1249,17 @@ Per §23.8's rule, every candidate is scored against the 25/6 labelled corpus AN
 
 The threshold sits between 0.186 and 0.356, deliberately nearer the negative end: a false positive applies `--pixel-art` to antialiased art — no feather, no erosion, nearest-neighbour resize, §18's catastrophe — while a false negative is only the status quo.
 
+**Measure-level scoring is not the release number.** `appears_hard_edged` is an OR of four rules, so the only honest figure is what `analyze()` returns end to end. Run over all 155 assets under HEAD and under the branch, zero errors:
+
+| population | n | HEAD says hard-edged | branch says hard-edged |
+|---|---|---|---|
+| labelled pixel art | 25 | 18 | **22** |
+| labelled antialiased | 6 | 0 | **0** |
+| corpus originals | 5 | 0 | **0** |
+| vector emoji | 119 | 30 | **18** |
+
+Every one of the four verdicts that flipped to TRUE is a labelled pixel-art asset. Every one of the twelve emoji verdicts that flipped to FALSE did so through §28.5's alpha composite — so the alpha bug was mis-recommending `--pixel-art` for **12 of 119 vector icons (10%)** at v5.4.0, not the two the spot check happened to catch. On the 34 files in the labelled folder, `--recommend`'s suggested flags changed on exactly 4, each of them gaining `--pixel-art` and nothing else, with no flag removed and no format changed anywhere.
+
 `plateau_cliff_ratio >= 0.30` turned out to be a strict SUPERSET of `change_line_density < 0.5` on this corpus: all 18 assets the density rule catches score exactly 1.000 on the cliff ratio. That matters twice over — it is why §28.6's suppression costs no detection, and it means the density rule now contributes only in the thin-sample regime described in §28.4.
 
 ### 28.3 The three it still misses, and the obvious repair, measured and rejected
@@ -1276,6 +1287,10 @@ Measured on `exchange.png`, a real 512x512 RGBA icon with 1.5% partial-alpha pix
 The fix composites over the DETECTED BACKGROUND COLOUR, which reconstructs exactly what a viewer sees, and therefore the image the removal step will actually face. Opaque sources — every asset in the labelled corpus and every corpus original — take the identical path, because there is no partial alpha to composite. `edge_hardness` now reports `measured_on_alpha_composite` so the choice is visible.
 
 **How it was found is the transferable part.** The first validation of the cliff measure fed the function frames *I* had composited, sampled 5 per asset. The product reads up to 40 raw frames. Re-scoring through the product's own frame handling was what surfaced the single false positive, and that false positive was the alpha bug. **A measure validated on pixels the product never sees has not been validated** — the same shape as §24 (a path only the sandbox takes) and §23.6 (a fixture that agreed with the theory because both came from me).
+
+⚠️ **The composite fixes the ramps that CARRY COLOUR, and there is a second class it cannot reach.** 18 emoji still come back hard-edged on the branch, all of them through the pre-existing "no transition band at all" rule and all of them identically flagged at HEAD. 15 are RGBA icons whose **RGB is zeroed wherever alpha is low** — a common PNG exporter behaviour. `detect_bg_color` then reads the background as `(0,0,0)` (the transparent region is 12–73% of these images), and compositing over black reproduces black: measured on `pencil.png`, `left.png` and `layer-plus.png`, **100% of the ramp pixels land within the tolerance of the detected background, median distance 0**. The art colour was multiplied out at export; **no measure in RGB space can ever see those ramps, because the information is only in the alpha channel.** The contrast case is `delete.png`, whose ramp does carry colour — 67% of its ramp pixels land inside the band window — which is exactly why the composite rescued it and not the other 15.
+
+**That is the concrete case for §23.9's other suggestion, "measure the alpha ramp's shape".** For an RGBA source the ramp is directly available and needs no inference: 0 < alpha < 255 IS partial coverage, which is what antialiasing is — unlike a blend ratio, it is an observation rather than a proxy, so it would not repeat §23.3's veto problem. It is NOT shipped here for one reason: the population that would falsify it is **RGBA pixel art**, and this project has exactly zero labelled examples of it. Shipping a veto whose failure mode lives in a population with no representation in the sample is the mistake §23.8 exists to prevent. Filed with a named first slice.
 
 ⚠️ **A 1-bit-alpha source is a different case and is NOT a bug.** An already-processed GIF from this tool (`love_transparent.gif`) reads as hard-edged, and correctly: writing the GIF destroyed the ramp, so the FILE genuinely has hard edges even though the ARTWORK is antialiased. Compositing cannot help — there is no partial alpha left to composite. This also means the "presumed antialiased by provenance" emoji population needs stratifying: a processed output is not a counterexample.
 
