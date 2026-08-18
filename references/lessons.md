@@ -929,7 +929,7 @@ Against the previous round: gift leftover 14,243 → 0 and coverage 0.874 → 1.
 
 ## 22. Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured
 
-**2026-08-17.** Two items were carried in the development repo's backlog on the premise that `military-tag.gif` was "not on this machine". It is — `~/Downloads/Diors-builds Emojis/` — and a directory search found it in seconds. **A blocker recorded as "asset unavailable (checked)" is worth re-checking before it is inherited by another session**; this one had already survived one handoff and would have survived another.
+**2026-08-17.** Two items were carried in the development repo's backlog on the premise that `military-tag.gif` was "not on this machine". It is — a directory search in the development repo's own asset folders found it in seconds. **A blocker recorded as "asset unavailable (checked)" is worth re-checking before it is inherited by another session**; this one had already survived one handoff and would have survived another.
 
 ### 22.1 The `protected_region_coverage` false positive is fixed, and reproducing it proved it
 
@@ -1381,7 +1381,7 @@ Testing §28.3 needed a treatment that does not disturb what it measures, so: **
 
 ### 28.12 524 real sprites: the biggest gain of the session, and a regression in my own new rule
 
-**2026-08-18.** Harkirat supplied two populations this project had never had: **524 files from real itch.io sprite packs** (pixel art by provenance — 198 hard-alpha, 294 soft-alpha, 32 opaque) and 37 background-removed assets. Scored end to end through `analyze()`, HEAD against the branch:
+**2026-08-18.** Harkirat supplied two populations this project had never had: **524 files from real itch.io sprite packs** (pixel art by provenance — 198 hard-alpha, 294 soft-alpha, 32 opaque) and 37 background-removed assets. (Both live in the development repo and are NOT part of this package — the numbers below are provenance for the rules, not something you can re-run here.) Scored end to end through `analyze()`, HEAD against the branch:
 
 | population | n | HEAD detected | branch detected |
 |---|---|---|---|
