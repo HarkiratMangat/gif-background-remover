@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~46,000 tokens across 27 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~49,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -55,6 +55,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 25. [`--tumble-safe` strands the background it does not own — 56% left behind](#25---tumble-safe-strands-the-background-it-does-not-own--56-left-behind)
 26. [A degenerate outline candidate won selection, so a design region got no protection at all](#26-a-degenerate-outline-candidate-won-selection-so-a-design-region-got-no-protection-at-all)
 27. [Three roles for one colour: the structural route measured and ruled out](#27-three-roles-for-one-colour-the-structural-route-measured-and-ruled-out)
+28. [The fifth pixel-art discriminator, and what the first four never tested](#28-the-fifth-pixel-art-discriminator-and-what-the-first-four-never-tested)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -96,6 +97,12 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | An outline colour that "verifies" but fills the whole canvas | §26 |
 | The same colour needs to be removed here, kept there, and SEE-THROUGH somewhere else | §27 (`--translucent-region`; nothing in the pixels can infer it) |
 | Glass, a window, a transparent bag reading as solid | §27 |
+| Dithered or photographic pixel art called antialiased | §28 (`plateau_cliff_ratio` is the measure that reaches it) |
+| A pixel-art discriminator scores brilliantly and you want to ship it | §28.2 (score it on the emoji population too, or it is not evidence) |
+| `--pixel-art` recommended for a plain flat vector icon | §28.6 (a low `change_line_density` on a large simple shape) |
+| A PNG/WebP source that already has transparency reads as hard-edged | §28.5 (the ramp is in ALPHA; RGB alone cannot see it) |
+| `--recommend`'s `--pixel-art` evidence cites numbers that do not match the verdict | §28.7 (fixed — it now names the rule that fired) |
+| `--analyze` / `--recommend` / `--verify` crashes on a static JPEG | §28.8 (`n_frames` on a bare attribute) |
 | Considering a NEW pixel-art discriminator | §23.8 (score it against real antialiased icons, not only the labelled corpus) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -1218,3 +1225,72 @@ Naming the region by hand is the whole mechanism, so the restrictions matter mor
 Verified by compositing over a dark solid rather than a checkerboard (§16's rule — a checkerboard camouflages exactly this): the bag material reads see-through, the popcorn and the bunny stay opaque.
 
 **Known limit, and it is inherent:** a rectangle cannot follow a shape that another same-colour element overlaps. On this asset the bunny's white body sits partly inside any rectangle large enough to cover the whole bag, so it needs several `;`-separated specs. That is a cost of the region being hand-drawn, and the measurement above is why it has to be.
+
+---
+
+## 28. The fifth pixel-art discriminator, and what the first four never tested
+
+**2026-08-18.** §23.5 left 7 of 25 labelled pixel-art assets undetected, all dithered or photographic. §23.8 and §23.9 then killed two more candidates on the vector-emoji population and concluded that the whole "where does the image change along a scan line" family was exhausted, recommending palette structure or the alpha ramp instead. What actually worked was neither — it was the same family, **conditioned on an edge**. Getting there also turned up four defects that had nothing to do with the new measure and everything to do with how the old ones were being fed.
+
+### 28.1 The measure: what share of the STRONG steps are plateau-to-plateau cliffs
+
+`measure_plateau_cliff_ratio` walks both axes and looks only at pairs of adjacent pixels differing by 40 or more on some channel — an *edge*, not an antialiasing increment. Such a step counts as a **cliff** when both sides sit inside a flat run of at least 2 px. Upscaled pixel art transitions block-to-block and is nearly all cliffs. A 1 px antialiasing ramp cannot be one, because the ramp pixel is a plateau of length 1 by construction.
+
+**The conditioning is the load-bearing part, not the statistic.** §23.9's diagnosis was that the four dead measures asked the wrong question; the sharper reading is that they asked it *everywhere*. Duplicate-line density fired on 37 of 145 emoji because a flat vector fill has large areas where the next column is genuinely identical — and that area contains no strong steps at all, so it contributes nothing here. Pixel-art-ness is a property of EDGES: `--pixel-art` exists because feathering, erosion and LANCZOS destroy hard edges (§4, 0% survival on a 31 px shape). A measure of global uniformity was never measuring the thing the decision depends on. It is entirely possible that duplicate-line density would also have survived had it been localised the same way; the lesson to carry forward is **localise to where the decision lives**, not "prefer palette measures over geometric ones".
+
+### 28.2 Scored on both populations, because one of them cannot falsify it
+
+Per §23.8's rule, every candidate is scored against the 25/6 labelled corpus AND the vector-emoji population the labelled corpus cannot represent. Here that is 122 emoji plus the 5 corpus originals (`love`, `heart`, `gift`, `explosion`, `crystal`), 133 negatives in total:
+
+| | pixel art found | false positives | lowest true positive | highest negative |
+|---|---|---|---|---|
+| shipped v5.4.0 (`change_line_density` etc.) | 18/25 | see §28.6 | — | — |
+| `plateau_cliff_ratio >= 0.30` | **22/25** | **0/133** | 0.356 | 0.186 |
+
+The threshold sits between 0.186 and 0.356, deliberately nearer the negative end: a false positive applies `--pixel-art` to antialiased art — no feather, no erosion, nearest-neighbour resize, §18's catastrophe — while a false negative is only the status quo.
+
+`plateau_cliff_ratio >= 0.30` turned out to be a strict SUPERSET of `change_line_density < 0.5` on this corpus: all 18 assets the density rule catches score exactly 1.000 on the cliff ratio. That matters twice over — it is why §28.6's suppression costs no detection, and it means the density rule now contributes only in the thin-sample regime described in §28.4.
+
+### 28.3 The three it still misses, and the obvious repair, measured and rejected
+
+`Pixel Saber` 0.001 · `pandapanda…` 0.103 · `DFB2A5D7` 0.135. All three are pixel art whose block structure has been **degraded by re-encoding**, and the raw pixels say so: inside one of panda's blocks, `184,159,159` sits next to `185,161,161` — a genuinely flat block that exact equality scores as no plateau at all. DFB2A5D7's blocks are separated by 1 px grey seams, which is literally a 1 px ramp however the art was drawn.
+
+So the obvious repair is a **tolerant** plateau: count near-equal as flat. It was implemented and scored, and it fails on both counts. It does not rescue the three (panda 0.103 → 0.144, DFB2A5D7 0.135 → 0.167, still far under any usable threshold) and it MANUFACTURES a false positive: `GIF Selections`, labelled antialiased, goes 0.078 → 0.497 at tolerance 4 and → 0.864 at tolerance 8, because loosening the plateau test lets a slow gradient count as flat. **Do not re-attempt tolerant plateaus.** Exact equality is not an oversight; it is what keeps the measure from reading a gradient as a block.
+
+### 28.4 A ratio computed from 177 samples is not a measurement
+
+`GIF Selections` has only ~180 strong steps in a 500x500 frame, and its cliff ratio swings wildly across frames as a result. It is reported as `plateau_cliff_samples` and gated: below 500 strong steps the cliff ratio may not produce a hard-edged verdict. The floor costs nothing — the lowest sample count among the 22 detected assets is 1,642 — and it follows the standing rule that a check which cannot be made reliable should say so rather than return a confident wrong answer (§13, §16, §17).
+
+Note precisely what the count measures: it is the MEDIAN across sampled frames, so an animation whose art enters late has a low median for a reason that has nothing to do with resolution. That is a false-negative direction, so it is safe.
+
+### 28.5 Every hardness measure was reading RGB with the alpha thrown away
+
+**This is the defect the new measure did not cause and did expose.** `analyze()` builds its frames as `np.array(im.convert('RGB'))`. For a source that already carries an ALPHA channel, the antialiasing lives in alpha — and `convert('RGB')` drops alpha without compositing, so a partially transparent edge pixel keeps its full-strength art colour and **the ramp vanishes**. Every hardness measure then sees a hard silhouette that does not exist.
+
+Measured on `exchange.png`, a real 512x512 RGBA icon with 1.5% partial-alpha pixels: `plateau_cliff_ratio` **0.320 read straight from RGB against 0.000 composited** — the difference between "pixel art" and "obviously not". It is not confined to the new measure: at HEAD, `exchange.png` and `delete.png` both come back `appears_hard_edged: true`, so v5.4.0 recommends `--pixel-art` for two ordinary antialiased vector icons.
+
+The fix composites over the DETECTED BACKGROUND COLOUR, which reconstructs exactly what a viewer sees, and therefore the image the removal step will actually face. Opaque sources — every asset in the labelled corpus and every corpus original — take the identical path, because there is no partial alpha to composite. `edge_hardness` now reports `measured_on_alpha_composite` so the choice is visible.
+
+**How it was found is the transferable part.** The first validation of the cliff measure fed the function frames *I* had composited, sampled 5 per asset. The product reads up to 40 raw frames. Re-scoring through the product's own frame handling was what surfaced the single false positive, and that false positive was the alpha bug. **A measure validated on pixels the product never sees has not been validated** — the same shape as §24 (a path only the sandbox takes) and §23.6 (a fixture that agreed with the theory because both came from me).
+
+⚠️ **A 1-bit-alpha source is a different case and is NOT a bug.** An already-processed GIF from this tool (`love_transparent.gif`) reads as hard-edged, and correctly: writing the GIF destroyed the ramp, so the FILE genuinely has hard edges even though the ARTWORK is antialiased. Compositing cannot help — there is no partial alpha left to composite. This also means the "presumed antialiased by provenance" emoji population needs stratifying: a processed output is not a counterexample.
+
+### 28.6 A low density and a low cliff ratio cannot both be true of pixel art
+
+`add.png`, a 512x512 vector icon: `change_line_density` **0.447** — below the 0.5 floor, so v5.4.0 calls it hard-edged and recommends `--pixel-art` — against `plateau_cliff_ratio` **0.070** over 3,737 strong steps, a band ratio of **16.079** and a blend ratio of **2.960**, the last two emphatically antialiased. Checked by eye from an edge-dense crop upscaled NEAREST (the `others/LABELS.json` method): a large flat green field meeting white through a single grey ramp column. Its low density comes from having barely any detail, not from a pixel grid.
+
+The rule that resolves it is an **entailment, not a tuned margin**: a density below 0.5 means the image changes only every few scan lines — blocks wider than one pixel — which *entails* plateaus of 2 px or more at each edge, i.e. a high cliff ratio. When the cliff ratio says the opposite on a decent sample, the low density is coming from something else. So `change_line_density < 0.5` is dispositive UNLESS the cliff measure has the samples to contradict it (≥ 500 steps and ratio < 0.30). All 18 assets the density rule detects score cliff 1.000, so this costs no detection, and the suppressed evidence is reported rather than dropped (`hard_edged_suppressed_notes`).
+
+**Note the asymmetry that keeps it safe.** §23.3 established that the blend ratio must never VETO a verdict, because on coloured backgrounds its "blends" are palette collisions. This is not that: the cliff ratio may only suppress the density rule, both measures are colour-blind block-structure measures, and with a thin sample the density rule still stands alone.
+
+### 28.7 The evidence string described a rule that had not been the rule since v5.0.0
+
+`--recommend` printed, for EVERY hard-edged verdict: *"Two independent measures agree: the transition band is empty in every sampled frame, AND there are essentially no background-to-art blend pixels."* `appears_hard_edged` has been an OR of several independent rules since v5.0.0. On an asset detected by `change_line_density` alone — `07761f30`, band ratio 20.895, blend 0.000 — the first half of that sentence is simply false, and on others both halves are.
+
+`analyze()` now records WHICH disjunct fired (`hard_edged_reasons`) and `--recommend` prints those. This is §26.7's rule applied to itself: an autonomous run takes the flags verbatim and a human audits the evidence, so **evidence naming a measure that did not drive the decision is worse than no evidence** — it manufactures the impression that two things were checked. Built in `analyze()` rather than re-derived in `recommend()` so the thresholds live in exactly one place.
+
+### 28.8 `--analyze` crashed on the static JPEG the skill advertises
+
+Feeding a real `.jpeg` from the asset folder to `--analyze`: `AttributeError: 'JpegImageFile' object has no attribute 'n_frames'`. The PROCESSING path learned this in v5.2.0 and reads `getattr(im0, 'n_frames', 1)` with a comment naming JPEG explicitly — but `analyze()` and `load_animation_rgba_frames()` were left on the bare attribute, so `--analyze`, `--recommend`, `--auto` and `--verify` all died with a raw traceback on exactly the static-image input v5.2.0 shipped support for.
+
+This is the handoff's **"the inverse spelling is where the bug hides"** in its purest form: the sites that needed fixing were found and fixed, and two that needed the identical fix were not, because no test ever pointed `--analyze` at a JPEG. Red-green verified: the fixed script analyses and recommends on that file, and HEAD still raises the AttributeError.

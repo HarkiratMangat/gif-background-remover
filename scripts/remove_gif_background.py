@@ -331,6 +331,70 @@ def measure_change_line_density(rgb):
     return max(_axis(rgb), _axis(np.ascontiguousarray(rgb.transpose(1, 0, 2))))
 
 
+PLATEAU_CLIFF_STRONG_STEP = 40      # a colour step this big is an EDGE, not a ramp step
+PLATEAU_CLIFF_MIN_PLATEAU = 2       # px of flat colour required on each side
+PLATEAU_CLIFF_THRESHOLD = 0.30      # at or above this, the art is hard-edged
+PLATEAU_CLIFF_MIN_SAMPLES = 500     # below this the ratio is not dispositive
+
+
+def measure_plateau_cliff_ratio(rgb, strong=PLATEAU_CLIFF_STRONG_STEP,
+                                min_plateau=PLATEAU_CLIFF_MIN_PLATEAU):
+    """Of the STRONG colour steps in this frame, what share are plateau-to-plateau cliffs?
+
+    Returns (ratio, n_strong_steps). A strong step is a pair of adjacent pixels differing by
+    `strong` on some channel -- an edge, not an antialiasing increment. It is a CLIFF when both
+    sides sit in a flat run of at least `min_plateau` px. Upscaled pixel art transitions
+    block-to-block and is nearly all cliffs; a 1px antialiasing ramp cannot be one, because the
+    ramp pixel is a plateau of length 1 by construction.
+
+    This is the FIFTH structural discriminator tried and the first to survive both populations
+    (references/lessons.md SS28). The four before it -- modal run length, integer-lattice fit,
+    duplicate-line density, gap regularity (SS23.4, SS23.8, SS23.9) -- all asked *where does the
+    image change along a scan line*, unconditionally, and all four died on the same rock: a
+    flat-fill vector icon is locally as uniform as a pixel grid, so its long uniform runs score
+    like blocks. The difference here is the CONDITIONING: uniformity is only ever counted at a
+    strong step. A vector icon's flat interior contributes nothing, because it has no strong steps
+    in it; its edges do, and they carry the ramp pixel that disqualifies them.
+
+    Measured over 158 assets -- the 31 labelled (25 pixel art / 6 antialiased), 122 vector emoji
+    from this project's own asset folders, and the 5 corpus originals:
+
+        pixel art detected      22 of 25 (lowest detected 0.356)
+        antialiased + emoji     0 of 133 false positives (highest 0.186)
+
+    0.30 sits between 0.186 and 0.356, nearer the negative end on purpose: a false positive
+    applies --pixel-art to antialiased art (no feather, no erosion, nearest resize -- SS18's
+    catastrophe), while a false negative is only the status quo.
+
+    A HIGH value is dispositive for pixel art; a LOW value proves nothing, exactly like
+    change_line_density. The three misses are all art whose blocks have been softened by
+    re-encoding -- see SS28.3.
+    """
+    m = (rgb != rgb[0, 0]).any(axis=2)
+    ys, xs = np.where(m)
+    if ys.size >= 64:
+        rgb = rgb[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    good = total = 0
+    for col in (rgb, np.ascontiguousarray(rgb.transpose(1, 0, 2))):
+        c = col.astype(np.int16)
+        n = c.shape[1]
+        if n < 2 * min_plateau + 2:
+            continue
+        step = np.abs(np.diff(c, axis=1)).max(axis=2) >= strong
+        if not step.any():
+            continue
+        flat = np.ones_like(step)
+        for j in range(1, min_plateau):
+            left = np.zeros_like(step)
+            left[:, j:] = (c[:, j:-1] == c[:, :-1 - j]).all(axis=2)
+            right = np.zeros_like(step)
+            right[:, :n - 1 - j] = (c[:, 1:n - j] == c[:, 1 + j:]).all(axis=2)
+            flat &= left & right
+        total += int(step.sum())
+        good += int((step & flat).sum())
+    return (good / max(total, 1)), total
+
+
 def measure_antialiasing_presence(rgb, bg_rgb, palette, tolerance=15, ring=3):
     """
     Fraction of near-boundary pixels that are TRUE blends of the background and
@@ -466,7 +530,14 @@ def analyze(input_path, max_samples=40, tolerance=15):
     to catch.
     """
     im = Image.open(input_path)
-    n_frames = im.n_frames
+    # A STATIC source has no n_frames -- JpegImageFile raises AttributeError outright. The
+    # PROCESSING path learned this in v5.2.0 and uses getattr (see the identical comment above
+    # its own read); analyze() and load_animation_rgba_frames() were left on the bare attribute,
+    # so --analyze, --recommend, --auto and --verify all crashed with a raw traceback on exactly
+    # the static JPEG input v5.2.0 advertised. Found by feeding a real .jpeg from the labelled
+    # asset folder. This is the handoff's "inverse spelling" failure: five sites fixed, a sixth
+    # missed, and the gates could not see it because no test ever pointed --analyze at a JPEG.
+    n_frames = getattr(im, 'n_frames', 1)
     warn_if_source_has_transparency(im, input_path)
     im.seek(0)
     rgb0 = np.array(im.convert('RGB'))
@@ -933,13 +1004,39 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # every previously recorded number; the DECISION uses the max, because
     # antialiasing is a property of the artwork -- if any frame clearly shows a
     # ramp, the art is antialiased no matter how many frames hide it.
-    _eh0 = measure_edge_hardness(rgb0, bg_rgb, tolerance)
-    _eh_ratios = [measure_edge_hardness(all_rgb_frames[i], bg_rgb, tolerance)['ratio']
+    #
+    # ONE MORE THING EVERY HARDNESS MEASURE NEEDS, and none of them had: if the source already
+    # carries an ALPHA CHANNEL, its antialiasing lives in ALPHA, not in RGB. Image.convert('RGB')
+    # drops alpha without compositing, so a partially transparent edge pixel keeps its
+    # full-strength art colour and the ramp vanishes -- every measure here then sees a hard
+    # silhouette that does not exist. Measured on a real 512x512 RGBA icon (`exchange.png`,
+    # 1.5% partial-alpha pixels): plateau_cliff_ratio 0.320 read straight from RGB against 0.000
+    # composited, i.e. the difference between "pixel art" and "obviously not". Compositing over
+    # the detected background colour reconstructs exactly what a viewer sees, which is the image
+    # the removal step will actually face. Opaque sources -- every asset in the labelled corpus --
+    # take the identical path, because there is no partial alpha to composite. SS28.5
+    _hardness_frames = dict()
+    _partial_alpha_seen = False
+    for i in sample_idxs:
+        im.seek(i)
+        _rgba = np.array(im.convert('RGBA'))
+        _a = _rgba[..., 3]
+        if not ((_a > 0) & (_a < 255)).any():
+            continue
+        _partial_alpha_seen = True
+        _f = (_a[..., None].astype(np.float32) / 255.0)
+        _hardness_frames[i] = (_rgba[..., :3].astype(np.float32) * _f
+                               + np.asarray(bg_rgb, dtype=np.float32) * (1.0 - _f)
+                               ).round().clip(0, 255).astype(np.uint8)
+    _hf = (lambda i: _hardness_frames.get(i, all_rgb_frames[i]))
+
+    _eh0 = measure_edge_hardness(_hf(0), bg_rgb, tolerance)
+    _eh_ratios = [measure_edge_hardness(_hf(i), bg_rgb, tolerance)['ratio']
                   for i in sample_idxs]
     _eh_max = max(_eh_ratios) if _eh_ratios else _eh0['ratio']
-    _art_palette = build_art_palette([all_rgb_frames[i] for i in sample_idxs], bg_rgb)
+    _art_palette = build_art_palette([_hf(i) for i in sample_idxs], bg_rgb)
     _blend_ratio = max(
-        (measure_antialiasing_presence(all_rgb_frames[i], bg_rgb, _art_palette, tolerance)
+        (measure_antialiasing_presence(_hf(i), bg_rgb, _art_palette, tolerance)
          for i in sample_idxs), default=0.0)
     # BOTH must agree before calling something hard-edged. The band ratio alone
     # produced two false positives on real vector art (SS18); requiring an
@@ -966,17 +1063,84 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # A low change-line density is dispositive on its own (see the measure's docstring for the
     # 37-asset separation and why a HIGH value proves nothing). Threshold 0.5 sits between a
     # measured 0.245 and 0.986 -- deliberately mid-gap rather than tuned to either edge.
-    _density = float(np.median([measure_change_line_density(all_rgb_frames[i])
+    _density = float(np.median([measure_change_line_density(_hf(i))
                                 for i in sample_idxs])) if sample_idxs else 1.0
-    _hard = (_no_transition_band_at_all or (_density < 0.5)
-             or ((_eh_max < 0.5) and (_blend_ratio < 0.15)))
+    # The plateau-cliff ratio is the measure that finally reaches DITHERED and photographic pixel
+    # art, which saturates change_line_density (a dither puts a change on essentially every line,
+    # so 7 of 25 labelled assets scored 0.592-1.000 and were missed). Conditioning on a strong
+    # colour step is what makes it survive the vector-emoji population that killed the four
+    # previous attempts -- see the measure's docstring and references/lessons.md SS28. Like the
+    # density, it can only ever ADD a hard-edged verdict: high is dispositive, low proves nothing.
+    _cliff_pairs = [measure_plateau_cliff_ratio(_hf(i)) for i in sample_idxs]
+    _cliff = float(np.median([r for r, _ in _cliff_pairs])) if _cliff_pairs else 0.0
+    _cliff_n = float(np.median([n for _, n in _cliff_pairs])) if _cliff_pairs else 0.0
+    # Too few strong steps and the ratio is an estimate from a handful of pixels rather than a
+    # measurement: one labelled antialiased asset has 177 of them and swings wildly. Report the
+    # count so a low-sample verdict is visible instead of silently confident (SS28.4).
+    _cliff_says_hard = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
+                        and _cliff >= PLATEAU_CLIFF_THRESHOLD)
+    # Record WHICH disjunct fired, not just that one did. `appears_hard_edged` has been an OR of
+    # several independent rules since v5.0.0, but --recommend's evidence line still described the
+    # ORIGINAL pair ("two independent measures agree: the transition band is empty AND there are
+    # no blends") for every verdict, including ones reached by change_line_density alone -- where
+    # both halves of that sentence can be false. An autonomous run takes the flags verbatim and a
+    # human audits the evidence, so evidence naming a measure that did not drive the decision is
+    # worse than none. Built here rather than re-derived in recommend() so the thresholds live in
+    # exactly one place.
+    _hard_reasons = []
+    _soft_notes = []
+    if _no_transition_band_at_all:
+        _hard_reasons.append(
+            f"no transition band at all in any sampled frame (edge_hardness ratio max "
+            f"{_eh_max:.3f})")
+    # A low density and a low cliff ratio CANNOT both be true of pixel art, and that contradiction
+    # is the only thing standing between the density rule and a measured false positive. Density
+    # below 0.5 means the image changes only every few scan lines -- blocks wider than one pixel --
+    # which ENTAILS plateaus of 2px or more on each side of an edge, i.e. a high cliff ratio. When
+    # the cliff ratio says the opposite on a decent sample, the low density is coming from
+    # something else: a large, simple, flat shape whose columns repeat because there is barely any
+    # detail, not because there is a pixel grid. Measured on `add.png`, a 512x512 vector icon:
+    # density 0.447 (reads as pixel art) against cliff 0.070 over 3,737 strong steps, band ratio
+    # 16.079 and blend ratio 2.960 (both emphatically antialiased). HEAD recommends --pixel-art
+    # for it. All 18 corpus assets the density rule detects score cliff 1.000, so this costs no
+    # detection. Note the asymmetry that keeps it safe: the cliff ratio may only SUPPRESS the
+    # density rule when it has the samples to contradict it -- with a thin sample the density rule
+    # still stands alone, which is the one regime where it is the only measure available. SS28.6
+    _cliff_contradicts = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
+                          and _cliff < PLATEAU_CLIFF_THRESHOLD)
+    if _density < 0.5 and not _cliff_contradicts:
+        _hard_reasons.append(
+            f"change_line_density {_density:.3f}, below the 0.5 floor -- the image changes only "
+            f"at block boundaries")
+    elif _density < 0.5:
+        _soft_notes.append(
+            f"change_line_density {_density:.3f} is below the 0.5 hard-edged floor, but "
+            f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps "
+            f"contradicts it: a pixel grid coarse enough to give that density would give "
+            f"plateau-to-plateau edges. Treating the low density as a large flat shape, not "
+            f"blocks (references/lessons.md SS28.6).")
+    if _cliff_says_hard:
+        _hard_reasons.append(
+            f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps, at or "
+            f"above the {PLATEAU_CLIFF_THRESHOLD:.2f} floor -- its edges are block-to-block "
+            f"cliffs, not antialiasing ramps")
+    if (_eh_max < 0.5) and (_blend_ratio < 0.15):
+        _hard_reasons.append(
+            f"a thin transition band (ratio max {_eh_max:.3f}) together with essentially no "
+            f"background-to-art blend pixels (antialiasing_blend_ratio {_blend_ratio:.3f})")
+    _hard = bool(_hard_reasons)
     edge_hardness = dict(_eh0)
     edge_hardness.update({
         'ratio_max_across_frames': round(float(_eh_max), 3),
         'ratio_min_across_frames': round(float(min(_eh_ratios)), 3) if _eh_ratios else None,
         'antialiasing_blend_ratio': _blend_ratio,
         'change_line_density': round(_density, 3),
+        'plateau_cliff_ratio': round(_cliff, 3),
+        'plateau_cliff_samples': int(_cliff_n),
         'appears_hard_edged': bool(_hard),
+        'hard_edged_reasons': _hard_reasons,
+        'hard_edged_suppressed_notes': _soft_notes,
+        'measured_on_alpha_composite': bool(_partial_alpha_seen),
     })
 
     # detect_band_interior_regions runs BEFORE the candidate-region loop and so
@@ -1029,14 +1193,14 @@ def recommend(input_path, tolerance=15):
     _blend = float(_eh.get('antialiasing_blend_ratio', 0.0))
     if _eh['appears_hard_edged']:
         flags.append('--pixel-art')
+        _reasons = _eh.get('hard_edged_reasons') or []
         evidence.append(
-            f"Hard-edged art detected -- recommending --pixel-art. Two independent "
-            f"measures agree: the transition band is empty in every sampled frame "
-            f"(edge_hardness ratio {_hardness:.3f}, max across frames "
-            f"{_hard_max:.3f}), AND there are essentially no background-to-art blend "
-            f"pixels (antialiasing_blend_ratio {_blend:.3f}, below the 0.15 floor). "
-            f"Genuine pixel art measures 0.000 on the second; the lowest real vector "
-            f"asset measured 0.538.")
+            "Hard-edged art detected -- recommending --pixel-art. What actually fired: "
+            + ("; ".join(_reasons) if _reasons else "(reason not recorded)")
+            + f". Each rule is dispositive on its own and none can veto another; the band ratio "
+              f"is {_hardness:.3f} on frame 0 and the blend ratio {_blend:.3f}, quoted here for "
+              f"context whether or not they drove the verdict "
+              f"(references/lessons.md SS23, SS28).")
     elif _hard_max < 0.5:
         # The exact false positive SS18 documents: a thin-antialiasing vector
         # export whose band ratio reads as hard-edged. Reported as evidence
@@ -1047,9 +1211,17 @@ def recommend(input_path, tolerance=15):
             f"hard-edged threshold): real background-to-art blends ARE present "
             f"(antialiasing_blend_ratio {_blend:.3f}, above the 0.15 floor), so this "
             f"is antialiased vector art with a thin band -- typical of shapes made "
-            f"mostly of straight edges -- not pixel art. --pixel-art here would "
+            f"mostly of straight edges -- not pixel art. The two block-structure measures "
+            f"agree: change_line_density {float(_eh.get('change_line_density', 1.0)):.3f} "
+            f"(hard-edged below 0.5) and plateau_cliff_ratio "
+            f"{float(_eh.get('plateau_cliff_ratio', 0.0)):.3f} over "
+            f"{int(_eh.get('plateau_cliff_samples', 0))} strong colour steps (hard-edged at or "
+            f"above {PLATEAU_CLIFF_THRESHOLD:.2f}). --pixel-art here would "
             f"disable feathering and erosion and damage the ramp "
-            f"(references/lessons.md SS1, SS18).")
+            f"(references/lessons.md SS1, SS18, SS28).")
+
+    for _note in (_eh.get('hard_edged_suppressed_notes') or []):
+        evidence.append("Hard-edged evidence weighed and set aside: " + _note)
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
@@ -2644,7 +2816,7 @@ def load_animation_rgba_frames(path):
     reflects its real transparency index).
     """
     im = Image.open(path)
-    n = im.n_frames
+    n = getattr(im, 'n_frames', 1)   # static source: JPEG raises on the bare attribute
     rgb_frames, alpha_frames, durations = [], [], []
     for i in range(n):
         im.seek(i)
