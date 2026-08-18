@@ -237,8 +237,22 @@ feathering and erosion, so applying it there is destructive. The blend ratio
 closes that gap by a margin of KIND (blends exist / do not) rather than degree.
 See `references/lessons.md` §1 and §18.1.
 
-⚠️ **Both measures are unreliable when the background is COLOURED rather than
-white**, because a solid palette colour then becomes indistinguishable from a
+**A third measure, `change_line_density`, is the one that actually works on
+pixel art** — how often the image changes as you sweep across it. Pixel art is
+drawn on a coarse grid and enlarged, so it changes only at block boundaries;
+antialiased art changes at nearly every line. It reads no colour value, so the
+palette collisions below cannot reach it. Measured over 37 labelled assets:
+antialiased **0.835-1.000**, pixel art **0.037-0.245** for 18 of 25. Below 0.5
+is dispositive for hard-edged; a HIGH value proves nothing either way, so it can
+only add a verdict, never veto one. Overall this took the detector from 17/37 to
+**30/37 with zero false positives**. §23.4
+
+⚠️ The 7 assets it still misses are all **dithered or photographic pixel art**,
+where dithering changes every line. If art is a photo mosaic or dither-shaded,
+check it by eye.
+
+⚠️ **The other two measures are unreliable when the background is COLOURED rather
+than white**, because a solid palette colour then becomes indistinguishable from a
 blend: a solid art colour near the background inflates `ratio`, and a solid
 colour lying on a background→art line inflates the blend ratio. Measured
 2026-08-17 across 8 real pixel-art assets on coloured backgrounds, **6 were

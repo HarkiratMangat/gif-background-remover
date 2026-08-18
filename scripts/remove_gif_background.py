@@ -279,6 +279,36 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
     }
 
 
+def measure_change_line_density(rgb):
+    """Fraction of scan lines that differ from the previous line -- LOW means pixel art.
+
+    Pixel art is drawn on a coarse grid and enlarged, so sweeping across it finds a change only at
+    block boundaries. Antialiased art changes at nearly every line, because an edge ramp differs
+    from its neighbour by construction.
+
+    This measure exists because BOTH of the other two are defined relative to bg_rgb, and both
+    collapse when a solid palette colour sits near the background (inflating the transition band)
+    or on a background->art line (inflating the blend ratio) -- see references/lessons.md SS23,
+    where 6 of 8 real pixel-art assets on coloured backgrounds were called antialiased, one of
+    them scoring a band ratio of 20.895, higher than any genuinely antialiased asset measured.
+    Counting WHERE the image changes never looks at a colour value, so neither collision reaches it.
+
+    It is also scale-free, which an integer-lattice fit is not: a 500x500 export of a 32px sprite
+    is a 15.625x upscale and lands on no integer grid at all. Measured across 37 labelled assets:
+    antialiased 0.986-1.000, pixel art 0.041-0.245 for 18 of 25 -- a margin of KIND, with the
+    remaining 7 (dithered or photographic pixel art, whose dithering puts noise on every line)
+    saturating at the antialiased end. So a LOW value is dispositive for pixel art; a HIGH value
+    proves nothing either way.
+    """
+    def _axis(a):
+        nz = np.flatnonzero((a != a[0, 0]).any(axis=(0, 2)))
+        if nz.size < 16:
+            return 1.0
+        sub = a[:, nz[0]:nz[-1] + 1]
+        return float((np.diff(sub.astype(np.int16), axis=1) != 0).any(axis=(0, 2)).mean())
+    return max(_axis(rgb), _axis(np.ascontiguousarray(rgb.transpose(1, 0, 2))))
+
+
 def measure_antialiasing_presence(rgb, bg_rgb, palette, tolerance=15, ring=3):
     """
     Fraction of near-boundary pixels that are TRUE blends of the background and
@@ -846,13 +876,19 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # ratio computed on top of that is measuring palette collisions. This cannot
     # reopen SS18's false positives -- those scored 7.863 and 9.008, not 0.
     _no_transition_band_at_all = (_eh_max == 0.0)
-    _hard = _no_transition_band_at_all or (
-        (_eh_max < 0.5) and (_blend_ratio < 0.15))
+    # A low change-line density is dispositive on its own (see the measure's docstring for the
+    # 37-asset separation and why a HIGH value proves nothing). Threshold 0.5 sits between a
+    # measured 0.245 and 0.986 -- deliberately mid-gap rather than tuned to either edge.
+    _density = float(np.median([measure_change_line_density(all_rgb_frames[i])
+                                for i in sample_idxs])) if sample_idxs else 1.0
+    _hard = (_no_transition_band_at_all or (_density < 0.5)
+             or ((_eh_max < 0.5) and (_blend_ratio < 0.15)))
     edge_hardness = dict(_eh0)
     edge_hardness.update({
         'ratio_max_across_frames': round(float(_eh_max), 3),
         'ratio_min_across_frames': round(float(min(_eh_ratios)), 3) if _eh_ratios else None,
         'antialiasing_blend_ratio': _blend_ratio,
+        'change_line_density': round(_density, 3),
         'appears_hard_edged': bool(_hard),
     })
 

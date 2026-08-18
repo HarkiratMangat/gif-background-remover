@@ -347,17 +347,24 @@ skill explicitly claims to support, and it fails toward the destructive setting 
 erosion + LANCZOS on hard-edged art). §18's second discriminator was validated against a synthetic
 fixture generated in-session, which is circular — this is what that circularity was hiding.
 
-**Shipped 2026-08-17 (partial):** zero transition band is now dispositive, rescuing the subset that
-scores exactly 0.000. Two assets fixed, corpus unchanged. Six remain wrong.
+**Shipped 2026-08-17 (two rounds, still partial):** (1) zero transition band is dispositive;
+(2) `change_line_density` — a geometric, palette-free measure — is dispositive below 0.5. Scored
+against 37 labelled assets: **17/37 -> 30/37, pixel art 5/25 -> 18/25, false positives 0/12
+throughout.** Corpus renders unchanged; love still byte-identical.
 
-**Next action, in order:**
-1. Try a MODAL colour-run-length (histogram peak, outlier-tolerant) as a block-grid detector —
-   genuine pixel art is a nearest-neighbour upscale of a k-grid, which is a property of the
-   GEOMETRY and therefore immune to both palette-collision failure modes. A GCD-based first
-   attempt found k=20/20/4 on three assets and collapsed to 1 on the rest (one stray run kills a
-   GCD).
-2. Score any candidate against the 9 labelled assets in `others/` BEFORE believing it.
-3. ⚠️ **Do not ship a bare blend-ratio threshold.** It looks tempting — pixel art spans
+**Remaining: 7 assets, all one class** — dithered or photographic pixel art, where dithering puts a
+change on every line and saturates the density measure (0.592-1.000).
+
+**Next action:** measure density on a dither-suppressed copy (small median filter, or count only
+changes persisting across several adjacent lines) and re-score against the same 37. The corpus and
+labels are in `local/Diors-builds Emojis/others/` with `LABELS.json` + `README.md`.
+
+**Two structural ideas were tried and scored before one was believed** (§23.4): modal run length
+is DEAD (the vector corpus scores k=19-20, so a `k>=4` rule flags all six vector icons — §18's
+catastrophe reintroduced); an integer-lattice fit is sound but narrow (0 false positives, 11/25,
+because a 500x500 export of a 32px sprite is a 15.625x upscale on no integer grid).
+
+⚠️ **Do not ship a bare blend-ratio threshold.** It looks tempting — pixel art spans
    0.000–1.074 and the antialiased corpus 1.530–2.529, so ~1.3 would score 13 of 14 — but the sole
    overlap is the jar (antialiased, 0.999) against DFB2A5D7 (pixel art, 1.074), and a threshold
    justified by a 0.075 gap between two assets is a margin of DEGREE, the exact trap §18 set out to

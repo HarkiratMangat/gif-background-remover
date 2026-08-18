@@ -2121,25 +2121,53 @@ palette collisions. This cannot reopen §18's false positives — love and heart
 
 **It is a partial fix and is documented as one.** It rescues only the subset scoring exactly zero.
 
-### 23.4 The leads for a real fix, and the trap in the better-looking one
+### 23.4 The fix that shipped: change-line density
 
-**`blend` alone nearly separates the whole set** — pixel art 0.000–1.074, antialiased corpus
-1.530–2.529. A threshold near 1.3 would get 13 of 14 right. **Do not ship that.** The single
-overlap is the jar (genuinely antialiased) at 0.999 against DFB2A5D7 (pixel art) at 1.074, and a
-threshold whose entire justification is a 0.075 gap between two assets is a margin of DEGREE — the
-exact thing §18 set out to escape and then re-introduced.
+Harkirat expanded `others/` to **31 assets**, labelled by eye into 25 pixel art and 6 antialiased
+(`others/LABELS.json`, method recorded in `others/README.md`). Adding the six-asset vector corpus
+as further negatives gives **37 labelled assets** — the first time any threshold in this skill has
+had a validation set at all.
 
-**The structural discriminator is more promising: genuine pixel art is a nearest-neighbour upscale
-of a small grid**, so it decomposes into uniform k×k blocks — a property of the geometry, not the
-palette, and therefore immune to both failure modes above. A first attempt taking the GCD of colour
-run-lengths found k=20, k=20 and k=4 on three assets and collapsed to 1 on the rest, because a
-single stray run kills a GCD. A **modal** run-length (histogram peak, tolerating outliers) rather
-than a GCD is the obvious next attempt.
+Two structural ideas were tried and scored before one was believed:
 
-`others/` is now a labelled 9-asset corpus with ground truth recorded above — any replacement
-measure should be scored against it before it is believed.
+1. **Modal colour-run length** — dead. The vector corpus scores k = **19–20**, not the 2–3 the
+   `others/` antialiased assets score, because modal run length is dominated by flat-fill area and
+   resolution, not block structure. A `k >= 4` rule would have flagged all six vector icons as
+   pixel art: §18's exact catastrophe, reintroduced.
+2. **Integer-lattice fit** (change positions congruent mod k, phase solved for) — sound but narrow.
+   Zero false positives, but only 11 of 25, because a 500x500 export of a 32px sprite is a 15.625x
+   upscale that lands on no integer grid.
 
-### 23.5 The lesson, which is the same one §18 should have learned
+**What worked is scale-free: how OFTEN does the image change as you sweep across it?** Pixel art is
+drawn on a coarse grid and enlarged by any factor, so a sweep finds a change only at block
+boundaries. Antialiased art changes at nearly every line, because an edge ramp differs from its
+neighbour by construction. It never reads a colour value, so neither palette collision reaches it.
+
+| rule | correct | pixel art found | false positives |
+|---|---|---|---|
+| v4.0.0 (band AND blend) | 17/37 | 5/25 | 0/12 |
+| §23.3 (+ zero-band short-circuit) | 19/37 | 7/25 | 0/12 |
+| **+ change-line density < 0.5** | **30/37** | **18/25** | **0/12** |
+
+Antialiased assets measure **0.835–1.000**; the 18 pixel-art assets it catches measure
+**0.037–0.245**. The 0.5 threshold sits mid-gap rather than tuned to either edge — a margin of
+KIND, which is what §18 wanted and did not get. A LOW value is dispositive; a HIGH value proves
+nothing, so density can only ever ADD a hard-edged verdict, never veto one.
+
+### 23.5 The 7 that remain, and why they are one class
+
+Every miss is **dithered or photographic pixel art** — mosaics of photographs, and sprites shaded
+with dither — where the dithering puts a change on essentially every line and saturates the
+measure: `_ (9)` 0.592, `DFB2A5D7` 0.732, `_ (10)` 0.840, `The Last Jedi` 0.878, `_ (11)` 0.917,
+`Pixel Saber` 1.000, `pandapanda...` 1.000.
+
+A promising next step is to measure density on a dither-suppressed copy (a small median filter, or
+counting only changes that persist across several adjacent lines), then re-score against the same
+37. ⚠️ **Do not reach for a bare blend-ratio threshold.** It looks tempting — but the band ratio on
+this corpus reaches **247.147** on one pixel-art asset, and blend puts genuinely antialiased art at
+0.731 against pixel art at 3.037. Both overlap completely. Only the geometric measure separated.
+
+### 23.6 The lesson, which is the same one §18 should have learned
 **A fixture you generated yourself cannot validate a discriminator.** §18's claim — "genuine pixel
 art has no background-to-art blends by construction" — reads as a statement about pixel art and was
 actually a statement about the file I happened to build: its palette contained no colour lying on a
