@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~61,000 tokens across 29 sections. The median section is ~1200 and the largest ~11600. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~63,000 tokens across 29 sections. The median section is ~1200 and the largest ~11600. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -114,6 +114,8 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Wondering why the colour floor is 16 when a sweep says 24 | §29.4 (24 is one unit under the nearest negative) |
 | Tempted to re-label a corpus asset because a new measure disagrees | §29.6 (it moves the score of the thing that raised the question) |
 | `--analyze` suddenly feels much slower after a new measure landed | §29.8 (`np.unique` sorts; a boolean sieve is 75x faster and exact) |
+| `--pixel-art` recommended for an asset that is this tool's own compressed output | §29.9 (quantization turns 1px ramps into plateaus; analyse the ORIGINAL) |
+| A discriminator is sound on a source but wrong on a re-encoded copy | §29.9 (ask what `--compress heavy` does to any new measure) |
 | An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
 | Pixel art with 1-px shading at its edges reads as antialiased | §28.11 (hand-antialiased art; no edge-local measure can separate it) |
 | A transparent-background PNG sprite is not detected as pixel art | §28.12 (HEAD detected 0 of 294; fixed) |
@@ -1617,3 +1619,29 @@ The claim being tested was that this population's 3 false positives were "system
 An A/B/A/A over the same five assets, same machine state, same order, settles it: **no measure 57.0s, np.unique 57.3s, sieve 57.6s, sieve again 58.3s.** Every configuration is within noise of every other. The full-corpus figure settles it a second way and larger: the 719-asset run WITH the new measure took **2,592.2s against the baseline's 2,612.8s** — 3.63s versus 3.61s per asset, a difference of 0.8% in the direction of faster.
 
 **This is the third time in this project a performance pair turned out to be an artefact of which snapshots were compared.** The rule that catches it is cheap and I keep having to relearn it: **a perf claim needs both ends measured back to back, on the same machine, over the same inputs.** Anything else is comparing two different questions. And note which direction the error ran — it manufactured a justification for a change I had already made, which is the most comfortable kind of wrong number to produce. The sieve is still the right implementation, for the reason the isolated numbers give: it bounds the worst case on large frames. It is not a speedup to the median run, and saying so was a fabrication built out of real measurements.
+
+### 29.9 The tool's own `--compress heavy` output reads as pixel art, and the obvious veto is worse than the disease
+
+Found by the audit pass asking what neither of us had considered: **this tool quantizes colours, and quantization turns a 1px antialiasing ramp into a plateau.** The cliff ratio's whole premise is that "a 1px ramp cannot be a cliff, because the ramp pixel is a plateau of length 1 by construction" — but that is a property of the FILE, not of the artwork, and a lossy re-encode can give the ramp pixel neighbours it did not have.
+
+Measured on three antialiased assets, source versus their own `--compress heavy` output:
+
+| asset | source | after `--compress heavy` |
+|---|---|---|
+| `gem.gif` | 305 colours, not hard-edged | 122 colours, **hard-edged** (cliff 0.324) |
+| `heart_ORIGINAL.gif` | 320 colours, not hard-edged | 108 colours, **hard-edged** (cliff 0.343) |
+| `add.png` | 402 colours, not hard-edged | 107 colours, not hard-edged |
+
+Two of three flip, both on `plateau_cliff_ratio` clearing the 0.30 floor — **not** on the new colour count, which correctly abstains at 108 and 122. So this is a pre-existing false-positive class, and it is reachable in an ordinary workflow: a user compresses an asset for a size limit, then runs the tool again on the output, and the second run recommends `--pixel-art` for antialiased art. It is also the likeliest explanation of the two false positives that survive in the corpus — both are already-processed cutouts detected by the cliff ratio at 0.426 and 0.302.
+
+**The obvious fix does not work, and the measurement is the useful part.** If quantized antialiasing produces a false cliff, a high colour count ought to veto the cliff rule. Over the 451 assets the cliff rule detects correctly, composited colour count is median 12 and p95 20 — but its true positives reach **50, 56, 98, 123, 172, 221, 242 and 1,233**, because dithered and photographic pixel art is exactly what that rule was added to reach (§28). So:
+
+| veto if colour count > | true positives lost | corpus false positives removed |
+|---|---|---|
+| 40 | 9 of 451 | 1 of 2 |
+| 80 | 6 of 451 | 1 of 2 |
+| 100 (catches the compressed outputs) | 5 of 451 | **0 of 2** |
+
+A threshold that would catch the 108-and-122 cases removes none of the false positives actually in the corpus and costs five real detections. **Not implemented.** The honest position is a documented hazard: decide content type from the ORIGINAL asset, never from a compressed derivative — which is also why the corpus roster now marks its 13 derived files.
+
+**The transferable part:** every structural measure in this file keys on a property of the pixels, and this tool *writes pixels*. A measure that is sound on a source can be wrong on the tool's own output, and re-analysing your own output is a loop nobody had tested. Ask of any new discriminator: what does `--compress heavy` do to it?
