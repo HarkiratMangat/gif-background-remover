@@ -170,17 +170,19 @@ It reads GIF, WebP, AVIF, APNG, PNG and JPEG. The name reinforces the GIF-only m
 
 ---
 
-### `[P1 · S]` REOPENED — the corpus has no genuine non-white background asset
+### `[P1 · M]` Thresholds are still calibrated on white-background art — but the corpus DOES have coloured ones
 
-**2026-08-17.** An earlier probe this session reported "26 non-white background assets" and item 3.2 was treated as self-serviceable on that basis. **That was wrong.** The probe ran `detect_bg_color` on `im.convert('RGB')`, which drops alpha and exposes the GIF's TRANSPARENCY-INDEX palette entry as though it were a painted background. Checked directly afterwards: `Calendar`, `Best`, `Timestamps`, `Settings`, `DMZBuilds` and `eyedropper_blurple_v2_bleed` all have `transparency` in `info` — they are already transparent, and the "background" colour was never there to remove.
+**2026-08-17, corrected twice.** The record on this item was wrong in both directions, which is worth stating plainly because the third answer is the actionable one.
 
-Caught when Harkirat asked why a README panel captioned "magenta background" showed a white one: compositing the RGBA frame over white revealed the truth the RGB conversion had hidden.
+1. A probe reported "26 non-white background assets". **Wrong** — it ran `detect_bg_color` on `im.convert('RGB')`, which drops alpha and exposes a GIF's TRANSPARENCY-INDEX palette entry as though it were a painted background. Caught when Harkirat asked why a README panel captioned "magenta background" showed a white one.
+2. The correction said the corpus has NO genuine coloured-background asset. **Also wrong** — it only re-checked `Diors-builds Emojis/` (where assets are indeed already transparent) and never looked in `others/`, the folder the labelled corpus actually lives in.
+3. **The truth: `others/` holds 19 fully-opaque, genuinely non-white backgrounds**, verified by `'transparency' in im.info == False` AND every alpha at 255: `#bbfeba` 74%, `#9c38ff` 54%, `#c25027` 55%, `#4dbcfd` 74%, `#9cd6f7` 80%, `#42b4ff` 80%, `#000000` 71%, `#ffe75c` 64%, and more.
 
-**So every threshold in this skill is still calibrated on white-background art only**, which is exactly what item 3.2 warned about. The consequence is not hypothetical — §23 found both edge-hardness measures collapse when a solid palette colour sits near the background, and that is far likelier on a coloured one.
+**Why this matters now:** §23 measured BOTH edge-hardness measures collapsing when a solid palette colour sits near the background — far likelier on a coloured one. Several of those 19 are already in the 37-asset labelled corpus, so the test is available immediately and needs no new assets from Harkirat.
 
-**Next action:** ask Harkirat for genuine coloured-background art, or synthesise it honestly by compositing existing transparent assets onto solid colours (which is a fair test for background DETECTION and removal, though not for authored-against-a-colour antialiasing). ⚠️ When auditing for this, check `'transparency' in im.info` FIRST — an RGB conversion will lie to you.
+**Next action:** score the edge-hardness measures on the coloured-background subset specifically, separately from the white-background majority, and see whether the failure rate differs. That is the experiment item 3.2 has been waiting for.
 
----
+⚠️ **When auditing for this, check `'transparency' in im.info` FIRST, and check the right folder.** An RGB conversion will lie to you, and so will a probe pointed at the wrong directory — both happened here.
 
 ### `[P1 · M]` `--recommend` chose `--protect-band-only` where `--protect-outline-color` was needed — 100% of a design region destroyed
 
