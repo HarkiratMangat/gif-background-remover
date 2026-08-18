@@ -35,6 +35,7 @@ scratch risks retrying an approach already known to fail.
 20. [Auditing §19: five defects found by reviewing my own work](#20-auditing-19-five-defects-found-by-reviewing-my-own-work)
 21. [Four verification defects, and exempting by identity instead of by size](#21-four-verification-defects-and-exempting-by-identity-instead-of-by-size)
 23. [`edge_hardness` fails on pixel art with a coloured background — 6 of 8 real assets](#23-edge_hardness-fails-on-pixel-art-with-a-coloured-background--6-of-8-real-assets)
+24. [Auditing the release entry: a cumulative list nobody reconciled](#24-auditing-the-release-entry-a-cumulative-list-nobody-reconciled)
 22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
@@ -2173,3 +2174,59 @@ art has no background-to-art blends by construction" — reads as a statement ab
 actually a statement about the file I happened to build: its palette contained no colour lying on a
 background→art line. Every real asset with a coloured background does. The synthetic fixture agreed
 with the theory because both came from the same set of assumptions.
+
+---
+
+## 24. Auditing the release entry: a cumulative list nobody reconciled
+
+**2026-08-17, immediately before tagging v5.0.0.** SKILL.md's version entry is written by appending
+a bullet each time something lands. Across 19 commits in one day, nothing ever went back and asked
+whether an EARLIER bullet was still true. Two were not.
+
+### 24.1 A flat self-contradiction, two bullets apart
+> "**`--verify` refuses a non-GIF output** instead of reporting a misleading pass."
+>
+> "**`--verify` now accepts WebP/AVIF**, not just GIF."
+
+Both were true when written, of different commits. Together they are nonsense, and SKILL.md is the
+file a live claude.ai session actually reads — it has no repo, no git history, and no way to tell
+which bullet is current. Earlier the same day I had fixed the *same* stale claim in a different
+paragraph of this file and never checked whether it appeared anywhere else.
+
+**Takeaway: when correcting a stale claim, grep for the CLAIM, not the paragraph.** A claim that
+was worth repeating once is usually repeated more than once.
+
+### 24.2 A bullet advertising a regression as a fix
+The entry listed "`--pixel-art` gained the blend-ratio discriminator" among four `--recommend`
+outputs that "were wrong and are now right". §23 then measured that discriminator holding pixel-art
+detection down to **5 of 25**, because its founding premise was false and its AND-wiring let it
+VETO correct verdicts. The release notes were advertising, as a fix, a change that was partly a
+regression — and the corpus results that disproved it were added to the file's edge-hardness
+SECTION but never to its version ENTRY.
+
+Same root cause as 24.1: I edited where I was looking.
+
+### 24.3 The near-miss, which is the more useful half
+Auditing the same entry I nearly filed six more defects that do not exist.
+
+Commit `60945d6` changes `--edge-cleanup-erosion`'s argparse default from `2` to `None`. SKILL.md
+says "default 2px" in six places. That looks conclusive, and I was one edit away from "fixing" all
+six. But `None` is a sentinel, not a value: the code resolves it to **0** for WebP/AVIF, **1** for
+GIF under `--dither-mode none`, and **2** otherwise — and `--dither-mode` itself defaults to bayer
+for GIF. So on the plain GIF path the effective default is still 2 and all six statements are
+correct.
+
+**A signature change is not a behaviour change.** The diff showed the sentinel; only the resolution
+site showed what it means. One `sed` of the resolution logic was the difference between a correct
+audit and six confidently wrong "corrections" shipped into the file that IS the skill.
+
+This is the same shape as the `--auto` escalation bug earlier in the day (fixing the mechanism you
+were thinking about is not the same as fixing the behaviour) and as SS23's circular fixture. The
+recurring defect in this project is not bad reasoning — it is plausible reasoning that never got
+measured.
+
+### 24.4 What a release audit should actually check
+1. Does any bullet contradict a later one? (Grep the claim, not the paragraph.)
+2. Does any bullet describe as a FIX something later measurement reclassified?
+3. Is every user-visible change — new flag, changed default, changed verdict — represented?
+4. For each apparent defect, confirm the BEHAVIOUR, not the signature, before editing.

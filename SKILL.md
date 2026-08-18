@@ -35,12 +35,6 @@ reviewed, end-to-end-verified round — squarely major.
   PERSISTENCE (present in ~every frame at a stable size = design) rather than
   size alone — the old ≤500px ceiling let four ~287px buttons through and
   recommended erosion-exempting the very detail the user asked to preserve.
-- **`--verify` refuses a non-GIF output** instead of reporting a misleading
-  pass. Its checks assume 1-bit alpha — "leftover background" means an OPAQUE
-  background-coloured pixel, "fringe" means a pale ring to cut — and under
-  8-bit alpha a recovered fade is legitimately pale and semi-transparent, so
-  those checks would flag correct pixels. Verify an 8-bit-alpha output by
-  compositing it over the background AND over a dark solid instead (§16).
 - **`--verify` now accepts WebP/AVIF**, not just GIF. Every check is
   partial-alpha aware: leftover background counts only ESSENTIALLY OPAQUE
   (alpha ≥ 250) background-coloured pixels, because on an 8-bit output a pale
@@ -84,8 +78,9 @@ reviewed, end-to-end-verified round — squarely major.
   counts near-opaque pixels and an 8-bit alpha ramp is legitimately pale.
   In-memory: one erosion pass per candidate, not one render. Full case: §19.
 - **Four `--recommend` outputs that were wrong are now right** (full evidence:
-  `references/lessons.md` §18). `--pixel-art` gained the blend-ratio
-  discriminator above. `--erosion-exempt-max-size` is suppressed when the
+  `references/lessons.md` §18). `--pixel-art` gained a blend-ratio
+  discriminator — ⚠️ **which later measurement showed to be partly a
+  REGRESSION**, see the pixel-art bullet below. `--erosion-exempt-max-size` is suppressed when the
   transient and design size ranges OVERLAP, because the flag is a size
   threshold and cannot then separate them — classifying regions correctly is
   not enough on its own. `--feather-band-multiplier` is only recommended at
@@ -95,6 +90,26 @@ reviewed, end-to-end-verified round — squarely major.
   verification now retries PER FRAME when the union-across-frames footprint
   fails, which is what was hiding a real, protectable region behind
   `candidate_outline_color: null`.
+- **Pixel-art detection rebuilt, and scored against a real corpus for the first
+  time.** §18's blend-ratio discriminator rested on the claim that "genuine
+  pixel art has no background-to-art blends by construction" — validated
+  against a synthetic fixture generated in the same session as the theory,
+  which is circular and turned out to be false. Against **37 labelled assets**
+  (25 pixel art, 6 antialiased, plus the 6 vector icons as negatives):
+
+  | rule | correct | pixel art found | false positives |
+  |---|---|---|---|
+  | v4.0.0 (band ratio AND blend ratio) | 17/37 | 5/25 | 0/12 |
+  | + zero-transition-band short-circuit | 19/37 | 7/25 | 0/12 |
+  | + **`change_line_density` < 0.5** | **30/37** | **18/25** | **0/12** |
+
+  `change_line_density` counts how often the image changes as you sweep across
+  it — pixel art is drawn on a coarse grid and enlarged, so it changes only at
+  block boundaries. It reads no colour value, so the palette collisions that
+  break the other two measures cannot reach it, and it is scale-free. Below 0.5
+  is dispositive; a HIGH value proves nothing, so it can only add a hard-edged
+  verdict, never veto one. ⚠️ The 7 remaining misses are all dithered or
+  photographic pixel art. §23
 - **`--verify`'s `edge_fringe_check` is now tri-state.** `looks_fringed` is
   `true` / `false` / **`null`**, with `verdict_basis` giving the reason. The
   metric is the fraction of the outermost opaque ring closer to the background
@@ -198,7 +213,8 @@ removed / made transparent, while preserving some part of the interior design
 that happens to be the same or a similar color.
 
 ## Check content type FIRST — this determines which defaults are even safe
-This script's defaults (feathering on, `--edge-cleanup-erosion 2`, LANCZOS
+This script's defaults for GIF output (feathering on,
+`--edge-cleanup-erosion 2`, LANCZOS
 resizing) assume the source has real antialiasing to clean up — true for this
 skill's primary target, antialiased vector icon/sticker art, but **actively
 destructive** on hard-edged content like pixel art. Confirmed directly: the
