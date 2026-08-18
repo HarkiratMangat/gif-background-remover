@@ -40,6 +40,16 @@ GIF has **one bit** of alpha — a pixel is fully opaque or fully gone. Every so
 
 Further: when a fade was *authored* against the background and flattened by a GIF export, `--recover-fade-alpha` reconstructs it — unmixing each pixel against the art's own palette so the recovered alpha is arithmetic rather than a guess.
 
+### A background that isn't white
+
+<img src=".github/assets/showcase-colourbg.webp" alt="A complex 35-frame pixel-art animation on a yellow background, with the yellow detected and removed" width="100%">
+
+*(animated — 35 frames)* A `#ffe75c` yellow filling 64% of every frame, behind a pixel-art creature that twists through the whole animation. Nothing here assumes white.
+
+Handed to `--auto` with no flags, the skill detected the background colour, recognised the art as hard-edged from its change-line density, and chose **`--pixel-art --tumble-safe --erosion-exempt-max-size 485`** by itself — three separate judgements, none of them supplied.
+
+⚠️ A coloured background is also where the art's own palette is most likely to collide with it, which is exactly why the detector below reads *geometry* rather than colour.
+
 ### Knowing what kind of art it is
 
 <img src=".github/assets/showcase-pixelart.png" alt="Pixel art at high zoom: default feathering and erosion round the blocks, --pixel-art keeps every edge square" width="100%">
