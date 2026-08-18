@@ -106,6 +106,22 @@ accept the 1-bit-alpha consequences and read the fade section above.
 ## Workflow: `--auto` first, manual only when it cannot decide
 Don't open by asking the user to specify the background color and protected region from scratch, and don't hand-assemble flags before trying the path that assembles them for you.
 
+**INPUT formats — verified end to end 2026-08-17, not assumed:**
+
+| source | status |
+|---|---|
+| animated GIF | ✅ the original path |
+| animated WebP | ✅ renders to WebP and to GIF; `--analyze` reads all frames |
+| animated AVIF | ✅ same reader |
+| **animated PNG (APNG)** | ✅ 24/46/50-frame files, palette and RGB modes |
+| **static PNG / JPEG** | ✅ treated as a one-frame animation; output to GIF, WebP or AVIF |
+
+The reader is `Image.open` — format-agnostic, so anything Pillow decodes works. ⚠️ **The skill's NAME is historical; this is not a GIF-only tool.** Two crashes on non-GIF sources were fixed the day this was written: a static JPEG had no `n_frames` attribute, and an RGB-mode APNG stores `transparency` as a colour TUPLE rather than a palette index, which raised a broadcast error.
+
+⚠️ **OUTPUT is GIF, WebP or AVIF only.** Pillow can also write APNG and the script does not expose it — a real gap, not a limitation of the format.
+
+⚠️ **A photograph is still out of scope.** This is chroma-key removal against a flat, keyable background — static-image support means a one-frame DESIGN, not general subject segmentation.
+
 **The INPUT may be an animated GIF, WebP or AVIF** — the reader is format-agnostic, and every mode (`--analyze`, `--recommend`, `--verify`, `--auto`, plain rendering) works on all three. The skill's name is historical; it is not a GIF-only tool. Verified end to end 2026-08-17: a WebP source renders to both WebP and GIF, and `--analyze` reads its 124 frames correctly.
 
 ⚠️ **If the SOURCE is a WebP or AVIF rather than a GIF**, read `references/lessons.md` §17 before trusting any timing. Pillow populates `info['duration']` during `seek()` for GIF but only during `load()` for WebP/AVIF, so a seek-only read returns the PREVIOUS frame's value — a real 124-frame source came back one bogus frame prepended and the last dropped, 240 ms short, while the script reported "durations preserved exactly". Fixed in the script, but the failure mode is worth recognising if you see it anywhere else.

@@ -403,7 +403,17 @@ def get_source_transparency_mask(im0):
     if 'transparency' not in im0.info:
         return None
     trans_index = im0.info['transparency']
-    raw = np.array(im0.convert('P')) if im0.mode != 'P' else np.array(im0)
+    # For a PALETTE image this is an index into the palette. For an RGB/RGBA source -- an
+    # APNG in RGB mode, for instance -- Pillow stores a COLOUR TUPLE instead, and comparing
+    # a (H,W) index array against a 3-tuple raises "operands could not be broadcast
+    # together". Confirmed 2026-08-17 on a real 46-frame RGB APNG, which crashed outright.
+    if isinstance(trans_index, (tuple, list)):
+        arr = np.array(im0.convert('RGB'))
+        return np.all(arr == np.array(trans_index[:3], dtype=arr.dtype), axis=-1)
+    if im0.mode not in ('P', 'L'):
+        # a non-palette mode with a scalar transparency value: nothing reliable to key on
+        return None
+    raw = np.array(im0) if im0.mode == 'P' else np.array(im0.convert('P'))
     return raw == trans_index
 
 
@@ -4163,7 +4173,10 @@ def process(input_path, output_path, args, diagnostics=None):
                   "here). Pass --edge-cleanup-erosion explicitly to override.",
                   file=sys.stderr)
     im0 = Image.open(input_path)
-    n_frames = im0.n_frames
+    # A STATIC source (JPEG, single-frame PNG) has no n_frames at all -- JPEG raises
+    # AttributeError here. Confirmed 2026-08-17 on real files: the whole pipeline works on
+    # a one-frame image, this single attribute access was the only thing stopping it.
+    n_frames = getattr(im0, 'n_frames', 1)
     loop = im0.info.get('loop', 0)
     warn_if_source_has_transparency(im0, input_path)
 

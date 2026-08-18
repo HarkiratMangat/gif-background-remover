@@ -153,3 +153,17 @@ i.e. it buys ~0.6% file size for the worst colour fidelity AND the most temporal
 **Cheap first measurement, not yet done:** check whether the jar's interior is topologically CONNECTED to the outer background through the bag's opening. If it is, flood-fill-from-border reaches straight into it, which would exactly explain the "removes the white inside the jar" half of the observed behaviour and would point at the fix.
 
 **Notable:** this asset is also the only ANTIALIASED file in `others/`, so it doubles as the negative control for the pixel-art item above (`blend` 0.999, `ratio_max` 0.649).
+
+---
+
+### `[P2 · S]` APNG output is not exposed, though Pillow can write it
+
+**Added 2026-08-17.** `--format` offers `auto|gif|webp|avif`. Pillow writes APNG with full 8-bit alpha — verified directly: a 3-frame RGBA save reads back as `n_frames=3, mode=RGBA`. APNG is the natural output for someone who wants PNG-family animation with real transparency and does not want WebP. Roughly a `save_all=True` call plus a `--format` choice and the byte-cap cascade hooked up.
+
+### `[P3 · S]` `load_gif_rgba_frames` is misnamed
+
+It reads GIF, WebP, AVIF, APNG, PNG and JPEG. The name reinforces the GIF-only misconception *inside the code*, which is the same misconception that kept non-GIF input out of the description for two versions. 5 call sites.
+
+### `[P1 · S]` Project hooks are installed but NOT VERIFIED FIRING
+
+`.claude/hooks/` + `.claude/settings.json` were added 2026-08-17. A filesystem tracer proved the hook process **never ran** in the session that created them — project settings almost certainly load at session start. Verify in a fresh session per `.claude/hooks/README.md` before trusting them. ⚠️ Until verified, treat every gate they encode as manual.
