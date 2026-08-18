@@ -5,13 +5,15 @@ description: Remove the background color from an animated GIF while protecting a
 
 # GIF Background Remover
 
-**Skill version: v5.1.0** (previous: v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
+**Skill version: v5.1.1** (previous: v5.1.0, v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
 
 **v5.1.0** is a *minor* bump: two confirmed fixes that only bite in the claude.ai sandbox — the environment this skill actually ships to, and the one every test had missed because tests ran from the repo root where the bug is invisible.
 - **`--recommend` emitted a repo-relative script path** (`python3 scripts/remove_gif_background.py …`). An autonomous run pasting that verbatim in a sandbox gets "No such file or directory". It now derives the path from the script's own location.
 - **AVIF saved with no capability guard**, while `--recommend` ranks AVIF *first* under a byte cap — so an autonomous run is steered straight at an unchecked dependency and fails after all the work is done. Now checked up front with an actionable message.
 - **`--pixel-art` silently discarded an explicitly typed `--edge-cleanup-erosion`.** Explicit flags now win and the override is reported, matching the contract `--auto` already implements.
 - Plus this restructure: SKILL.md went 928 → ~640 lines, with the deep detail moved into `references/` and this file kept to decisions and flags.
+
+**v5.1.1** is a *correction*: `references/lessons.md` pointed at a path on the development machine and three times at a backlog file, none of which are in this package. Each is now phrased as provenance rather than as a location you might try to open.
 
 **v5.0.0** was the major release: WebP and AVIF output with true 8-bit alpha, `--recover-fade-alpha` (reconstructs partial transparency a GIF export already flattened — a case §7 had recorded as impossible), `--auto`/`--auto-erosion`, a `--verify` overhaul, and a pixel-art detector rebuilt and scored against 37 labelled assets (17/37 → 30/37, zero false positives). Full entry in `references/version-history.md`.
 
