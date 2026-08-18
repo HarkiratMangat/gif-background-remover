@@ -3665,12 +3665,15 @@ def verify(input_path, output_path, tolerance=15):
                 f"The SOURCE already had transparency, so its {_in_opaque} opaque pixels were the "
                 f"artwork -- and only {_out_opaque} survived ({_survival:.1%}). Colour-based "
                 f"removal has eaten real art: the background colour detected from the RGB stored "
-                f"under the transparent pixels also matches part of the design. **This should no "
-                f"longer be reachable on a default run** -- removal is confined to the source's own "
-                f"alpha since SS28.14 -- so seeing it means either --ignore-source-alpha was passed, "
-                f"or the restriction did not engage (its transparency does not reach the frame "
-                f"border, or the colour under it is not the detected background). Check those two "
-                f"conditions before reaching for an explicit --bg-color.")
+                f"under the transparent pixels also matches part of the design -- OR a later step "
+                f"eroded it. Removal itself is confined to the source's own alpha (SS28.14), so on "
+                f"a default run this points at one of four things, in the order worth checking: "
+                f"--ignore-source-alpha was passed; --edge-cleanup-erosion was passed explicitly "
+                f"(it shaves a source-defined silhouette, and nothing can distinguish that from "
+                f"trimming a fringe); the confinement did not engage (the transparency does not "
+                f"reach the frame border, or the colour under it is not the detected background); "
+                f"or the source is one this project has not seen. An explicit --bg-color is the "
+                f"LAST thing to reach for, not the first.")
     if _out_opaque == 0:
         report['output_is_empty'] = (
             'EVERY pixel of every frame is transparent -- the output is empty, not clean. No '
@@ -5460,7 +5463,23 @@ def process(input_path, output_path, args, diagnostics=None):
         else:
             _tiny_for_cal = (find_tiny_removed_regions(alpha_frames, exempt_max)
                              if exempt_max is not None and exempt_max > 0 else None)
-        if getattr(args, 'auto_erosion', False) and not args.pixel_art:
+        # ⚠️ A FOURTH consumer of the same wrong assumption, and it OVERRODE the guard
+        # below. auto-erosion picks a level from a fringe-fraction curve -- how many
+        # outer-ring pixels look background-coloured. On a source whose padding colour
+        # is also its outline colour, the artwork's own outline reads as fringe, so the
+        # curve keeps improving as the outline disappears. Measured on a 192x32 sprite:
+        # the guard set erosion 0, the calibration read (0:1.0, 1:0.2448, 2:0.2985,
+        # 3:0.2064) and chose 3, and 3px of erosion left 1,226 of 3,167 opaque pixels
+        # (38.7%). The metric cannot succeed here -- it is measuring art and calling it
+        # fringe -- so the honest move is to not run it, exactly as for --pixel-art.
+        if _sa_engaged and getattr(args, 'auto_erosion', False) and not args.pixel_art:
+            print("erosion auto-calibration SKIPPED: the source's own alpha defines the "
+                  "silhouette, so the fringe metric would be measuring artwork. Its curve is "
+                  "monotone in the wrong direction on such a source -- it improves as the "
+                  "outline is eroded away. Pass --edge-cleanup-erosion explicitly to force a "
+                  "level.", file=sys.stderr)
+        if (getattr(args, 'auto_erosion', False) and not args.pixel_art
+                and not _sa_engaged):
             _cal_pal = build_art_palette(
                 rgb_frames[::max(1, len(rgb_frames) // 8)], hex_to_rgb(args.bg_color))
             _cal_log = []

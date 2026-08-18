@@ -80,6 +80,15 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Do:** the promising direction is that these are *sprite sheets* — many small cells on one canvas. Scoring the cliff ratio per CELL (or per connected art component) rather than per canvas would give each cell the sample count it needs, and cell boundaries are findable from the transparent gutters. ⚠️ Score any change across all five populations, per-pack, before believing it: the 122 vector emoji currently give 3 false positives and the labelled set 0, and a threshold loosened to catch a 32x32 sprite is exactly the kind of change that has cost this project a regression twice. `references/lessons.md` §28.15
 
+### `[P3 · S · Sonnet5-High]` Two residuals from the source-alpha fix, both small and both unexplained *(filed 2026-08-18)*
+
+**Added 2026-08-18**, from the end-to-end render baseline that caught the auto-erosion override (§28.14). After that fix, 6 of the 7 regressed assets land EXACTLY on their source's opaque count. Two do not, and neither is understood:
+
+1. **`Soldier_Attack02.png` comes out at 1,677 opaque against a source's 1,653 — 24 pixels MORE.** With the cleanup band dropped and no flags applied, the output should equal the source exactly. The direction is harmless (more artwork retained, not less), which is why it is P3 rather than P1, but "harmless and unexplained" is still unexplained. **Do:** diff the output alpha against the source alpha and identify those 24 pixels; the likely suspect is a source pixel with partial alpha being forced to 255 outside the scope.
+2. **`f2ea31a625…gif` sits at 87.3% of its source figure (796,479 against 912,486).** ⚠️ **The comparison itself may be invalid:** the pipeline COMPOSITES a GIF's frames while the measurement counted them per-`seek`, so the two numbers may not describe the same pixels. **Do:** establish a comparable source count for an animated GIF first — through `load_animation_rgba_frames`, the function the pipeline actually uses — before treating this as art loss. If it survives that, the cleanup band is the next suspect (the veto did not fire on this asset, so its 2px ring is in scope).
+
+**Why both are worth keeping:** the render baseline found the auto-erosion override on its first real use, and these two are what it flagged and nobody has explained. An unexplained residual is how the next real defect stays hidden.
+
 ### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
 **Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
 
