@@ -59,6 +59,25 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ⚠️ **Do not ship a bare blend-ratio threshold.** It looks tempting — pixel art spans 0.000–1.074 and the antialiased corpus 1.530–2.529, so ~1.3 would score 13 of 14 — but the sole overlap is the jar (antialiased, 0.999) against DFB2A5D7 (pixel art, 1.074), and a threshold justified by a 0.075 gap between two assets is a margin of DEGREE, the exact trap §18 set out to escape and then fell into.
 
+### `[P2 · M · Opus5-High]` Pooled sprite detection is 86.4%, but two packs are at 15% and 25% — the per-pack split the labelling added found it immediately *(filed 2026-08-18)*
+
+**Added 2026-08-18, from the first registry-wide run over all five populations (688 scoreable assets through `analyze()`).** The pooled sprite recall of **426/493 = 86.4%** is almost entirely one pack: Tiny Swords is 409 of the 493 and scores 0.941. The per-pack breakdown the new `LABELS.json` warned about:
+
+| pack | n | recall |
+|---|---|---|
+| EVil Wizard 2 | 8 | 1.000 |
+| FREE_Samurai | 5 | 1.000 |
+| Tiny Swords | 409 | 0.941 |
+| Free City Enemies | 33 | 0.667 |
+| CatPackFree | 4 | **0.250** |
+| Tiny RPG Character Asset Pack | 34 | **0.147** |
+
+**So "sprite detection went 54/524 → 427/524" was a statement about Tiny Swords.** Reporting per-pack is what surfaced this, and it is the whole reason the lopsidedness warning went into that file — a population that is 78% one pack cannot be summarised by one number.
+
+**The mechanism, measured over the 67 misses against the 426 hits (medians):** `plateau_cliff_ratio` **0.215 vs 0.823**, `plateau_cliff_samples` **885 vs 7,021**, `ratio_max_across_frames` **0.246 vs 3.266**. `change_line_density` is 1.000 in BOTH groups, so it contributes nothing here. The misses are simply SMALL: a 100x100 or 32x32 sprite has few strong colour steps, so the cliff ratio is computed from a thin sample (some as low as n=17, well under the 500-sample floor that makes it non-dispositive) and lands under the 0.30 threshold. Every miss has `hard_edged_suppressed_notes: []`, so no suppression rule is involved — this is the measures themselves running out of evidence, not a rule mis-firing.
+
+**Do:** the promising direction is that these are *sprite sheets* — many small cells on one canvas. Scoring the cliff ratio per CELL (or per connected art component) rather than per canvas would give each cell the sample count it needs, and cell boundaries are findable from the transparent gutters. ⚠️ Score any change across all five populations, per-pack, before believing it: the 122 vector emoji currently give 3 false positives and the labelled set 0, and a threshold loosened to catch a 32x32 sprite is exactly the kind of change that has cost this project a regression twice. `references/lessons.md` §28.15
+
 ### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
 **Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
 
