@@ -14,7 +14,11 @@ What IS established, by test rather than inference:
 - `settings.json` is valid JSON, the scripts are executable, and both produce correct output when piped input directly;
 - there is no competing `settings.local.json`.
 
-**The most likely remaining cause is that a newly-added project `.claude/settings.json` needs to be trusted/approved before its hooks are honoured** — but that is a hypothesis, NOT verified. Ask Harkirat whether he sees a trust prompt.
+**Compared against Dior's Builds' demonstrably-working config; the structure is not the problem.** Same shape (`hooks` → event → optional `matcher` → `hooks[]` → `{type, command, timeout}`), same invocation form (`bash "${CLAUDE_PROJECT_DIR:-<abs>}/.claude/hooks/x.sh"`), same tracked location, not gitignored. `timeout` was the only delta and adding it changed nothing. The `permissions` key Dior's Builds also carries is unrelated to hooks.
+
+**The one hypothesis consistent with every observation: a `settings.json` that did not EXIST at session start is not discovered mid-session.** This is NOT the claim that was disproven — that one was about *edits to an existing file* being picked up, which they are. Creation is a different event and was never tested.
+
+⚠️ It remains a HYPOTHESIS. The only way to settle it is a fresh session; do that before trusting these hooks.
 
 **Verify before trusting them:**
 
