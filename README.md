@@ -58,6 +58,14 @@ The defaults — feathering, 2px erosion, LANCZOS resampling — assume antialia
 | + zero-transition-band | 19/37 | 7/25 | 0/12 |
 | **+ change-line density** | **30/37** | **18/25** | **0/12** |
 
+### Holding up across heavy motion
+
+<img src=".github/assets/showcase-motion.png" alt="Six frames spanning a 77-frame explosion animation, each cleanly cut out over a checkerboard" width="100%">
+
+A 77-frame explosion whose silhouette swings **1.6× in area** between its smallest and largest frame — spikes appearing, debris flying out, the whole shape rebuilding itself. One set of settings covers all of it. No frame was tuned individually and none was hand-corrected.
+
+That is the case where per-frame analysis earns its cost: `--analyze` scans **every** frame rather than sampling, because a shape this mobile breaks any assumption derived from frame 0.
+
 <br>
 
 ---
