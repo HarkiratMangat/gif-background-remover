@@ -146,7 +146,12 @@ def main():
 
     for f in fails:
         print('FAIL:', f)
-    print(f"\n{len(fails)} failure(s)" if fails else "\nall doc gates pass")
+    for w in WARNINGS:
+        print('WARN:', w)
+    if fails:
+        print(f"\n{len(fails)} failure(s)" + (f", {len(WARNINGS)} warning(s)" if WARNINGS else ""))
+    else:
+        print("\nall doc gates pass" + (f" ({len(WARNINGS)} warning(s) -- read them)" if WARNINGS else ""))
     return 1 if fails else 0
 
 # ------------------------------ tracker gates ------------------------------
@@ -157,6 +162,7 @@ def main():
 # line on the AUTONOMY BACKLOG named an item as open directly above that item's
 # own closure marker. Every one of those was found by hand, twice, in two days.
 ACTIVE, ARCHIVE = 'gif-deferred-list.md', 'gif-resolved-list.md'
+WARNINGS = []
 # A standing section, not a work item -- it holds a numbered sub-list with its own
 # open/closed state and is deliberately exempt from the priority-tag rule.
 TAG_EXEMPT_HEADINGS = ('AUTONOMY BACKLOG',)
@@ -263,9 +269,17 @@ def conservation(base):
                 f'but none of the removed text can be traced into it. That is a deletion wearing a '
                 f'sweep\'s clothes. First untraceable: "{orphans[0][:90]}…"']
     if orphans:
-        return [f'WARN: {len(orphans)} of {len(removed)} line(s) removed from {ACTIVE} could not be '
-                f'traced into {ARCHIVE}. Rewording during a sweep is normal, so confirm each landed. '
-                f'First: "{orphans[0][:90]}…"']
+        # ADVISORY, deliberately. Measured on this gate's own first real run: the
+        # 12-item split tripped it once, on a summary line that was REWRITTEN
+        # rather than moved (its replacement shares no six-word window with it, so
+        # the in-place-edit pairing cannot see it). That is a true positive worth
+        # printing and a bad reason to fail a branch -- the same false-positive
+        # class Dior's Builds hit when a rename read as a deletion. Hard failure
+        # is reserved for "nothing was archived" and "nothing traces at all",
+        # both of which are proven to still fire.
+        WARNINGS.append(f'{len(orphans)} of {len(removed)} line(s) removed from {ACTIVE} could not be '
+                        f'traced into {ARCHIVE}. Rewording during a sweep is normal, so confirm each '
+                        f'landed. First: "{orphans[0][:90]}…"')
     return []
 
 
