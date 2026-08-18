@@ -65,6 +65,38 @@ def main():
             if not os.path.exists(r):
                 fails.append(f'{f}: pointer to missing {r}')
 
+    # The SCRIPT's own evidence strings point at lessons sections too, spelled `SS<N>`
+    # because they avoid the non-ASCII section sign. Those strings are USER-FACING output
+    # and are the only documentation an autonomous run ever reads -- but they were never
+    # scanned, so v5.3.0 shipped a recommendation citing `references/lessons.md SS25`
+    # when no §25 existed (references/lessons.md §26.5). Gate them the same way.
+    for a_, b_ in re.findall(r'SS(\d+)(?:\.(\d+))?', open(SC).read()):
+        if int(a_) not in secs:
+            fails.append(f'{SC}: SS{a_} (lessons §{a_}) does not exist')
+        elif b_ and f'{a_}.{b_}' not in subs:
+            fails.append(f'{SC}: SS{a_}.{b_} (lessons §{a_}.{b_}) does not exist')
+
+    # A PACKAGED file must never point at a repo file that is not packaged. Only
+    # SKILL.md, references/ and scripts/remove_gif_background.py go into the .skill,
+    # so a backticked `gif-deferred-list.md` or `scripts/audit_docs.py` is an
+    # instruction the claude.ai sandbox cannot follow. This has recurred twice --
+    # four such pointers at v5.1.1, one more on the rebuild after the first gate
+    # passed, and one again at v5.4.0 -- so it is gated rather than eyeballed.
+    # `CLAUDE.md` is allowed: it appears only in the sandbox-boundary paragraphs
+    # whose whole point is to name what a live session CANNOT reach.
+    packaged = {SK, SC} | {os.path.join('references', f)
+                           for f in os.listdir('references')}
+    allowed_mentions = {'CLAUDE.md'}
+    for f in sorted(packaged):
+        for tok in sorted(set(re.findall(r'`([^`\n]{2,80})`', open(f).read()))):
+            t = tok.strip().lstrip('./').split()[0].rstrip('.,:;')
+            if t.endswith('/') or t in packaged or t in allowed_mentions:
+                continue
+            if not re.search(r'\.(md|py|json|sh|txt)$|/', t):
+                continue
+            if os.path.exists(t) or t.startswith(('local/', '.remember', '/Users/', '.claude/')):
+                fails.append(f'{f}: points at `{t}`, which is NOT in the .skill package')
+
     # 6. the frontmatter description must claim the skill's PRIMARY function and every
     # format it supports on BOTH sides. Two real defects motivated this, found by Harkirat
     # within minutes of each other: the description named GIF as the input NINE times while

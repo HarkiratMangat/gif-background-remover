@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~32,000 tokens. The median section is ~900. **Find the one section you need and read only that**; reading the file end to end costs 35x what the answer costs.
+It is ~46,000 tokens across 27 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -20,7 +20,7 @@ Three routes, cheapest first:
    python3 -c "import re,sys;s=open('references/lessons.md').read();print(re.search(r'^## 16\..*?(?=^## \d+\.|\Z)',s,re.M|re.S).group(0))"
    ```
 
-**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4` …), so you can extract a part rather than the whole. §16 alone is ~6,500 tokens across 21 sub-anchors; one of them is usually what you actually want:
+**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4`, `§26.5` …), so you can extract a part rather than the whole. §16 alone is ~6,500 tokens across 21 sub-anchors; one of them is usually what you actually want:
    ```
    python3 -c "import re;s=open('references/lessons.md').read();print(re.search(r'^### 16\.5 .*?(?=^### |\Z)',s,re.M|re.S).group(0))"
    ```
@@ -49,9 +49,12 @@ If you are about to re-diagnose something that smells like a past case — a fri
 19. [`--auto`: verifying the OUTPUT, and calibrating each asset against itself](#19---auto-verifying-the-output-and-calibrating-each-asset-against-itself)
 20. [Auditing §19: five defects found by reviewing my own work](#20-auditing-19-five-defects-found-by-reviewing-my-own-work)
 21. [Four verification defects, and exempting by identity instead of by size](#21-four-verification-defects-and-exempting-by-identity-instead-of-by-size)
+22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
 23. [`edge_hardness` fails on pixel art with a coloured background — 6 of 8 real assets](#23-edge_hardness-fails-on-pixel-art-with-a-coloured-background--6-of-8-real-assets)
 24. [Two defects that only exist in the deployment environment](#24-two-defects-that-only-exist-in-the-deployment-environment)
-22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
+25. [`--tumble-safe` strands the background it does not own — 56% left behind](#25---tumble-safe-strands-the-background-it-does-not-own--56-left-behind)
+26. [A degenerate outline candidate won selection, so a design region got no protection at all](#26-a-degenerate-outline-candidate-won-selection-so-a-design-region-got-no-protection-at-all)
+27. [Three roles for one colour: the structural route measured and ruled out](#27-three-roles-for-one-colour-the-structural-route-measured-and-ruled-out)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -66,7 +69,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Scattered speckle dots where a fading element disappears | §16 |
 | A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
-| claude.ai refuses the skill upload | the description exceeds its 1024-char limit — run `scripts/audit_docs.py` |
+| claude.ai refuses the skill upload | the description exceeds its 1024-char limit (§24 — the development repo's doc-audit gate enforces it) |
 | "there's a white edge / outline / halo around it" | §16 (fringe), §19 (pick erosion by the asset's own curve) |
 | "it looks blurry / soft / smudged after resizing" | §5 (resize degradation), §1 (is it pixel art?) |
 | "the colours look wrong / washed out / banded" | §12 (dither mesh), §6 (quantizer choice) |
@@ -86,6 +89,14 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--recommend`'s command fails with "No such file or directory" | §24.1 (repo-relative path) |
 | AVIF output fails after all the work is done | §24.2 (missing capability guard) |
 | Pixel art on a COLOURED background read as antialiased | §23 (both measures fail; check the art by eye) |
+| Background left behind in patches after `--tumble-safe` | §25 (it keeps only the LARGEST bg component) |
+| `--recommend` suggested `--tumble-safe` on art that spans the canvas | §25 |
+| A design region came out with NO protection, and the evidence names an outline colour that looks wrong | §26 (a degenerate candidate won selection) |
+| `protected-region coverage 0.0` from `--auto` or `--verify` | §26 (nothing was protected at all — read the region note) |
+| An outline colour that "verifies" but fills the whole canvas | §26 |
+| The same colour needs to be removed here, kept there, and SEE-THROUGH somewhere else | §27 (`--translucent-region`; nothing in the pixels can infer it) |
+| Glass, a window, a transparent bag reading as solid | §27 |
+| Considering a NEW pixel-art discriminator | §23.8 (score it against real antialiased icons, not only the labelled corpus) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
 | Confused why alpha looks all-or-nothing | §7 |
@@ -1037,6 +1048,36 @@ this corpus reaches **247.147** on one pixel-art asset, and blend puts genuinely
 
 ---
 
+### 23.7 Scoring the two measures on coloured vs white backgrounds — the collapse belongs to the band ratio, not the line measure
+
+**2026-08-18.** §23 asserted that a coloured background breaks edge-hardness detection, on 8 assets. The labelled corpus is now 31 (25 pixel art, 6 antialiased), 20 of them on genuinely non-white opaque backgrounds, so the claim is testable as a rate rather than an anecdote. Detection rates for pixel art, false positives on antialiased in brackets:
+
+| rule | white bg (6 px / 5 aa) | coloured bg (19 px / 1 aa) |
+|---|---|---|
+| band ratio (`ratio_max < 0.5 AND blend < 0.15`) | 1/6 [0] | 4/19 [0] |
+| `change_line_density < 0.5` | 4/6 [0] | 14/19 [0] |
+| shipped `appears_hard_edged` (either of the above, plus the zero-band rule) | 4/6 [0] | 14/19 [0] |
+
+**The refinement §23 could not see with 8 assets:** the band ratio is weak *everywhere* (5/25 overall), not specifically on coloured backgrounds — its 1/6 on white is no better than its 4/19 on colour. The measure that actually carries detection, `change_line_density`, shows **no coloured-background penalty at all** (67% white vs 74% coloured), exactly as its docstring predicts: counting where an image changes never reads a colour value, so a palette collision cannot reach it. So the standing rule stays "check the art by eye on a coloured background", but the reason is that detection is mediocre overall, not that colour specifically defeats it.
+
+### 23.8 A better measure that scored 24/25 — and had to be thrown away
+
+§23.5 left 7 pixel-art assets undetected, all dithered or photographic, and proposed suppressing the dither before counting changed lines. The cheapest version of that idea: instead of asking whether a scan line differs from its neighbour *at all* (which one dithered pixel satisfies), ask what FRACTION of it differs, and count lines that are **essentially duplicates** of their neighbour — `fraction_changed <= 0.01`. Pixel art upscaled by k has roughly (k-1)/k duplicate lines by construction; dither perturbs a few pixels per line and leaves that structure standing.
+
+Against the 31 labelled assets it looked decisive: **24/25 pixel art detected against the shipped 18/25, zero false positives**, with the antialiased half topping out at 0.050 and 24 of 25 pixel-art assets at 0.150 or above.
+
+**It is wrong, and the labelled corpus could not show it.** Scored against **145 vector emoji** from this repo's own asset folders — the content type this skill primarily exists for, presumed antialiased from their provenance rather than labelled by eye — the same rule fires on **37 of them (25.5%)**, up to 0.735, and the top scorers are flat interface icons (`add.png` 0.735, `delete.gif` 0.592, `no-data.gif` 0.572). Even if a handful of the 145 turn out to be pixel art, a 25% hit rate on that population is disqualifying. The reason is obvious in hindsight and invisible in the corpus: a flat-fill vector icon has large areas where the next column is genuinely identical, so it accumulates duplicate lines for a reason that has nothing to do with a pixel grid. The labelled corpus holds only 6 antialiased assets; 6 is not enough to see a 25% failure rate.
+
+**The lesson is §23.6's and the release-gate checklist rule in one.** A validation set that is 25 pixel art and 6 antialiased cannot certify a measure whose failure mode is *antialiased art misread as pixel art* — the population that would falsify it is the one barely represented. **Before believing a discriminator, ask which population its failure would live in, and check whether that population is actually in the sample.**
+
+### 23.9 A second idea, falsified the same way — and what that pattern now says
+
+The natural repair for §23.8 is to stop counting duplicate lines and start asking whether the change lines are REGULARLY SPACED, since a pixel grid has a pitch and a flat fill does not. Measured as the share of gaps between strong change lines (≥ half that frame's own maximum change fraction, so dither noise does not qualify) falling on the two commonest gap values. Fractional upscales are handled by design: 15.625x gives gaps of 15 and 16, still two values.
+
+On the labelled corpus it reads **25/25 pixel art at a 0.55 threshold**. On the 145 vector emoji it fires on **119 of the 123 it can measure — 96.7%** — and, decisively, the six antialiased assets in the labelled corpus score 0.848–0.984 against pixel art's 0.573–1.000. The measure is not weak, it is **inverted**: flat vector art has *more* regular strong-change spacing than dithered pixel art does, because its long uniform runs produce a handful of clean repeated gaps while dither fragments the pixel grid's own pitch.
+
+**Four structural ideas have now been tried and scored against real assets: modal run length (§23.4), integer-lattice fit (§23.4), duplicate-line density (§23.8) and gap regularity (here).** All four are variations on *where does the image change along a scan line*, and all four fail on the same rock: a flat-fill vector icon is locally as uniform as a pixel grid. That family is exhausted. Anything further should measure something categorically different — the palette's own structure, or the shape of the alpha ramp, not the geometry of change positions — and must be scored against BOTH populations before it is believed. The labelled corpus alone said yes to two measures in a row that the emoji set then destroyed.
+
 ## 24. Two defects that only exist in the deployment environment
 
 **2026-08-17**, found by a sequential-thinking double-check run AFTER v5.0.0 was already merged, tagged and pushed. Both break the skill in the claude.ai sandbox — the environment it actually ships to — and neither was reachable by any test run in this repo.
@@ -1059,6 +1100,121 @@ The real defect was an inconsistency, not a destruction: `--auto` uses `typed_op
 **Worth recording that the first report was wrong**, because a postmortem is what a future session trusts instead of re-deriving. Had it shipped, it would have sent someone hunting a destruction bug that does not exist.
 
 ### 24.4 The generalisable rule
-**Test in the environment the thing ships to, not only the one you develop in.** Both 25.1 and 25.2 are invisible from the repo and obvious from the sandbox. The packaged skill is the product; this repo is the workshop.
+**Test in the environment the thing ships to, not only the one you develop in.** Both §24.1 and §24.2 are invisible from the repo and obvious from the sandbox. The packaged skill is the product; this repo is the workshop.
 
 A cheap proxy, since a claude.ai sandbox is not available from here: for anything the skill emits for someone else to RUN, ask what it resolves to when the current working directory is not this one — and for any dependency, check whether it is guaranteed or merely present on this machine.
+
+## 25. `--tumble-safe` strands the background it does not own — 56% left behind
+
+**2026-08-17, v5.3.0.** This is the section the shipped evidence string has always pointed at; it was written into the release notes and never into this file, so every run that emitted "see references/lessons.md §25" was pointing at nothing. Recorded here properly.
+
+`--tumble-safe` exists for §10's tumbling icon: it defines the background as the single LARGEST connected background-coloured component in each frame, so an interior pocket that momentarily opens to the canvas edge is not swallowed. That definition assumes the background is essentially one piece.
+
+**When the foreground spans the canvas, it is not.** On `GIFfromGIFER-ezgif.com-remove-background.gif` (35 frames, yellow `ffe75c` background) the artwork divides the background into 3-7 disconnected regions. `--tumble-safe` kept the biggest and silently left the rest: frame 0 removed 69,548 of 158,899 background pixels, **56% stranded**, and **2,329,956 pixels of background left behind across the animation**.
+
+**`--recommend` chose that flag itself**, which is what made it worth a fix rather than a caveat. Tumble risk fires on an edge-grazing foreground, and an edge-grazing foreground is *also* what fragments the background — the trigger condition and the failure condition are the same condition.
+
+**What shipped:** `tumble_risk` now reports `background_outside_largest_component`, and `--recommend` withholds `--tumble-safe` above 0.35 with the refusal spelled out in the evidence. The threshold is mid-gap, not tuned: the corpus spans 0.0-23.6% and the failing asset sits at 57.7%. `military-tag`, the asset the flag exists for, reads 1.5% and is unaffected.
+
+**How it was found:** Harkirat looked at a README showcase I had called clean. I had written "preserved crisply, yellow fully gone" from a 248px thumbnail without measuring. **A glance at a thumbnail is not a measurement**, and the damage was 56% of the thing being checked.
+
+## 26. A degenerate outline candidate won selection, so a design region got no protection at all
+
+**2026-08-18.** On `Cut loop.gif` (76 frames, 800x600, an animated pokeball on `f7f7f9`) `--auto` writing a `.gif` destroyed the entire enclosed interior of the design — and its own verification said so, reporting `worst protected-region coverage: 0.0` while carrying on.
+
+### 26.1 The candidate that "verified" by containing everything
+
+`find_verified_outline_color` gathers colours from rings at several dilation radii around a region and keeps those whose `binary_fill_holes` shape contains 95% of the footprint, preferring the tightest fit. For region 2 it gathered four candidates:
+
+| candidate | mask px | filled px | containment | overlap with real background |
+|---|---|---|---|---|
+| `dcdcdc` | 442,385 | **480,000** | 1.000 | **423,855** |
+| `281450` (the true purple outline, quantized) | 14,507 | 16,001 | 0.248 | 0 |
+| `f0c800` | — | 8,584 | 0.050 | 0 |
+| `dc1428` | — | 8,005 | 0.044 | 0 |
+
+480,000 is every pixel of an 800x600 frame. `dcdcdc` is a pale grey inside the background's own tolerance neighbourhood; its mask covers most of the canvas, so filling it fills everything, so it "contains" the footprint. It was the ONLY candidate to clear 95%, won the tightest-fit contest unopposed, and was then rejected one step later by `detect_outline_background_leak` — correctly, but too late. Selection had already discarded the alternatives, so the region fell through to `--protect-band-only 4`, which has nothing to hold: the pokeball's interior is an open bowl, topologically continuous with the background, so band-only protection cannot reach it.
+
+**Measured on the GIF path: 976,800 pixels of artwork kept by `--protect-outline-color 39215a` and destroyed by the recommended flags.** (`39215a` and its quantized bucket `281450` differ by 4,749 px out of 2.92M — 0.16% — so the quantization is not the problem.)
+
+### 26.2 What the WebP path shows, and why the bug is narrower than it looks
+
+The same asset written to `.webp` with the recommended `--recover-fade-alpha` is **unaffected** — that path protects 1,005,156 enclosed interior pixels on its own, and adding the outline flag changes not one pixel of alpha. `--recommend` asks for WebP here, so the destruction only lands when the output is forced to `.gif`. Worth stating plainly, because the first framing of this bug ("`--auto` destroys the region") is true only for one of the two containers, and a fix credited with more than it does is a fix nobody can re-verify.
+
+### 26.3 Two fixes, both hard properties rather than tuned margins
+
+**Reject the degenerate candidate during selection.** A colour whose filled shape overlaps the frame's own largest background component is not enclosing anything. This is the *same* criterion `detect_outline_background_leak` already applies — just applied while the alternatives are still on the table. It can only ever turn "region abandoned" into "next candidate considered", so it carries no regression risk for an asset whose winner does not leak.
+
+**Accept a PARTIAL enclosure when nothing encloses.** Even with `dcdcdc` gone, `281450` still fails the 95% test, for two compounding reasons: the footprint is a cross-frame UNION (30,191 px) far larger than any single frame's hole (13,603 px at widest), and the outline only closes on **15 of 76 frames** because the bowl is open for the rest. Neither makes the colour wrong — at process time the per-frame mask substitution propagates the closed frames' shape to the open ones, clamped to each frame's own silhouette. So `find_partial_enclosure_outline_color` ranks the leak-free candidates by how much of the region they enclose across sampled frames and recommends the best. The gate is binary and physical (never swallows background on any sampled frame), and the alternative in this state is not weaker protection but **none**, so anything leak-free is a strict improvement.
+
+### 26.4 What it changed across the corpus
+
+7 of 31 labelled assets got a different recommendation. Rendered both ways and measured:
+
+| asset | opaque px delta | leftover background | protected coverage |
+|---|---|---|---|
+| `Cut loop` (GIF path, via `--auto`) | **+884,352** | unchanged | 0.0 → 0.843 |
+| `pandapanda…` | **+383,575** | 0 → 0 | 0.0 → up to 1.0 |
+| `2d4a092f…` (the jar bunny) | **+202,845** | 0 → 0 | 0.0 → 0.331 |
+| `Starters!` | +22,883 | 0 → 1 px on 1 frame | 0.0 → 0.776 |
+| `_ (9)`, `_ (11)`, `ezgif.com-remove-background` | 0 | unchanged | unchanged |
+
+**No asset lost artwork and none gained meaningful leftover background.** The three zero-delta rows gained an extra outline colour in the recommendation that turned out to protect only what was already protected — cosmetic noise in the suggested command, not a behaviour change. `love.gif` still renders byte-identical to its known-good output.
+
+### 26.5 The safety evidence had to be re-taken, because the obvious check cannot fail here
+
+`verify()`'s `leftover_background_opaque_px` **excludes** the filled area of every verified outline colour — deliberately, since §21.2. So using it as the primary evidence that "adding an outline colour did not keep background" is close to circular: the metric stops counting exactly what the change adds. It happens not to bite here, because the partial path leaves `outline_color_verified` false and `candidate_outline_color` None, so `_protected_fill` never picks the new colour up — **but that is an accident of where the field was stored, not a safeguard**, and anyone tidying the two representations into one will silently turn this check vacuous.
+
+The independent falsifier, which uses no analyze footprint and no outline exclusion: of the pixels that are opaque AFTER and transparent BEFORE, how many lie in that frame's own largest background component?
+
+| asset | newly opaque | of which real outer background |
+|---|---|---|
+| `Cut loop` (`--auto`, GIF) | 884,352 | **709** (0.08%, across 76 frames) |
+| `pandapanda…` | 383,575 | **0** |
+| `2d4a092f…` | 202,845 | **0** |
+| `Starters!` | 22,883 | **0** |
+
+That is the number the fix should be judged on, and it is the one worth re-running if this path is ever widened.
+
+### 26.6 Known bound: the leak gate only sees the LARGEST background component
+
+Both the selection reject and the partial search test overlap against `largest_bg_component_mask`. A pocket of genuinely removable background that is NOT the largest component — background enclosed between two limbs, say — passes the gate and would be kept. That limitation is inherited from `detect_outline_background_leak` and is not new, but this fix **invokes it far more often** (up to six recommended outline colours on one asset where there was one), so the exposure is larger than it was. Tracked in the development repo's backlog.
+
+### 26.7 The evidence strings ARE documentation
+
+Finding this needed a `references/lessons.md §26` to exist, which is how it surfaced that **§25 did not** — the script had been printing "see references/lessons.md SS25" inside a recommendation for a whole release, pointing at a section nobody had written.
+
+**The generalisable part: a tool's user-facing OUTPUT is documentation, and it is usually the half nobody checks.** Prose files get checked because they look like documentation. The strings a program prints do not — and for an autonomous run they are the *only* documentation it ever reads, because it never opens a reference file. Whatever consistency check covers the prose should cover the output too. (The development repo's own gate for this, and the release checklist it belongs to, live on the repo side; a session running from the packaged skill cannot act on them.)
+
+## 27. Three roles for one colour: the structural route measured and ruled out
+
+**2026-08-18.** `2d4a092f5494a8d2455703857ee83d5c.gif` is a bunny holding a transparent bag of popcorn, and one `#ffffff` plays three parts: outer background (remove), bunny body (keep opaque), bag interior (make TRANSLUCENT, so it reads as a bag). The pixels are byte-identical, so no colour rule separates them. The open question was whether STRUCTURE could.
+
+### 27.1 The hypothesis, and the measurement that killed it
+
+The recorded next step was: check whether the bag interior is topologically CONNECTED to the outer background through the bag's opening. If it were, flood-fill-from-border would reach into it, which would have explained "the white inside the bag gets removed" exactly and pointed at a fix.
+
+Measured on frame 0, labelling the background-coloured mask and marking which components touch the canvas edge:
+
+| component | px | bbox | border-connected |
+|---|---|---|---|
+| 1 (outer background) | 58,037 | full canvas | **yes** |
+| 3 (bunny body) | 27,767 | (157,79)-(353,330) | no |
+| 2 (**bag interior**) | 14,069 | (51,17)-(306,250) | no |
+
+**The hypothesis is false.** The bag interior is a fully enclosed pocket, and so is the bunny's body — both bounded by the same brown outline, both unreachable from the border, and 42,209 px of enclosed background exists on every one of the 12 frames. Connectivity does not distinguish them any more than colour does.
+
+That is the useful result, because it closes the search rather than narrowing it. In flat vector art there is nothing *behind* the bag — the popcorn is drawn on top of a white fill, not seen through a translucent layer — so "translucent" is authoring intent, with no pixel or topological evidence to recover it from. Every structural signal available here is identical for the two pockets.
+
+### 27.2 What shipped, and the two restrictions that make a hand-drawn region safe
+
+`--translucent-region` (same `circle:`/`rect:`, `;`-separated spec syntax as `--protect-region`), with `--translucent-alpha` (default 0.35) and `--translucent-color` (defaults to the background colour). Requires a `.webp`/`.avif`/`.apng` output.
+
+Naming the region by hand is the whole mechanism, so the restrictions matter more than usual:
+
+* **Colour.** Only pixels matching `--translucent-color` are touched. Without this the first test — a rectangle over the bag — turned the POPCORN translucent too, which is precisely backwards: the contents are what the glass is supposed to reveal. Measured: 133,070 px affected without the colour restriction, 76,988 with it.
+* **Alpha.** Only already-opaque pixels are lowered, so an antialiasing ramp or a recovered fade inside the region keeps its own alpha rather than being raised to the translucency level.
+
+Verified by compositing over a dark solid rather than a checkerboard (§16's rule — a checkerboard camouflages exactly this): the bag material reads see-through, the popcorn and the bunny stay opaque.
+
+**Known limit, and it is inherent:** a rectangle cannot follow a shape that another same-colour element overlaps. On this asset the bunny's white body sits partly inside any rectangle large enough to cover the whole bag, so it needs several `;`-separated specs. That is a cost of the region being hand-drawn, and the measurement above is why it has to be.

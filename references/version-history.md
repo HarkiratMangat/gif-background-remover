@@ -62,6 +62,31 @@ The default GIF codepath is unchanged — confirmed byte-identical on a real fix
 
 ---
 
+## v5.1.0 - v5.3.0 — full entries
+
+Moved here from SKILL.md at v5.4.0. The convention is that SKILL.md carries only the CURRENT version's entry; four had accumulated there because nothing gates it, and SKILL.md is the file loaded into context on every skill trigger.
+
+**v5.3.0** is a *minor* bump: two confirmed recommendation bugs and the `--auto` regression the second one exposed, both found because a README showcase was quietly demonstrating them.
+- **`--recommend` now suggests `--recover-fade-alpha` instead of `--dither-mode none` when it detects a flattened fade AND recommends WebP/AVIF.** It previously emitted the GIF-era workaround and mentioned the real fix only in prose — which `--auto` takes the flag list verbatim and never reads. Measured on a real asset: **0 translucent pixels with the old recommendation, 249,774 with the new one.** The suggested command's placeholder now follows the flags too (`<output.webp>`), since `--recover-fade-alpha` errors on a GIF output.
+- **`--auto` no longer applies a flag the chosen container cannot honour.** Making `--recover-fade-alpha` a recommended flag exposed this: `--auto` applied it blindly, so writing a faded asset to `.gif` produced no file at all. It now skips container-incompatible flags and says which it skipped; the format-conflict warning still fires.
+- **`--recommend` no longer suggests `--tumble-safe` when it would strand the background.** That flag defines the background as the single LARGEST connected bg-coloured component per frame, so when the foreground spans the canvas and fragments the background, everything outside the biggest piece is silently kept. Measured on a real 35-frame asset: 56% of the background left behind on frame 0, 2,329,956 pixels across the animation. `tumble_risk` now reports `background_outside_largest_component` and withholds the flag above 0.35, with the refusal explained. The threshold is mid-gap: the corpus spans 0.0-23.6% and the failing asset sits at 57.7%. `military-tag`, the asset the flag exists for, reads 1.5% and is unaffected.
+
+**v5.2.1** is a *correction*: the frontmatter description was 1364 characters and **claude.ai rejects any description over 1024** — the upload failed outright. Rewritten to 929 with every trigger phrase kept, and the development repo's doc-audit gate now enforces the limit. No local gate knew this constraint existed, so it surfaced only in the browser, after a merge, a tag and a package build.
+
+**v5.2.0** is a *minor* bump: two confirmed crashes fixed on the INPUT path, plus the capability documentation that made them findable.
+- **A static source crashed** — `AttributeError: 'JpegImageFile' object has no attribute 'n_frames'`. That single attribute access was the only thing stopping the whole pipeline working on a one-frame image.
+- **An RGB-mode APNG crashed** — for a PALETTE image `transparency` is an index, but for RGB/RGBA Pillow stores a COLOUR TUPLE, and comparing an index array against a 3-tuple raises a broadcast error. A palette APNG worked, which is why this went unseen.
+- The workflow now leads with `--auto`, and six flags that existed only in the changelog are documented in the body — including `--auto` itself, the autonomy feature this skill is aimed at.
+- `references/lessons.md` gained a "how to read this file" block; it is ~32k tokens and must never be read whole.
+
+**v5.1.0** is a *minor* bump: two confirmed fixes that only bite in the claude.ai sandbox — the environment this skill actually ships to, and the one every test had missed because tests ran from the repo root where the bug is invisible.
+- **`--recommend` emitted a repo-relative script path** (`python3 scripts/remove_gif_background.py …`). An autonomous run pasting that verbatim in a sandbox gets "No such file or directory". It now derives the path from the script's own location.
+- **AVIF saved with no capability guard**, while `--recommend` ranks AVIF *first* under a byte cap — so an autonomous run is steered straight at an unchecked dependency and fails after all the work is done. Now checked up front with an actionable message.
+- **`--pixel-art` silently discarded an explicitly typed `--edge-cleanup-erosion`.** Explicit flags now win and the override is reported, matching the contract `--auto` already implements.
+- Plus this restructure: SKILL.md went 928 → ~640 lines, with the deep detail moved into `references/` and this file kept to decisions and flags.
+
+---
+
 ## Versioning convention (canonical)
 
 Versioning convention (three-part, `v{major}.{minor}.{correction}` — Harkirat's explicit spec, applies both to this internal version log AND to whatever gets said in the file handed back to him after an edit, so the two never drift):

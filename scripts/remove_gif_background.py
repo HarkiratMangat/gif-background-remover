@@ -279,6 +279,13 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
     }
 
 
+# Containers that carry true 8-bit alpha. Every "can this hold partial
+# transparency?" decision keys off this rather than an inline tuple -- adding
+# APNG in v5.4.0 meant touching five such tuples, and a missed one would have
+# silently handed an 8-bit container the 1-bit code path.
+EIGHT_BIT_ALPHA_FORMATS = ('webp', 'avif', 'apng')
+
+
 def _avif_available():
     """True if this Pillow can write AVIF -- via built-in support or the plugin."""
     try:
@@ -701,6 +708,11 @@ def analyze(input_path, max_samples=40, tolerance=15):
 
     union_mask = np.zeros((H, W), dtype=bool)
     rep_frame_for_color = {}  # remember a frame index/rgb to sample outline color later
+    # Each sampled frame's enclosed-background mask, kept so the per-region
+    # loop below does not rebuild it. It was previously recomputed (a full
+    # ndimage.label over the frame) once per REGION per FRAME, so a 4-region
+    # 40-sample asset paid for 160 labelings of a mask already built here.
+    enclosed_by_frame = {}
 
     for i in sample_idxs:
         rgb = all_rgb_frames[i]
@@ -710,13 +722,22 @@ def analyze(input_path, max_samples=40, tolerance=15):
         border_labels.discard(0)
         enclosed = bg_mask & ~np.isin(labeled, list(border_labels))
         union_mask |= enclosed
+        enclosed_by_frame[i] = enclosed
         rep_frame_for_color[i] = rgb
+
+    # Per-frame largest-background-component masks, built lazily and shared by
+    # every outline-candidate check below (see _LazyCoreBgMasks).
+    core_bg_masks = _LazyCoreBgMasks(all_rgb_frames, bg_rgb, tolerance)
+    outline_fill_cache = _FilledOutlineCache(all_rgb_frames)
 
     # merge nearby/jittery regions across frames with a small dilation before labeling
     dilated = ndimage.binary_dilation(union_mask, structure=np.ones((5, 5)))
     clabeled, cnum = ndimage.label(dilated, structure=STRUCTURE)
 
     results = []
+    # Footprints of the regions that will actually END UP protected, kept so the
+    # band-interior list can say which of its detections are already covered.
+    protected_footprints = {}
     for cid in range(1, cnum + 1):
         comp_footprint = (clabeled == cid) & union_mask  # restrict back to actual enclosed pixels
         if comp_footprint.sum() < 20:
@@ -728,13 +749,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
 
         frames_hit = 0
         for i in sample_idxs:
-            rgb = all_rgb_frames[i]
-            bg_mask = color_mask(rgb, bg_rgb, tolerance)
-            labeled, num = ndimage.label(bg_mask, structure=STRUCTURE)
-            border_labels = set(labeled[0, :]) | set(labeled[-1, :]) | set(labeled[:, 0]) | set(labeled[:, -1])
-            border_labels.discard(0)
-            enclosed = bg_mask & ~np.isin(labeled, list(border_labels))
-            if (enclosed & comp_footprint).any():
+            if (enclosed_by_frame[i] & comp_footprint).any():
                 frames_hit += 1
 
         ratio = frames_hit / len(sample_idxs)
@@ -792,7 +807,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
         # boundary rather than some larger, more distant shape that
         # happens to also enclose this point.
         outline_color, outline_filled_area, outline_shape = find_verified_outline_color(
-            true_footprint_frame_rgb, bg_rgb, true_footprint, tolerance)
+            true_footprint_frame_rgb, bg_rgb, true_footprint, tolerance,
+            core_bg=core_bg_masks[sample_idxs[0]])
 
         # PER-FRAME FALLBACK for exactly the union-overstatement case the note
         # above describes. When the union merges a real design region with
@@ -818,16 +834,12 @@ def analyze(input_path, max_samples=40, tolerance=15):
             _checked = 0
             for _i in sample_idxs[:15]:
                 _frgb = all_rgb_frames[_i]
-                _fm = color_mask(_frgb, bg_rgb, tolerance)
-                _lb, _ = ndimage.label(_fm, structure=STRUCTURE)
-                _border = (set(_lb[0, :]) | set(_lb[-1, :])
-                           | set(_lb[:, 0]) | set(_lb[:, -1]))
-                _border.discard(0)
-                _here = comp_footprint & _fm & ~np.isin(_lb, list(_border))
+                _here = comp_footprint & enclosed_by_frame[_i]
                 if _here.sum() < 20:
                     continue
                 _checked += 1
-                _c, _, _ = find_verified_outline_color(_frgb, bg_rgb, _here, tolerance)
+                _c, _, _ = find_verified_outline_color(
+                    _frgb, bg_rgb, _here, tolerance, core_bg=core_bg_masks[_i])
                 if _c:
                     _votes[_c] = _votes.get(_c, 0) + 1
             if _checked and _votes:
@@ -845,7 +857,19 @@ def analyze(input_path, max_samples=40, tolerance=15):
             outline_enclosure_all_frames = verify_outline_enclosure_all_frames(
                 all_rgb_frames, outline_color, true_footprint)
             outline_background_leak = detect_outline_background_leak(
-                all_rgb_frames, bg_rgb, tolerance, outline_color)
+                all_rgb_frames, bg_rgb, tolerance, outline_color,
+                core_bg_masks=core_bg_masks)
+
+        # Nothing encloses this design region on any single frame. Before
+        # giving up on it -- which means NO protection, not weaker protection
+        # -- look for a colour that encloses part of it and never swallows
+        # background. See find_partial_enclosure_outline_color for the measured
+        # case this exists for.
+        partial_outline = None
+        if outline_color is None and ratio >= 0.9:
+            partial_outline = find_partial_enclosure_outline_color(
+                all_rgb_frames, sample_idxs, bg_rgb, tolerance,
+                comp_footprint, core_bg_masks, fill_cache=outline_fill_cache)
 
         # Circularity check: how well would a bounding CIRCLE (i.e.
         # --protect-region circle:...) approximate the true protected
@@ -880,6 +904,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
                     "means a bounding circle would be a poor approximation "
                     "of the true (non-circular) enclosed shape.")
 
+        if outline_color is not None or partial_outline is not None:
+            protected_footprints[cid] = comp_footprint
         results.append({
             'id': cid,
             'pixel_count': int(comp_footprint.sum()),
@@ -894,6 +920,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'outline_color_verified': outline_color is not None,
             'outline_enclosure_all_frames': outline_enclosure_all_frames,
             'outline_background_leak': outline_background_leak,
+            'partial_outline': partial_outline,
             'circularity_ratio': round(circularity, 2),
             'circle_region_safe': circularity >= 0.85,
             'note': note,
@@ -951,6 +978,23 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'change_line_density': round(_density, 3),
         'appears_hard_edged': bool(_hard),
     })
+
+    # detect_band_interior_regions runs BEFORE the candidate-region loop and so
+    # has no idea a detection sits inside a region that is about to be protected
+    # by an outline colour. On a real asset that made what is physically 1-2
+    # regions report as up to 17 separate band-interior entries, and --recommend
+    # then said "17 solid-tint region(s) observed" about artwork already fully
+    # covered. Reordering the whole function is the clean fix and a much larger
+    # change; annotating here needs neither, because by this point BOTH lists
+    # exist. A gradient fade is deliberately NOT excluded: a flattened fade
+    # inside a protected outline is still a flattened fade and still needs
+    # --recover-fade-alpha.
+    for _br in band_interior_regions:
+        _x0, _y0, _x1, _y1 = _br['bbox_xyxy']
+        _cy, _cx = int((_y0 + _y1) / 2), int((_x0 + _x1) / 2)
+        _br['inside_protected_region_id'] = next(
+            (int(_cid) for _cid, _fp in protected_footprints.items()
+             if 0 <= _cy < H and 0 <= _cx < W and _fp[_cy, _cx]), None)
 
     return {
         'n_frames_total': n_frames,
@@ -1074,6 +1118,22 @@ def recommend(input_path, tolerance=15):
                     f"{leak['leaked_pixel_count']}px of real background on frame "
                     f"{leak['leak_frame_index']} -- needs manual outline-color "
                     f"identification, not auto-recommended.")
+            elif region.get('partial_outline'):
+                _po = region['partial_outline']
+                outline_colors.append(_po['color'])
+                region_notes.append(
+                    f"Region {rid}: no colour ENCLOSES this design region on a single "
+                    f"frame, but outline {_po['color']} encloses part of it on "
+                    f"{_po['frames_with_enclosure']}/{_po['frames_sampled']} sampled frames "
+                    f"(best frame {_po['best_frame_index']}: {_po['best_frame_enclosed_px']}px, "
+                    f"{_po['best_frame_enclosed_fraction'] * 100:.0f}% of the footprint) and "
+                    f"never swallows real background on any of them -- recommending "
+                    f"--protect-outline-color anyway. The shape opens and closes as it "
+                    f"animates, so no single frame holds all of it; the per-frame mask "
+                    f"substitution propagates the closed frames' shape to the open ones, "
+                    f"clamped to each frame's own silhouette. The alternative here is not a "
+                    f"weaker protection but NONE -- measured on a real asset, that cost "
+                    f"976,800px of artwork (references/lessons.md SS26).")
             elif not region['outline_color_verified']:
                 if region['circle_region_safe']:
                     flags.append(f"--protect-region {region['suggested_protect_region']}")
@@ -1119,8 +1179,20 @@ def recommend(input_path, tolerance=15):
             "Band-interior region(s) show a gradient-fade signature (color distance from "
             "background varies across the frames it appears in) -- recommending "
             "--dither-mode none instead of the default Bayer dither.")
+    _covered = [r for r in band_regions
+                if r['classification'] == 'solid_tint'
+                and r.get('inside_protected_region_id') is not None]
     tint_widths = [r['band_only_width'] for r in band_regions
-                   if r['classification'] == 'solid_tint']
+                   if r['classification'] == 'solid_tint'
+                   and r.get('inside_protected_region_id') is None]
+    if _covered:
+        evidence.append(
+            f"{len(_covered)} solid-tint band-interior detection(s) sit INSIDE a region "
+            f"that is already getting --protect-outline-color, and are not counted toward "
+            f"--protect-band-only. The band-interior scan groups its per-frame detections "
+            f"by proximity before the protected regions are known, so one physical "
+            f"highlight can surface as many entries; these are that, not separate "
+            f"unprotected tints.")
     if tint_widths and not outline_colors:
         flags.append(f'--protect-band-only {max(tint_widths)}')
         evidence.append(
@@ -1137,7 +1209,8 @@ def recommend(input_path, tolerance=15):
     # it does. Compute that multiplier instead of leaving it to be rediscovered.
     _band_top = tolerance * 4.0
     _tint_dists = [r.get('mean_distance_from_bg') for r in report.get('band_interior_regions', [])
-                   if r.get('classification') == 'solid_tint' and r.get('mean_distance_from_bg')]
+                   if r.get('classification') == 'solid_tint' and r.get('mean_distance_from_bg')
+                   and r.get('inside_protected_region_id') is None]
     _at_risk = [d for d in _tint_dists if tolerance < d <= _band_top]
     if _at_risk:
         # ⚠️ The band cannot be narrowed arbitrarily far. Narrowing it protects the
@@ -1296,13 +1369,136 @@ def recommend(input_path, tolerance=15):
 
 
 def color_mask(rgb, target, tolerance):
-    diff = np.abs(rgb.astype(int) - np.array(target).astype(int))
-    return np.all(diff <= tolerance, axis=-1)
+    """
+    Per-channel "within `tolerance` of `target`", i.e. abs(rgb - target) <= tol
+    on all three channels.
+
+    The obvious spelling -- `np.abs(rgb.astype(int) - target)` then `np.all(...)`
+    -- upcasts a uint8 frame to int64, so an 800x600 frame allocates and walks
+    11 MB per call where the answer needs none of it. This is the single most
+    called function in analyze() (1,772 calls, 16s of self time on a 1000x1200
+    asset before this change), so the allocation dominates.
+
+    Comparing in place against a clipped inclusive range is arithmetically the
+    same statement: abs(x - t) <= tol  <=>  t - tol <= x <= t + tol. Clipping the
+    bounds into 0..255 is safe because a bound outside that range is satisfied by
+    every uint8 value anyway. Checked equal to the old implementation on random
+    arrays across tolerances 0, 1, 15, 40 and 300 and targets at both extremes.
+    """
+    a = np.asarray(rgb)
+    t = np.asarray(target)
+    mask = None
+    for c in range(3):
+        lo = max(int(t[c]) - int(tolerance), 0)
+        hi = min(int(t[c]) + int(tolerance), 255)
+        band = (a[..., c] >= lo) & (a[..., c] <= hi)
+        mask = band if mask is None else (mask & band)
+    return mask
+
+
+def _gather_outline_candidates(rgb, bg_rgb, comp_footprint, tolerance,
+                               dilation_radii=(4, 10, 20, 35, 55)):
+    """
+    Colors that appear in rings at several dilation radii around
+    comp_footprint, quantized so near-duplicate antialiased shades merge
+    into one candidate. Split out of find_verified_outline_color so the
+    partial-enclosure search below gathers candidates exactly the same way.
+    """
+    H, W, _ = rgb.shape
+    candidate_colors = {}
+    prev_cumulative = np.zeros((H, W), dtype=bool)
+    # `binary_dilation(mask, iterations=k)` with the default cross structure is k
+    # sequential erosion passes, so five radii cost 4+10+20+35+55 = 124 of them --
+    # measured as the single largest cost in analyze() (7.18s of 23.8s on
+    # Cut loop.gif, 749 calls). Iterated cross-dilation by k is EXACTLY "every
+    # pixel within taxicab distance k", so one chamfer distance transform answers
+    # all five radii at once. Verified equal to the old result at every radius on
+    # random multi-blob masks, and 4.3x faster on an 800x600 frame.
+    _taxicab = ndimage.distance_transform_cdt(~comp_footprint, metric='taxicab')
+    for radius in dilation_radii:
+        dilated = _taxicab <= radius
+        ring = dilated & ~comp_footprint & ~prev_cumulative
+        prev_cumulative = dilated & ~comp_footprint
+        if not ring.any():
+            continue
+        ring_pixels = rgb[ring]
+        not_bg = ~color_mask(ring_pixels[None, :, :], bg_rgb, tolerance)[0]
+        px = ring_pixels[not_bg]
+        if len(px) == 0:
+            continue
+        # Quantize to merge near-duplicate antialiased shades into one
+        # candidate rather than treating each as separate.
+        q = (px // 20 * 20).astype(np.uint8)
+        vals, counts = np.unique(q.reshape(-1, 3), axis=0, return_counts=True)
+        order = np.argsort(-counts)
+        for v in vals[order][:3]:
+            candidate_colors[tuple(int(x) for x in v)] = True
+    return list(candidate_colors)
+
+
+class _FilledOutlineCache:
+    """
+    Memo of `binary_fill_holes(color_mask(frame, colour))`, keyed by
+    (frame index, colour), bounded to `cap` entries with FIFO eviction.
+
+    The partial-enclosure search runs once per unenclosed design region, and
+    the SAME handful of candidate colours comes back for every one of them --
+    they are the art's own palette. Without this, a 1000x1200 asset with six
+    such regions paid for ~380 fill-holes passes and analyze() went from 46s
+    to 112s. The cap is what keeps the saving from turning into a memory
+    problem: each entry is one bool mask the size of a frame.
+    """
+
+    def __init__(self, frames, cap=64):
+        self._frames = frames
+        self._cap = cap
+        self._cache = {}
+        self._order = []
+
+    def filled(self, i, color, outline_tolerance):
+        key = (i, color, outline_tolerance)
+        hit = self._cache.get(key)
+        if hit is None:
+            omask = color_mask(self._frames[i], color, outline_tolerance)
+            hit = (ndimage.binary_fill_holes(omask, structure=STRUCTURE)
+                   if omask.any() else None)
+            self._cache[key] = hit
+            self._order.append(key)
+            if len(self._order) > self._cap:
+                del self._cache[self._order.pop(0)]
+        return hit
+
+
+class _LazyCoreBgMasks:
+    """
+    Per-frame largest_bg_component_mask results, built on first access and
+    reused. Every outline check wants the same masks: candidate rejection
+    (find_verified_outline_color), the all-frames leak test
+    (detect_outline_background_leak, once per REGION before this) and the
+    partial-enclosure search. Rebuilding them each time was the dominant
+    cost of analyze() on a long asset.
+    """
+
+    def __init__(self, frames, bg_rgb, tolerance):
+        self._frames = frames
+        self._bg_rgb = bg_rgb
+        self._tolerance = tolerance
+        self._cache = {}
+
+    def __len__(self):
+        return len(self._frames)
+
+    def __getitem__(self, i):
+        if i not in self._cache:
+            self._cache[i] = largest_bg_component_mask(
+                self._frames[i], self._bg_rgb, self._tolerance)
+        return self._cache[i]
 
 
 def find_verified_outline_color(rgb, bg_rgb, comp_footprint, tolerance,
                                  outline_tolerance=40,
-                                 dilation_radii=(4, 10, 20, 35, 55)):
+                                 dilation_radii=(4, 10, 20, 35, 55),
+                                 core_bg=None):
     """
     Find a color that VERIFIABLY encloses comp_footprint, instead of just
     guessing from whatever color is immediately adjacent (see the long
@@ -1320,27 +1516,10 @@ def find_verified_outline_color(rgb, bg_rgb, comp_footprint, tolerance,
 
     Returns (hex_color_or_None, filled_area_or_None, filled_mask_or_None).
     """
-    H, W, _ = rgb.shape
-    candidate_colors = {}
-    prev_cumulative = np.zeros((H, W), dtype=bool)
-    for radius in dilation_radii:
-        dilated = ndimage.binary_dilation(comp_footprint, iterations=radius)
-        ring = dilated & ~comp_footprint & ~prev_cumulative
-        prev_cumulative = dilated & ~comp_footprint
-        if not ring.any():
-            continue
-        ring_pixels = rgb[ring]
-        not_bg = ~color_mask(ring_pixels[None, :, :], bg_rgb, tolerance)[0]
-        px = ring_pixels[not_bg]
-        if len(px) == 0:
-            continue
-        # Quantize to merge near-duplicate antialiased shades into one
-        # candidate rather than treating each as separate.
-        q = (px // 20 * 20).astype(np.uint8)
-        vals, counts = np.unique(q.reshape(-1, 3), axis=0, return_counts=True)
-        order = np.argsort(-counts)
-        for v in vals[order][:3]:
-            candidate_colors[tuple(int(x) for x in v)] = True
+    candidate_colors = _gather_outline_candidates(
+        rgb, bg_rgb, comp_footprint, tolerance, dilation_radii)
+    if core_bg is None:
+        core_bg = largest_bg_component_mask(rgb, bg_rgb, tolerance)
 
     # Verify each candidate the same way --protect-outline-color would
     # actually use it at process time: build that color's mask, run the
@@ -1357,6 +1536,22 @@ def find_verified_outline_color(rgb, bg_rgb, comp_footprint, tolerance,
         if not omask.any():
             continue
         filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE)
+        # ⚠️ DEGENERATE CANDIDATE REJECT. A colour whose filled shape swallows
+        # the real background is not enclosing anything -- it "contains" the
+        # footprint only because it contains the entire canvas. Measured on
+        # `Cut loop.gif`: candidate dcdcdc's mask covers 442,385 px, fills to
+        # 480,000 (every pixel of an 800x600 frame) and overlaps 423,855 px of
+        # true background, yet it scored containment 1.0 and WON the
+        # tightest-fit contest as the only "verified" candidate. It was then
+        # rejected one step later by detect_outline_background_leak, and
+        # because selection had already thrown the other candidates away the
+        # whole design region fell through to no protection at all -- 976,800
+        # px of artwork destroyed on the GIF path (references/lessons.md SS26).
+        # This is the SAME criterion that rejection uses, applied while the
+        # alternatives are still on the table, so it can only ever turn
+        # "region abandoned" into "next candidate considered".
+        if (filled & core_bg).sum() > 20:
+            continue
         containment = (comp_footprint & filled).sum() / max(comp_footprint.sum(), 1)
         if containment >= 0.95:
             area = int(filled.sum())
@@ -1364,6 +1559,107 @@ def find_verified_outline_color(rgb, bg_rgb, comp_footprint, tolerance,
                 best_color, best_area, best_shape = rgb_to_hex(np.array(color)), area, filled
 
     return best_color, best_area, best_shape
+
+
+def find_partial_enclosure_outline_color(all_rgb_frames, sample_idxs, bg_rgb,
+                                         tolerance, comp_footprint,
+                                         core_bg_masks, outline_tolerance=40,
+                                         fill_cache=None):
+    """
+    Last resort for a design region that NO colour encloses on any single
+    frame, where the alternative is not a weaker protection but none at all.
+
+    find_verified_outline_color asks a binary question -- does this colour's
+    filled shape contain 95% of the footprint -- on ONE representative frame.
+    Two things defeat it at once on a shape that opens and closes as it
+    animates (measured on `Cut loop.gif`, a pokeball that unlatches):
+
+      1. the footprint is a UNION across frames, so it is far larger than
+         what any one frame's outline can hold (30,191 px against a 13,603 px
+         hole on the widest frame); and
+      2. the outline only closes on part of the animation -- 15 of 76 frames
+         here -- because in the rest the interior is an open bowl,
+         topologically continuous with the background.
+
+    Neither makes the colour wrong. At process time the per-frame mask
+    substitution propagates the closed frames' shape to the open ones,
+    clamped to each frame's own silhouette, which is exactly what
+    --protect-outline-color 39215a does on that asset: 976,800 px of artwork
+    preserved that the recommender's fallback destroyed entirely.
+
+    So this searches the same candidates for the one that encloses the MOST
+    of the region across sampled frames, and gates it on the one property
+    that actually distinguishes a usable outline from a damaging one: it must
+    never swallow real background on ANY sampled frame. That is a hard
+    physical test (the same >20 px criterion detect_outline_background_leak
+    uses), not a tuned margin -- and a colour that passes it cannot keep
+    background that should have been removed, so against zero protection it
+    is a strict improvement.
+
+    Returns None, or a dict describing the winning colour.
+    """
+    candidates = {}
+    for i in list(sample_idxs)[:6]:
+        for c in _gather_outline_candidates(all_rgb_frames[i], bg_rgb,
+                                            comp_footprint, tolerance):
+            candidates[c] = candidates.get(c, 0) + 1
+    # Rank by how many of the gather frames proposed the colour, and score at most
+    # the top 8. A colour seen on one frame out of six is a transient element
+    # passing through, not this region's boundary.
+    ordered = sorted(candidates, key=lambda c: -candidates[c])[:8]
+
+    footprint_total = max(int(comp_footprint.sum()), 1)
+    # TWO STAGE, because this runs per unenclosed design region and a fill-holes
+    # pass over every sampled frame for every candidate is the single most
+    # expensive thing analyze() can do -- measured, the naive one-stage version
+    # took a 1000x1200 8-frame asset with six such regions from 46s to 112s.
+    # Stage 1 ranks on a subset; stage 2 re-runs the WHOLE leak gate on the
+    # winner across every sampled frame, so the hard guarantee is unchanged.
+    scan = list(sample_idxs)[:12] if len(sample_idxs) > 12 else list(sample_idxs)
+
+    if fill_cache is None:
+        fill_cache = _FilledOutlineCache(all_rgb_frames)
+
+    def _score(color, frames):
+        total = best_px = frames_with = 0
+        best_idx = None
+        for i in frames:
+            filled = fill_cache.filled(i, color, outline_tolerance)
+            if filled is None:
+                continue
+            if (filled & core_bg_masks[i]).sum() > 20:
+                return None
+            got = int((comp_footprint & filled).sum())
+            if got:
+                frames_with += 1
+                total += got
+                if got > best_px:
+                    best_px, best_idx = got, int(i)
+        if best_px == 0:
+            return None
+        return total, best_px, best_idx, frames_with
+
+    ranked = []
+    for color in ordered:
+        r = _score(color, scan)
+        if r is not None:
+            ranked.append((r[0], color))
+    for _total, color in sorted(ranked, key=lambda x: -x[0]):
+        full = _score(color, sample_idxs)
+        if full is None:      # leaks on a frame the subset did not cover
+            continue
+        total, best_px, best_idx, frames_with = full
+        return {
+            'color': rgb_to_hex(np.array(color)),
+            'frames_sampled': len(sample_idxs),
+            'frames_with_enclosure': frames_with,
+            'best_frame_index': best_idx,
+            'best_frame_enclosed_px': best_px,
+            'best_frame_enclosed_fraction': round(best_px / footprint_total, 3),
+            'total_enclosed_px_across_frames': total,
+            'leaks_into_background': False,
+        }
+    return None
 
 
 def verify_outline_enclosure_all_frames(all_rgb_frames, outline_hex, comp_footprint, outline_tolerance=40):
@@ -1400,7 +1696,8 @@ def verify_outline_enclosure_all_frames(all_rgb_frames, outline_hex, comp_footpr
     }
 
 
-def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_hex, outline_tolerance=40):
+def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_hex,
+                                   outline_tolerance=40, core_bg_masks=None):
     """
     Opposite failure direction from verify_outline_enclosure_all_frames: not
     "does the outline fail to enclose the intended region" but "does the
@@ -1420,7 +1717,8 @@ def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_he
         if not omask.any():
             continue
         filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE)
-        core_bg = largest_bg_component_mask(rgb, bg_rgb, tolerance)
+        core_bg = (core_bg_masks[i] if core_bg_masks is not None
+                   else largest_bg_component_mask(rgb, bg_rgb, tolerance))
         leaked = int((filled & core_bg).sum())
         if leaked > max_leak:
             max_leak = leaked
@@ -1471,6 +1769,14 @@ def parse_protect_region(spec, shape):
 
 def parse_protect_regions(spec, shape):
     """
+    ⚠️ COORDINATES ARE IN **SOURCE** PIXELS, always. Every region flag
+    (--protect-region, --remove-region, --translucent-region) is applied before
+    --crop, --resize-max-dim and --square-pad, so measure the coordinates off
+    the INPUT file, never off a cropped or resized output. Nothing in the code
+    can catch a mis-measured region -- it will simply protect, remove or
+    dissolve the wrong rectangle -- so the ordering is stated here rather than
+    left to be inferred from the call sites.
+
     Parse one or more `;`-separated protect-region specs (each itself a
     `circle:cx,cy,r` or `rect:x,y,w,h`) and union their masks. `;` rather
     than `,` is the separator between specs specifically because `,`
@@ -1487,6 +1793,52 @@ def parse_protect_regions(spec, shape):
             continue
         union |= parse_protect_region(one_spec, (H, W))
     return union
+
+
+def apply_translucent_regions(rgb_frames, alpha_frames, region_mask, alpha_fraction,
+                              target_rgb, tolerance):
+    """
+    Reduce alpha to `alpha_fraction` inside region_mask, for art where the same
+    colour plays a THIRD role the binary keep/remove split cannot express:
+    material that should read as see-through.
+
+    The motivating asset is a bunny holding a transparent bag of popcorn, where
+    one #ffffff serves as outer background (remove), bunny body (keep opaque) and
+    bag interior (make translucent). No pixel-level rule separates them -- the
+    pixels are byte-identical -- and the obvious structural hypothesis was that
+    the bag interior is topologically connected to the outer background through
+    the bag's opening, which would at least have explained the behaviour.
+
+    MEASURED, and it is false: on frame 0 the bag interior is component 2, 14,069
+    px, NOT border-connected, and the bunny's body is component 3, 27,767 px, also
+    not border-connected. Both are fully enclosed pockets bounded by the same
+    brown outline. Connectivity cannot tell them apart, and neither can colour,
+    so nothing recoverable from the pixels can -- in flat vector art "translucent"
+    is authoring intent, not evidence. That rules the structural route out and
+    leaves naming the region, which is what this does.
+
+    Two restrictions keep a coarse rectangle from doing collateral damage, which
+    matters because the region has to be given by hand:
+
+    * COLOUR. Only pixels within `tolerance` of `target_rgb` are affected --
+      the glass itself, which is the background-coloured enclosed area. Without
+      this a rectangle over the bag also turns the POPCORN inside it
+      translucent, which is exactly backwards: the contents are what you are
+      supposed to see through the glass.
+    * ALPHA. Only pixels that are ALREADY opaque are lowered, so an antialiasing
+      ramp or a recovered fade inside the region keeps its own alpha instead of
+      being raised to the translucency level.
+
+    Needs an 8-bit-alpha container; the caller enforces that.
+    """
+    level = int(round(255 * alpha_fraction))
+    out = []
+    for rgb, a in zip(rgb_frames, alpha_frames):
+        a = a.copy()
+        touch = region_mask & (a > level) & color_mask(rgb, target_rgb, tolerance)
+        a[touch] = level
+        out.append(a)
+    return out
 
 
 def apply_remove_regions(rgb_frames, alpha_frames, remove_mask, feather_px=1.5):
@@ -2283,7 +2635,7 @@ def describe_written_timing(output_path, intended_durations):
             f"total playback unchanged at {written_total}ms")
 
 
-def load_gif_rgba_frames(path):
+def load_animation_rgba_frames(path):
     """
     Read every frame of a GIF as (rgb, alpha, duration). Works for both an
     unprocessed source (alpha will be all-255, since a source GIF's own
@@ -2309,6 +2661,13 @@ def load_gif_rgba_frames(path):
         alpha_frames.append(arr[:, :, 3].copy())
     return rgb_frames, alpha_frames, durations
 
+
+# Kept because the old name appears in this project's own written history
+# (references/lessons.md SS17). The reader is GIF-only in name only: it handles
+# GIF, WebP, AVIF, APNG, PNG and JPEG, and that name reinforced the GIF-only
+# misconception inside the code -- the same misconception that kept non-GIF
+# input out of the skill description for two versions.
+load_gif_rgba_frames = load_animation_rgba_frames
 
 def align_input_to_output_frames(in_durations, out_durations):
     """
@@ -2380,8 +2739,8 @@ def verify(input_path, output_path, tolerance=15):
     exercising (a region that should have stayed protected but didn't),
     which nothing in the original design could see at all.
     """
-    in_rgb, _, in_durations = load_gif_rgba_frames(input_path)
-    out_rgb, out_alpha, out_durations = load_gif_rgba_frames(output_path)
+    in_rgb, _, in_durations = load_animation_rgba_frames(input_path)
+    out_rgb, out_alpha, out_durations = load_animation_rgba_frames(output_path)
 
     report = {'input_path': input_path, 'output_path': output_path}
 
@@ -2425,8 +2784,7 @@ def verify(input_path, output_path, tolerance=15):
     # really just background" -- see the docstring above for why this is
     # necessary, not optional polish.
     input_analysis = analyze(input_path, tolerance=tolerance)
-    _ext = os.path.splitext(output_path)[1].lower()
-    _out_fmt = {'.webp': 'webp', '.avif': 'avif'}.get(_ext, 'gif')
+    _out_fmt = format_from_path(output_path)
 
     protected_regions = [r for r in input_analysis['candidate_regions']
                           if r['likely_intentional_design']]
@@ -2689,14 +3047,42 @@ def verify(input_path, output_path, tolerance=15):
                     _present >= 0.9 and _cv <= 0.15
                     and _mean_blobs <= 2.0 and _mean_frac <= 0.35),
             }
+        _expected = (r.get('candidate_outline_color')
+                     or (r.get('partial_outline') or {}).get('color'))
         protected_coverage.append({
             'region_id': r['id'],
             'frames_with_data': len(opacities),
             'mean_opacity_fraction': round(mean_opacity, 3),
             'looks_unprotected': looks_unprotected,
+            'expected_protection': (f'--protect-outline-color {_expected}' if _expected
+                                    else 'none was recommended'),
             'residual_nonopaque': residual,
         })
     report['protected_region_coverage'] = protected_coverage
+
+    # A region analyze() called `likely_intentional_design` that comes back at
+    # essentially ZERO opacity did not get "less" protection -- it got none, and
+    # the artwork is gone. This number was already being computed and printed as
+    # one neutral statistic among a dozen: on the asset behind SS26, `--auto`
+    # reported `worst protected-region coverage: 0.0` and then declared success,
+    # while 976,800 px of design were destroyed. Saying it loudly is the general
+    # detector for that whole class, independent of which flag was at fault.
+    #
+    # 0.05 is not a fine margin: every real failure measured reads exactly 0.000
+    # (Cut loop, Starters!, pandapanda, 2d4a092f before the SS26 fix) and the
+    # weakest genuine SUCCESS reads 0.331, so the threshold sits in a 0.33-wide
+    # gap rather than between two neighbouring assets.
+    _dead = [c for c in protected_coverage
+             if c['frames_with_data'] and c['mean_opacity_fraction'] < 0.05]
+    report['unprotected_design_regions'] = _dead
+    for c in _dead:
+        print(f"WARNING: region {c['region_id']} was identified as intentional design "
+              f"but came out {c['mean_opacity_fraction']:.1%} opaque -- it received NO "
+              f"protection, not weak protection. Expected protection: "
+              f"{c['expected_protection']}. Re-run --analyze and read that region's note: "
+              f"either the outline colour is wrong, or no colour encloses the region and "
+              f"it needs --protect-region or a manually identified outline "
+              f"(references/lessons.md SS26).", file=sys.stderr)
 
     # Small-region inflation: match each input small removed region to its
     # nearest output alpha==0 region by CENTROID within a size-scaled search
@@ -3223,20 +3609,36 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
     return out_rgb, out_alpha
 
 
-def resolve_output_format(output_path, args):
+def format_from_path(path):
     """
-    'gif', 'webp' or 'avif' for this run. --format wins; otherwise the output
-    file extension decides, defaulting to gif.
+    Container implied by a file extension. Shared by resolve_output_format and
+    verify() so the two cannot disagree -- they did: verify() carried its own
+    `{'.webp': ..., '.avif': ...}.get(ext, 'gif')` map, so an APNG output was
+    classified as GIF, and the report then withheld the 8-bit scope note and
+    described an 8-bit file in 1-bit terms. Found by audit, not by any gate:
+    every check passed because a GIF verdict on a valid file looks like a pass.
     """
-    explicit = getattr(args, 'format', None)
-    if explicit and explicit != 'auto':
-        return explicit
-    low = str(output_path).lower()
+    low = str(path).lower()
     if low.endswith('.webp'):
         return 'webp'
     if low.endswith('.avif'):
         return 'avif'
+    if low.endswith('.apng') or low.endswith('.png'):
+        return 'apng'
     return 'gif'
+
+
+def resolve_output_format(output_path, args):
+    """
+    'gif', 'webp', 'avif' or 'apng' for this run. --format wins; otherwise the
+    output file extension decides, defaulting to gif. `.png` resolves to apng
+    too: Pillow writes a single-frame APNG as an ordinary PNG, so a static
+    source and an animated one both do the right thing under one extension.
+    """
+    explicit = getattr(args, 'format', None)
+    if explicit and explicit != 'auto':
+        return explicit
+    return format_from_path(output_path)
 
 
 def render_frames_to_webp(rgb_frames, alpha_frames, durations, loop, output_path,
@@ -3306,6 +3708,27 @@ def render_frames_to_avif(rgb_frames, alpha_frames, durations, loop, output_path
            for r, a in zip(rgb_frames, alpha_frames)]
     ims[0].save(output_path, 'AVIF', save_all=True, append_images=ims[1:],
                 duration=list(durations), loop=loop, quality=quality)
+    return os.path.getsize(output_path)
+
+
+def render_frames_to_apng(rgb_frames, alpha_frames, durations, loop, output_path):
+    """
+    Save RGB+alpha arrays as an animated PNG with true 8-bit alpha.
+
+    APNG is the PNG-family answer to the same problem WebP and AVIF solve here:
+    it stores straight (non-premultiplied) 8-bit alpha, so a recovered fade
+    survives it. It is lossless and needs no capability check -- Pillow's PNG
+    writer has always handled `save_all=True` (verified: a 3-frame RGBA save
+    reads back as n_frames=3, mode=RGBA), unlike AVIF which depends on a plugin.
+
+    It is the largest of the three by some margin on photographic content, so
+    --recommend still ranks WebP and AVIF ahead of it; APNG is here for the case
+    where the destination wants PNG specifically.
+    """
+    ims = [Image.fromarray(np.dstack([r, a[:, :, None]]).astype(np.uint8), 'RGBA')
+           for r, a in zip(rgb_frames, alpha_frames)]
+    ims[0].save(output_path, 'PNG', save_all=True, append_images=ims[1:],
+                duration=list(durations), loop=loop, disposal=2)
     return os.path.getsize(output_path)
 
 
@@ -3409,6 +3832,10 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
             fr, al = resize_rgba_frames(fr, al, scale, resample=resample, binarize=False)
         if fmt == 'avif':
             return render_frames_to_avif(fr, al, dur, loop, output_path, quality=quality)
+        if fmt == 'apng':
+            # Lossless only -- APNG has no quality knob, so the cascade can trade
+            # resolution and frames for it but not encoder quality.
+            return render_frames_to_apng(fr, al, dur, loop, output_path)
         return render_frames_to_webp(fr, al, dur, loop, output_path,
                                      lossless=lossless, quality=quality,
                                      method=getattr(args, 'webp_method', 4))
@@ -4168,7 +4595,13 @@ def process(input_path, output_path, args, diagnostics=None):
     args = copy.copy(args)          # never mutate the caller's args (batch reuses them)
     out_format = resolve_output_format(output_path, args)
     if getattr(args, 'dither_mode', None) is None:
-        args.dither_mode = 'continuous' if out_format in ('webp', 'avif') else 'bayer'
+        args.dither_mode = 'continuous' if out_format in EIGHT_BIT_ALPHA_FORMATS else 'bayer'
+    if getattr(args, 'translucent_region', None) and out_format not in EIGHT_BIT_ALPHA_FORMATS:
+        raise SystemExit(
+            "--translucent-region needs PARTIAL transparency, which GIF cannot "
+            "store (1-bit alpha). Write a .webp, .avif or .apng output instead.")
+    if not 0.0 <= getattr(args, 'translucent_alpha', 0.35) <= 1.0:
+        raise SystemExit("--translucent-alpha must be between 0.0 and 1.0.")
     if getattr(args, 'recover_fade_alpha', False) and out_format == 'gif':
         raise SystemExit(
             "--recover-fade-alpha recovers PARTIAL transparency, which GIF cannot "
@@ -4206,14 +4639,14 @@ def process(input_path, output_path, args, diagnostics=None):
         # -- a visible pale fringe. At erosion 1 that collapses to 0.2% (mean
         # distance 15.6). 1 keeps the edge clean AND keeps thin strokes.
         args.edge_cleanup_erosion = (
-            0 if out_format in ('webp', 'avif')
+            0 if out_format in EIGHT_BIT_ALPHA_FORMATS
             else 1 if (args.dither_mode == 'none' and not args.pixel_art)
             else 2)
         if args.edge_cleanup_erosion != 2:
             print(f"edge-cleanup erosion defaulted to {args.edge_cleanup_erosion} "
                   f"({'8-bit alpha needs no fringe trim' if out_format != 'gif' else 'no Bayer noise to trim under --dither-mode none, and 2 deletes thin strokes'}). "
                   f"Pass --edge-cleanup-erosion explicitly to override.", file=sys.stderr)
-    if out_format in ('webp', 'avif'):
+    if out_format in EIGHT_BIT_ALPHA_FORMATS:
         # --compress is GIF-encoder specific (palette quantization + gifsicle).
         # --target_kb is NOT: it is handled by fit_to_target_bytes below.
         gif_only = [n for n in ('compress',) if getattr(args, n, None)]
@@ -4413,6 +4846,21 @@ def process(input_path, output_path, args, diagnostics=None):
                 if len(damage) > 5:
                     print(f"  ...and {len(damage) - 5} more.", file=sys.stderr)
 
+    # Translucency regions, applied before --remove-region so a force-removal
+    # inside one still wins.
+    if getattr(args, 'translucent_region', None):
+        H0, W0 = alpha_frames[0].shape
+        _tmask = parse_protect_regions(args.translucent_region, (H0, W0))
+        _before = sum(int((a >= 250).sum()) for a in alpha_frames)
+        _tcol = hex_to_rgb(args.translucent_color or args.bg_color)
+        alpha_frames = apply_translucent_regions(
+            rgb_frames, alpha_frames, _tmask, args.translucent_alpha,
+            _tcol, args.tolerance)
+        _after = sum(int((a >= 250).sum()) for a in alpha_frames)
+        print(f"--translucent-region: {_before - _after} pixels taken to "
+              f"{args.translucent_alpha:.0%} alpha across {len(alpha_frames)} frame(s).",
+              file=sys.stderr)
+
     # Force-remove regions (inverse of --protect-region), applied last so it
     # overrides whatever --protect-outline-color / --protect-region decided
     # -- see apply_remove_regions' docstring for the case this is for.
@@ -4492,7 +4940,7 @@ def process(input_path, output_path, args, diagnostics=None):
             # pleasingly small (97 KB) because the pulses were gone.
             # --recover-fade-alpha bypasses compute_alpha_mask entirely, so it
             # produces 8-bit alpha regardless of dither_mode -- test both.
-            keeps_alpha = _fmt in ('webp', 'avif') and (
+            keeps_alpha = _fmt in EIGHT_BIT_ALPHA_FORMATS and (
                 args.dither_mode == 'continuous'
                 or getattr(args, 'recover_fade_alpha', False))
             rgb_frames, alpha_frames = resize_rgba_frames(
@@ -4539,7 +4987,23 @@ def process(input_path, output_path, args, diagnostics=None):
             rgb_frames, alpha_frames, hex_to_rgb(args.bg_color))
         print(f"Square-padded {before[1]}x{before[0]} -> "
               f"{alpha_frames[0].shape[1]}x{alpha_frames[0].shape[0]}", file=sys.stderr)
-    if _fmt == 'avif':
+    if _fmt == 'apng':
+        size_bytes = render_frames_to_apng(
+            rgb_frames, alpha_frames, durations, loop, output_path)
+        written = read_animation_timing(output_path)
+        if len(rgb_frames) == 1:
+            # A one-frame output is a still image. "timing not read back" is true
+            # but reads as a failed verification of something that does not exist.
+            timing = "1 frame (static image -- no animation timing to verify)"
+        elif written is None:
+            timing = (f"{len(rgb_frames)} frames intended; timing not read back "
+                      f"(no reader available for this container)")
+        else:
+            n, total = written
+            timing = (f"{n} frames, {total}ms total"
+                      + ("" if total == sum(durations)
+                         else f" -- WARNING: source was {sum(durations)}ms"))
+    elif _fmt == 'avif':
         size_bytes = render_frames_to_avif(
             rgb_frames, alpha_frames, durations, loop, output_path,
             quality=args.avif_quality)
@@ -4547,7 +5011,11 @@ def process(input_path, output_path, args, diagnostics=None):
         # write -- the SS13/SS16 footgun. If the reader cannot supply timing,
         # say so instead of asserting a number that cannot fail.
         written = read_animation_timing(output_path)
-        if written is None:
+        if len(rgb_frames) == 1:
+            # A one-frame output is a still image. "timing not read back" is true
+            # but reads as a failed verification of something that does not exist.
+            timing = "1 frame (static image -- no animation timing to verify)"
+        elif written is None:
             timing = (f"{len(rgb_frames)} frames intended; timing not read back "
                       f"(no reader available for this container)")
         else:
@@ -4596,7 +5064,7 @@ def process(input_path, output_path, args, diagnostics=None):
                   f"the gifsicle encoding pass, so the size reduction will "
                   f"be smaller than normal for this tier.", file=sys.stderr)
 
-    if args.target_kb and _fmt in ('webp', 'avif'):
+    if args.target_kb and _fmt in EIGHT_BIT_ALPHA_FORMATS:
         final_size = os.path.getsize(output_path)
         if final_size / 1024 <= args.target_kb:
             print(f"Already under the {args.target_kb} KB target -- no further "
@@ -4825,8 +5293,8 @@ def post_render_fringe_check(input_path, output_path, tolerance=15):
     Returns the mean fraction, or None if it could not be measured.
     """
     try:
-        in_rgb, _, _ = load_gif_rgba_frames(input_path)
-        out_rgb, out_alpha, _ = load_gif_rgba_frames(output_path)
+        in_rgb, _, _ = load_animation_rgba_frames(input_path)
+        out_rgb, out_alpha, _ = load_animation_rgba_frames(output_path)
     except Exception:
         return None
     if not in_rgb or not out_rgb:
@@ -5011,31 +5479,35 @@ def auto_run(input_path, output_path, args, parser):
     # full verify() is available and free, and it covers the duration/frame-count
     # class that SS17 was -- so report all of it rather than implying that a clean
     # fringe reading means a clean file.
-    if resolve_output_format(output_path, args) == 'gif':
-        try:
-            _v = verify(input_path, output_path, tolerance=args.tolerance)
-            _lb = _v.get('leftover_background_opaque_px', {})
-            _tm = _v.get('timing', {}) or {}
-            print(f"  full verify -- leftover background (worst frame): "
-                  f"{_lb.get('max_per_frame')}", file=sys.stderr)
-            _pc = [p for p in (_v.get('protected_region_coverage') or [])
-                   if p.get('mean_opacity_fraction') is not None]
-            if _pc:
-                _worst = min(_pc, key=lambda x: x['mean_opacity_fraction'])
-                print(f"  full verify -- worst protected-region coverage: "
-                      f"{_worst['mean_opacity_fraction']}", file=sys.stderr)
-            if _tm:
-                print(f"  full verify -- timing: {_tm}", file=sys.stderr)
-        except SystemExit:
-            pass
-        except Exception as _exc:
-            print(f"  full verify unavailable ({_exc}) -- reporting the fringe check only, "
-                  f"not a clean bill of health.", file=sys.stderr)
-    else:
-        print("  (8-bit-alpha output: only the alpha-aware fringe check ran. "
-              "verify()'s leftover-background and protected-coverage checks are still "
-              "1-bit assumptions -- backlog item 9 -- so this is NOT a full verification.)",
-              file=sys.stderr)
+    # Run the FULL verify for every container, not only GIF. The note this
+    # replaced said the leftover-background and protected-coverage checks were
+    # "still 1-bit assumptions" -- that stopped being true when they were made
+    # partial-alpha aware (leftover counts only alpha>=250 background-coloured
+    # pixels; the fringe metric looks at the outermost near-opaque ring), but the
+    # GIF-only gate around the call site was never lifted with them. The effect
+    # was that WebP -- the format --recommend actively prefers -- got the
+    # weakest self-check of any output this tool writes, including the
+    # zero-coverage warning that exists to catch a wholly unprotected region.
+    try:
+        _v = verify(input_path, output_path, tolerance=args.tolerance)
+        _lb = _v.get('leftover_background_opaque_px', {})
+        _tm = _v.get('timing', {}) or {}
+        print(f"  full verify -- leftover background (worst frame): "
+              f"{_lb.get('max_per_frame')}", file=sys.stderr)
+        _pc = [p for p in (_v.get('protected_region_coverage') or [])
+               if p.get('mean_opacity_fraction') is not None]
+        if _pc:
+            _worst = min(_pc, key=lambda x: x['mean_opacity_fraction'])
+            print(f"  full verify -- worst protected-region coverage: "
+                  f"{_worst['mean_opacity_fraction']}", file=sys.stderr)
+        if _tm:
+            print(f"  full verify -- timing: {_tm}", file=sys.stderr)
+    except SystemExit:
+        pass
+    except Exception as _exc:
+        print(f"  full verify unavailable ({_exc}) -- reporting the fringe check only, "
+              f"not a clean bill of health.", file=sys.stderr)
+
 
 
 def main():
@@ -5340,9 +5812,39 @@ def main():
                          'frames of WebP under the same byte cap at comparable '
                          'apparent quality -- measured 124 frames at 244 KB where '
                          'WebP needed to drop to 42.')
-    p.add_argument('--format', choices=['auto', 'gif', 'webp', 'avif'], default='auto',
-                    help='Output container. "auto" (default) picks webp when '
-                         'the output filename ends in .webp, else gif. WebP '
+    p.add_argument('--translucent-region', default=None,
+                    help='Make a named region SEE-THROUGH rather than opaque or '
+                         'removed -- glass, a transparent bag, a window. Same '
+                         'spec syntax as --protect-region '
+                         '(`circle:cx,cy,r` or `rect:x,y,w,h`, `;`-separated). '
+                         'Needed because the third role is not recoverable from '
+                         'the pixels: on the asset this was built for, the '
+                         'see-through bag interior and the opaque body are '
+                         'byte-identical white AND both fully enclosed pockets '
+                         'bounded by the same outline, so neither colour nor '
+                         'connectivity separates them (references/lessons.md '
+                         'SS27). Requires a .webp/.avif/.apng output. Only '
+                         'lowers alpha that is already opaque, so an '
+                         'antialiasing ramp inside the region keeps its own.')
+    p.add_argument('--translucent-color', default=None,
+                    help='Which colour inside --translucent-region becomes '
+                         'see-through, as hex. Defaults to the background '
+                         'colour, which is the glass case: the material is the '
+                         'same colour as the background and its CONTENTS are '
+                         'not, so restricting by colour is what stops a hand-'
+                         'drawn rectangle from also making the contents '
+                         'transparent.')
+    p.add_argument('--translucent-alpha', type=float, default=0.35,
+                    help='Alpha level --translucent-region applies, 0.0-1.0 '
+                         '(default 0.35).')
+    p.add_argument('--format', choices=['auto', 'gif', 'webp', 'avif', 'apng'],
+                    default='auto',
+                    help='Output container. "auto" (default) reads the output '
+                         'filename extension: .webp, .avif, .apng/.png, else '
+                         'gif. WebP, AVIF and APNG all carry true 8-bit alpha; '
+                         'APNG is lossless and needs no plugin, but is the '
+                         'largest of the three, so prefer it only when the '
+                         'destination wants PNG specifically. WebP '
                          'supports true 8-bit alpha, so it is the right '
                          'choice for art with a fade/glow that was baked '
                          'against the background at authoring time -- GIF '
@@ -5510,6 +6012,14 @@ def main():
         if not args.input_gif or not args.output_gif:
             p.error('both input_gif and output_gif are required when using --verify '
                     '(input_gif = original source, output_gif = the file to verify)')
+        # --verify inspects an output that ALREADY EXISTS; it does not render one.
+        # Passing a path that has not been written yet used to surface as a raw
+        # Pillow FileNotFoundError traceback from inside load_gif_rgba_frames,
+        # which reads like a crash rather than "you skipped the render".
+        if not os.path.exists(args.output_gif):
+            p.error(f'--verify inspects an output that already exists, and '
+                    f'{args.output_gif!r} does not. Run the processing first '
+                    f'(same command WITHOUT --verify), then re-run with --verify.')
         report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
         return
