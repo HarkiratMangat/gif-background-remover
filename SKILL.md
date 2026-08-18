@@ -5,7 +5,13 @@ description: Remove the background color from an animated image -- GIF, WebP or 
 
 # GIF Background Remover
 
-**Skill version: v5.1.1** (previous: v5.1.0, v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
+**Skill version: v5.2.0** (previous: v5.1.1, v5.1.0, v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
+
+**v5.2.0** is a *minor* bump: two confirmed crashes fixed on the INPUT path, plus the capability documentation that made them findable.
+- **A static source crashed** — `AttributeError: 'JpegImageFile' object has no attribute 'n_frames'`. That single attribute access was the only thing stopping the whole pipeline working on a one-frame image.
+- **An RGB-mode APNG crashed** — for a PALETTE image `transparency` is an index, but for RGB/RGBA Pillow stores a COLOUR TUPLE, and comparing an index array against a 3-tuple raises a broadcast error. A palette APNG worked, which is why this went unseen.
+- The workflow now leads with `--auto`, and six flags that existed only in the changelog are documented in the body — including `--auto` itself, the autonomy feature this skill is aimed at.
+- `references/lessons.md` gained a "how to read this file" block; it is ~32k tokens and must never be read whole.
 
 **v5.1.0** is a *minor* bump: two confirmed fixes that only bite in the claude.ai sandbox — the environment this skill actually ships to, and the one every test had missed because tests ran from the repo root where the bug is invisible.
 - **`--recommend` emitted a repo-relative script path** (`python3 scripts/remove_gif_background.py …`). An autonomous run pasting that verbatim in a sandbox gets "No such file or directory". It now derives the path from the script's own location.

@@ -18,7 +18,7 @@ Checks (all falsifiable, all cheap):
   4. every section is reachable from BOTH the table of contents and the symptom table
   5. no flag is documented that does not exist in argparse
 """
-import re, os, sys
+import re, os, sys, subprocess
 
 SK, LE, SC = 'SKILL.md', 'references/lessons.md', 'scripts/remove_gif_background.py'
 REFS = ['references/lessons.md', 'references/version-history.md',
@@ -31,7 +31,15 @@ def main():
     sk, le, sc = open(SK).read(), open(LE).read(), open(SC).read()
     fails = []
 
-    real = set(re.findall(r"add_argument\('(--[a-z0-9-]+)'", sc))
+    # Ground truth is the REAL CLI, not the source text. Reading add_argument() calls checks a
+    # SIGNATURE; running --help checks BEHAVIOUR, which is gate 5's own rule turned on this gate.
+    # A conditionally-registered or shadowed flag would pass the source check and fail for a user.
+    try:
+        _h = subprocess.run([sys.executable, SC, '--help'], capture_output=True, text=True, timeout=60).stdout
+        real = set(re.findall(r'(--[a-z0-9-]+)', _h)) & set(re.findall(r"add_argument\('(--[a-z0-9-]+)'", sc))
+    except Exception as e:
+        fails.append(f'could not run {SC} --help to enumerate real flags: {e}')
+        real = set(re.findall(r"add_argument\('(--[a-z0-9-]+)'", sc))
     lines = sk.split('\n')
     body = '\n'.join(lines[next(i for i, l in enumerate(lines) if l.startswith('## ')):])
     # references the BODY points at are fair game for documenting a flag
