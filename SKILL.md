@@ -221,8 +221,14 @@ already applies both** — trust that field over reading `ratio` yourself:
   across every sampled frame, not frame 0: love ranges 0.290–7.863 and heart
   0.239–9.008, so a single frame decides nothing.
 - AND `antialiasing_blend_ratio` under 0.15 — there are essentially no genuine
-  background-to-art blend pixels. Genuine pixel art measures **0.000** (it has
-  none by construction); the lowest real vector asset measured **1.530**.
+  background-to-art blend pixels. The lowest real vector asset measured
+  **1.530**. ⚠️ The claim that pixel art measures 0.000 "by construction" was
+  FALSE — it held only for a synthetic fixture; real pixel art measures up to
+  1.074. See the coloured-background warning below.
+- **UNLESS the transition band is empty in every sampled frame**
+  (`ratio_max_across_frames` exactly 0.000), which is dispositive on its own:
+  antialiasing IS intermediate pixels, so zero of them means none, and a blend
+  ratio computed on top of that is measuring palette collisions. §23.3
 
 `ratio` alone produced two false positives on real antialiased vector art —
 love 0.425 and heart 0.316 against the 0.5 threshold — because a clean export
@@ -230,6 +236,16 @@ made mostly of straight edges needs only a thin band. `--pixel-art` disables
 feathering and erosion, so applying it there is destructive. The blend ratio
 closes that gap by a margin of KIND (blends exist / do not) rather than degree.
 See `references/lessons.md` §1 and §18.1.
+
+⚠️ **Both measures are unreliable when the background is COLOURED rather than
+white**, because a solid palette colour then becomes indistinguishable from a
+blend: a solid art colour near the background inflates `ratio`, and a solid
+colour lying on a background→art line inflates the blend ratio. Measured
+2026-08-17 across 8 real pixel-art assets on coloured backgrounds, **6 were
+reported as antialiased** — one scoring `ratio` 20.895, higher than any
+genuinely antialiased asset in the corpus. The two measures' ranges overlap
+almost completely on this content. **On coloured-background art, zoom in and
+look before trusting either number.** §23
 
 **If `appears_hard_edged` is true → use `--pixel-art`** (bundles `--no-feather`,
 `--edge-cleanup-erosion 0`, and nearest-neighbor resizing into one flag).

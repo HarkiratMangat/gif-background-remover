@@ -333,3 +333,57 @@ improving at all.
   documentation gap (two `candidate_regions` fields shipped in Phase 1 but never documented, and
   `--recommend`'s actual outline-trust gate wasn't stated in "Run the real processing"). Pure docs
   change, no script touched. `references/lessons.md` gained a symptom→section lookup table.
+
+---
+
+### `[P1 · L · Opus5-High]` `edge_hardness` misclassifies pixel art on coloured backgrounds — 6 of 8 real assets
+
+**Added 2026-08-17.** Harkirat supplied `local/Diors-builds Emojis/others/` — 9 real assets, 8 of
+them genuine pixel art on COLOURED backgrounds. The tool calls 6 of the 8 antialiased. Full ground-
+truth table, both failure mechanisms, and the measured numbers: `references/lessons.md` §23.
+
+**Why P1 despite being pre-existing:** it is a correctness failure on a whole content class the
+skill explicitly claims to support, and it fails toward the destructive setting (feather + 2px
+erosion + LANCZOS on hard-edged art). §18's second discriminator was validated against a synthetic
+fixture generated in-session, which is circular — this is what that circularity was hiding.
+
+**Shipped 2026-08-17 (partial):** zero transition band is now dispositive, rescuing the subset that
+scores exactly 0.000. Two assets fixed, corpus unchanged. Six remain wrong.
+
+**Next action, in order:**
+1. Try a MODAL colour-run-length (histogram peak, outlier-tolerant) as a block-grid detector —
+   genuine pixel art is a nearest-neighbour upscale of a k-grid, which is a property of the
+   GEOMETRY and therefore immune to both palette-collision failure modes. A GCD-based first
+   attempt found k=20/20/4 on three assets and collapsed to 1 on the rest (one stray run kills a
+   GCD).
+2. Score any candidate against the 9 labelled assets in `others/` BEFORE believing it.
+3. ⚠️ **Do not ship a bare blend-ratio threshold.** It looks tempting — pixel art spans
+   0.000–1.074 and the antialiased corpus 1.530–2.529, so ~1.3 would score 13 of 14 — but the sole
+   overlap is the jar (antialiased, 0.999) against DFB2A5D7 (pixel art, 1.074), and a threshold
+   justified by a 0.075 gap between two assets is a margin of DEGREE, the exact trap §18 set out to
+   escape and then fell into.
+
+---
+
+### `[P2 · L · Opus5-High]` Translucent glass/jar: three roles for identical `#ffffff` pixels
+
+**Added 2026-08-17**, from `local/Diors-builds Emojis/others/2d4a092f5494a8d2455703857ee83d5c.gif`
+(Harkirat's own framing): a bunny holding a transparent bag of popcorn. The same `#ffffff` plays
+three different roles — outer background (remove entirely), bunny body (keep fully opaque), and jar
+interior (make TRANSLUCENT, so it reads as glass). Current behaviour does one or the other: either
+the jar interior is removed with the background, or it is protected and stays solid white.
+
+**No pixel-level threshold can separate these** — the pixels are byte-identical. The distinction is
+semantic, so this needs either a region/colour flag naming the glass, or a structural signal.
+
+**Only expressible in WebP/AVIF.** GIF's 1-bit alpha cannot hold "20% opaque", so this sits on top
+of the 8-bit alpha pathway added in v5.0.0 (§16), and is a natural extension of it rather than a
+new subsystem.
+
+**Cheap first measurement, not yet done:** check whether the jar's interior is topologically
+CONNECTED to the outer background through the bag's opening. If it is, flood-fill-from-border
+reaches straight into it, which would exactly explain the "removes the white inside the jar"
+half of the observed behaviour and would point at the fix.
+
+**Notable:** this asset is also the only ANTIALIASED file in `others/`, so it doubles as the
+negative control for the pixel-art item above (`blend` 0.999, `ratio_max` 0.649).

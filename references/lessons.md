@@ -34,6 +34,7 @@ scratch risks retrying an approach already known to fail.
 19. [`--auto`: verifying the OUTPUT, and calibrating each asset against itself](#19---auto-verifying-the-output-and-calibrating-each-asset-against-itself)
 20. [Auditing §19: five defects found by reviewing my own work](#20-auditing-19-five-defects-found-by-reviewing-my-own-work)
 21. [Four verification defects, and exempting by identity instead of by size](#21-four-verification-defects-and-exempting-by-identity-instead-of-by-size)
+23. [`edge_hardness` fails on pixel art with a coloured background — 6 of 8 real assets](#23-edge_hardness-fails-on-pixel-art-with-a-coloured-background--6-of-8-real-assets)
 22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
@@ -49,6 +50,7 @@ scratch risks retrying an approach already known to fail.
 | Scattered speckle dots where a fading element disappears | §16 |
 | A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
+| Pixel art on a COLOURED background read as antialiased | §23 (both measures fail; check the art by eye) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
 | Confused why alpha looks all-or-nothing | §7 |
@@ -2061,3 +2063,85 @@ both inside the addendum's separately measured 423–466 and 632–682 bands.
 flag.** The addendum ended with the right output and a recommender that would reproduce the defect
 on the next asset of the same shape — which is what `CLAUDE.md`'s end-goal section means by a manual
 tweak being the investigation rather than the fix.
+
+---
+
+## 23. `edge_hardness` fails on pixel art with a coloured background — 6 of 8 real assets
+
+**2026-08-17.** §18 added a second edge-hardness discriminator and validated it against a synthetic
+pixel-art fixture **I generated myself**. Harkirat then supplied `local/Diors-builds Emojis/others/`
+— 9 real assets, 8 of them genuine pixel art, all on COLOURED backgrounds rather than white. The
+fixture had been agreeing with me; the real assets do not.
+
+### 23.1 Ground truth vs. what the tool says
+
+| asset | truth | `ratio_max` | `blend` | verdict | |
+|---|---|---|---|---|---|
+| 07761f30 (frog) | pixel | 20.895 | 0.000 | antialiased | ❌ |
+| 2d4a092f (jar bunny) | **antialiased** | 0.649 | 0.999 | antialiased | ✅ |
+| 5bf1a3da (cat) | pixel | 1.776 | 0.000 | antialiased | ❌ |
+| 6CFF9959 | pixel | 2.046 | 0.199 | antialiased | ❌ |
+| 7cddd430 (cat+balloon) | pixel | 0.000 | 0.638 | pixel art | ✅ *(fixed here)* |
+| 8acad64c (nyan) | pixel | 17.428 | 0.006 | antialiased | ❌ |
+| 9a4177e8 | pixel | 0.000 | 0.000 | pixel art | ✅ |
+| DFB2A5D7 (frog) | pixel | 0.245 | 1.074 | antialiased | ❌ |
+| panda | pixel | 1.041 | 0.872 | antialiased | ❌ |
+
+**Three of nine correct** (two before the fix below). The consequence scales with sprite size:
+`--pixel-art` exists because feathering, 2px erosion and LANCZOS resizing destroy hard-edged art
+(§4 measured 0% survival on a 31px shape). On these large upscaled sprites it softens the blocky
+edges that ARE the art style rather than annihilating them — wrong, but not catastrophic.
+
+### 23.2 Both measures break, in opposite directions, for the same underlying reason
+
+**A solid palette colour is indistinguishable from a blend when the background is chromatic.**
+
+- **`ratio` (transition band)** counts pixels just outside the background tolerance. With a light-
+  green background (`#bbfeba`) and green art, solid art fill lands in that band: the frog scores
+  **20.895**, higher than any genuinely antialiased asset in the corpus. On white backgrounds with
+  dark art this never happens, which is why 640x640 navy-on-white art hid it.
+- **`blend`** counts near-boundary pixels lying on a background→art colour line. On the sprite with
+  a `#9cd6f7` sky, solid whites at `(255,255,255)`, `(252,252,253)` and `(228,246,255)` sit
+  **4.69, 2.35 and 2.92** from that line — inside the 14 it allows — so 63.8% "blends", all of them
+  palette collisions.
+
+The two measures' pixel-art ranges (0.000–20.895 and 0.000–1.074) **overlap the antialiased corpus
+almost entirely** on the band ratio, so it has no discriminating power here at all.
+
+### 23.3 What shipped: zero transition band is dispositive
+
+`_hard` was `(_eh_max < 0.5) and (_blend_ratio < 0.15)` — an AND, so the blend measure could VETO a
+correct verdict. On `7cddd430` it did: `transition_band_px 0`, `ratio 0.000`, and a 0.638 blend
+ratio made of pure collisions overrode it.
+
+Zero transition pixels across every sampled frame is now dispositive. Antialiasing IS intermediate
+pixels; none of them means none of it, and a blend ratio computed on top of that is measuring
+palette collisions. This cannot reopen §18's false positives — love and heart scored 7.863 and
+9.008, not 0. Verified: the corpus five all stay `False`, two pixel-art assets flip to `True`.
+
+**It is a partial fix and is documented as one.** It rescues only the subset scoring exactly zero.
+
+### 23.4 The leads for a real fix, and the trap in the better-looking one
+
+**`blend` alone nearly separates the whole set** — pixel art 0.000–1.074, antialiased corpus
+1.530–2.529. A threshold near 1.3 would get 13 of 14 right. **Do not ship that.** The single
+overlap is the jar (genuinely antialiased) at 0.999 against DFB2A5D7 (pixel art) at 1.074, and a
+threshold whose entire justification is a 0.075 gap between two assets is a margin of DEGREE — the
+exact thing §18 set out to escape and then re-introduced.
+
+**The structural discriminator is more promising: genuine pixel art is a nearest-neighbour upscale
+of a small grid**, so it decomposes into uniform k×k blocks — a property of the geometry, not the
+palette, and therefore immune to both failure modes above. A first attempt taking the GCD of colour
+run-lengths found k=20, k=20 and k=4 on three assets and collapsed to 1 on the rest, because a
+single stray run kills a GCD. A **modal** run-length (histogram peak, tolerating outliers) rather
+than a GCD is the obvious next attempt.
+
+`others/` is now a labelled 9-asset corpus with ground truth recorded above — any replacement
+measure should be scored against it before it is believed.
+
+### 23.5 The lesson, which is the same one §18 should have learned
+**A fixture you generated yourself cannot validate a discriminator.** §18's claim — "genuine pixel
+art has no background-to-art blends by construction" — reads as a statement about pixel art and was
+actually a statement about the file I happened to build: its palette contained no colour lying on a
+background→art line. Every real asset with a coloured background does. The synthetic fixture agreed
+with the theory because both came from the same set of assumptions.

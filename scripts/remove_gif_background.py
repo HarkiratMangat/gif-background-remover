@@ -827,7 +827,27 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # BOTH must agree before calling something hard-edged. The band ratio alone
     # produced two false positives on real vector art (SS18); requiring an
     # actual absence of background-to-art blends is what closes them.
-    _hard = (_eh_max < 0.5) and (_blend_ratio < 0.15)
+    #
+    # ...EXCEPT when there is no transition band AT ALL. SS18 asserted that
+    # "genuine pixel art has no background-to-art blends by construction" and
+    # validated that against a synthetic fixture I generated myself -- which is
+    # circular, and false. Real pixel art (SS23: a 1667x1667 sprite, palette of
+    # 9) scores blend_ratio 0.638, because measure_antialiasing_presence cannot
+    # tell a true blend from a SOLID palette colour that happens to lie on the
+    # segment between the background and another palette colour. Here the sky is
+    # 9cd6f7 and the art carries solid whites at 255,255,255 / 252,252,253 /
+    # 228,246,255 -- residuals 4.69, 2.35 and 2.92 from that line, all well
+    # inside the 14 the blend test allows. The blend measure then VETOED a
+    # correct verdict and handed pixel art the antialiased defaults, which are
+    # destructive on it (measured 0% survival, SS4).
+    #
+    # Zero transition pixels in every sampled frame is dispositive: antialiasing
+    # IS intermediate pixels, so none of them means none of it, and a blend
+    # ratio computed on top of that is measuring palette collisions. This cannot
+    # reopen SS18's false positives -- those scored 7.863 and 9.008, not 0.
+    _no_transition_band_at_all = (_eh_max == 0.0)
+    _hard = _no_transition_band_at_all or (
+        (_eh_max < 0.5) and (_blend_ratio < 0.15))
     edge_hardness = dict(_eh0)
     edge_hardness.update({
         'ratio_max_across_frames': round(float(_eh_max), 3),
