@@ -1263,6 +1263,10 @@ So the obvious repair is a **tolerant** plateau: count near-equal as flat. It wa
 
 Note precisely what the count measures: it is the MEDIAN across sampled frames, so an animation whose art enters late has a low median for a reason that has nothing to do with resolution. That is a false-negative direction, so it is safe.
 
+**The median is load-bearing, and it is the OPPOSITE choice from `ratio_max_across_frames` — deliberately.** Per-frame spread was measured across the sampled frames of 16 assets, because this project already found the band ratio swinging 0.290–7.863 across love's 124 frames and had to switch it to a max. Most assets are tight (`Cut loop` 0.000–0.004, `07761f30` 1.000 flat, `Last Jedi` 0.771–0.843), but three straddle the threshold: `GIF Selections` **0.000–0.344** with only 3% of frames at or above 0.30, `love_transparent` **0.015–0.409** with 20%, and the marginal true positive `_ (9)` **0.283–0.370** with 92%. **A max-based rule would false-positive the first two.** The reason the two measures need opposite statistics is that they fire in opposite directions: a HIGH band ratio proves antialiasing, so any single frame showing a ramp settles it (max); a HIGH cliff ratio proves pixel art, and a single atypical frame — art mostly off-canvas, a transitional flash — must not settle it (median).
+
+⚠️ `_ (9)` is detected at a median of 0.336 with a per-frame minimum of 0.283. It is a true positive, but a marginal one: change the frame sampling and its verdict could move. It is the only asset in the corpus with that property.
+
 ### 28.5 Every hardness measure was reading RGB with the alpha thrown away
 
 **This is the defect the new measure did not cause and did expose.** `analyze()` builds its frames as `np.array(im.convert('RGB'))`. For a source that already carries an ALPHA channel, the antialiasing lives in alpha — and `convert('RGB')` drops alpha without compositing, so a partially transparent edge pixel keeps its full-strength art colour and **the ramp vanishes**. Every hardness measure then sees a hard silhouette that does not exist.

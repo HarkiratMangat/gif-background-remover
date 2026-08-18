@@ -369,6 +369,13 @@ def measure_plateau_cliff_ratio(rgb, strong=PLATEAU_CLIFF_STRONG_STEP,
     A HIGH value is dispositive for pixel art; a LOW value proves nothing, exactly like
     change_line_density. The three misses are all art whose blocks have been softened by
     re-encoding -- see SS28.3.
+
+    The caller takes the MEDIAN across sampled frames, NOT the max, which is the opposite of
+    ratio_max_across_frames and is deliberate. The two fire in opposite directions: a high band
+    ratio proves antialiasing, so one frame showing a ramp settles it; a high cliff ratio proves
+    pixel art, and one atypical frame must not. Measured -- a max-based rule would false-positive
+    `GIF Selections` (per-frame 0.000-0.344, only 3% of frames over the threshold) and
+    `love_transparent` (0.015-0.409, 20%). SS28.4
     """
     m = (rgb != rgb[0, 0]).any(axis=2)
     ys, xs = np.where(m)
