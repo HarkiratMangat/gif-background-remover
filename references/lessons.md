@@ -50,8 +50,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 20. [Auditing §19: five defects found by reviewing my own work](#20-auditing-19-five-defects-found-by-reviewing-my-own-work)
 21. [Four verification defects, and exempting by identity instead of by size](#21-four-verification-defects-and-exempting-by-identity-instead-of-by-size)
 23. [`edge_hardness` fails on pixel art with a coloured background — 6 of 8 real assets](#23-edge_hardness-fails-on-pixel-art-with-a-coloured-background--6-of-8-real-assets)
-24. [Auditing the release entry: a cumulative list nobody reconciled](#24-auditing-the-release-entry-a-cumulative-list-nobody-reconciled)
-25. [Two defects that only exist in the deployment environment](#25-two-defects-that-only-exist-in-the-deployment-environment)
+24. [Two defects that only exist in the deployment environment](#24-two-defects-that-only-exist-in-the-deployment-environment)
 22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
@@ -71,13 +70,12 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--recommend` suggested a flag that made the output worse | §18, §20 (four wrong recommendations and why) |
 | A flag had to be tuned by hand to get a good result | §18 (the gap is the bug — the tool should derive it) |
 | Choosing `--edge-cleanup-erosion`, or `--auto` picked a surprising one | §19 (calibrated against the asset's OWN curve) |
-| Reviewing your own just-finished work | §20, §24 (five and two defects found exactly this way) |
+| Reviewing your own just-finished work | §20 (five defects found exactly this way) |
 | `--verify` flags something you believe is correct | §21 (footprint defects), §22 (`residual_nonopaque`) |
 | A check passes but the number looks implausible | §20 (a passing test with a wrong number IS a failing test) |
-| Release notes / version entry contradict the code | §24 (a cumulative list nobody reconciled) |
-| Something works here but might not in the claude.ai sandbox | §25 (two defects invisible from the repo) |
-| `--recommend`'s command fails with "No such file or directory" | §25.1 (repo-relative path) |
-| AVIF output fails after all the work is done | §25.2 (missing capability guard) |
+| Something works here but might not in the claude.ai sandbox | §24 (two defects invisible from the repo) |
+| `--recommend`'s command fails with "No such file or directory" | §24.1 (repo-relative path) |
+| AVIF output fails after all the work is done | §24.2 (missing capability guard) |
 | Pixel art on a COLOURED background read as antialiased | §23 (both measures fail; check the art by eye) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -1022,63 +1020,28 @@ this corpus reaches **247.147** on one pixel-art asset, and blend puts genuinely
 
 ---
 
-## 24. Auditing the release entry: a cumulative list nobody reconciled
-
-**2026-08-17, immediately before tagging v5.0.0.** SKILL.md's version entry is written by appending a bullet each time something lands. Across 19 commits in one day, nothing ever went back and asked whether an EARLIER bullet was still true. Two were not.
-
-### 24.1 A flat self-contradiction, two bullets apart
-> "**`--verify` refuses a non-GIF output** instead of reporting a misleading pass."
->
-> "**`--verify` now accepts WebP/AVIF**, not just GIF."
-
-Both were true when written, of different commits. Together they are nonsense, and SKILL.md is the file a live claude.ai session actually reads — it has no repo, no git history, and no way to tell which bullet is current. Earlier the same day I had fixed the *same* stale claim in a different paragraph of this file and never checked whether it appeared anywhere else.
-
-**Takeaway: when correcting a stale claim, grep for the CLAIM, not the paragraph.** A claim that was worth repeating once is usually repeated more than once.
-
-### 24.2 A bullet advertising a regression as a fix
-The entry listed "`--pixel-art` gained the blend-ratio discriminator" among four `--recommend` outputs that "were wrong and are now right". §23 then measured that discriminator holding pixel-art detection down to **5 of 25**, because its founding premise was false and its AND-wiring let it VETO correct verdicts. The release notes were advertising, as a fix, a change that was partly a regression — and the corpus results that disproved it were added to the file's edge-hardness SECTION but never to its version ENTRY.
-
-Same root cause as 24.1: I edited where I was looking.
-
-### 24.3 The near-miss, which is the more useful half
-Auditing the same entry I nearly filed six more defects that do not exist.
-
-Commit `60945d6` changes `--edge-cleanup-erosion`'s argparse default from `2` to `None`. SKILL.md says "default 2px" in six places. That looks conclusive, and I was one edit away from "fixing" all six. But `None` is a sentinel, not a value: the code resolves it to **0** for WebP/AVIF, **1** for GIF under `--dither-mode none`, and **2** otherwise — and `--dither-mode` itself defaults to bayer for GIF. So on the plain GIF path the effective default is still 2 and all six statements are correct.
-
-**A signature change is not a behaviour change.** The diff showed the sentinel; only the resolution site showed what it means. One `sed` of the resolution logic was the difference between a correct audit and six confidently wrong "corrections" shipped into the file that IS the skill.
-
-This is the same shape as the `--auto` escalation bug earlier in the day (fixing the mechanism you were thinking about is not the same as fixing the behaviour) and as SS23's circular fixture. The recurring defect in this project is not bad reasoning — it is plausible reasoning that never got measured.
-
-### 24.4 What a release audit should actually check
-1. Does any bullet contradict a later one? (Grep the claim, not the paragraph.)
-2. Does any bullet describe as a FIX something later measurement reclassified?
-3. Is every user-visible change — new flag, changed default, changed verdict — represented?
-4. For each apparent defect, confirm the BEHAVIOUR, not the signature, before editing.
-
----
-
-## 25. Two defects that only exist in the deployment environment
+## 24. Two defects that only exist in the deployment environment
 
 **2026-08-17**, found by a sequential-thinking double-check run AFTER v5.0.0 was already merged, tagged and pushed. Both break the skill in the claude.ai sandbox — the environment it actually ships to — and neither was reachable by any test run in this repo.
 
-### 25.1 `--recommend` emitted a path that only works from the repo root
+### 24.1 `--recommend` emitted a path that only works from the repo root
 `suggested_command` was built as `f"python3 scripts/remove_gif_background.py {input} <output.gif>"`. That path is repo-relative. In a claude.ai sandbox the skill unpacks somewhere that is not a repo root, so an autonomous run pasting the suggested line verbatim gets `No such file or directory` — and `--recommend` exists precisely so a run can paste it verbatim.
 
 Every test of `--recommend` this project has ever run was executed FROM the repo root, where the wrong path is right by coincidence. **That is a test that cannot fail**, the exact defect §23 recorded about the synthetic pixel-art fixture, in a different costume. Now derived from `os.path.abspath(__file__)`.
 
-### 25.2 AVIF saved with no capability guard, while `--recommend` ranks it first
+### 24.2 AVIF saved with no capability guard, while `--recommend` ranks it first
 `ims[0].save(output_path, 'AVIF', ...)` ran bare. AVIF needs Pillow built with AVIF support or the `pillow-avif-plugin`; this Mac has Pillow 12.3.0 where `features.check('avif')` is True, so it has always worked here and the dependency was invisible.
 
 The compounding part: v5.0.0's own `--recommend` ranks **AVIF first** under a byte cap. So an autonomous run in an environment without AVIF is steered directly at the missing dependency, and the failure arrives as a bare Pillow error *after* every frame has been processed. Now checked before any work, with a message that names the fix and points at WebP as the equivalent-quality fallback.
 
-### 25.3 A finding I first reported backwards
+### 24.3 A finding I first reported backwards
 I reported that `--pixel-art --edge-cleanup-erosion 2` runs silently at erosion 2, destroying hard edges. Wrong direction. `apply_pixel_art_preset` did `args.edge_cleanup_erosion = 0` unconditionally, so the explicitly typed 2 was silently DISCARDED.
 
 The real defect was an inconsistency, not a destruction: `--auto` uses `typed_option_names()` so "explicit flags always win, and it prints what it skipped", while this preset silently overrode a typed flag. Two mechanisms in one script disagreeing about who wins, one of them saying nothing. Fixed to match `--auto`'s contract.
 
 **Worth recording that the first report was wrong**, because a postmortem is what a future session trusts instead of re-deriving. Had it shipped, it would have sent someone hunting a destruction bug that does not exist.
 
-### 25.4 The generalisable rule
+### 24.4 The generalisable rule
 **Test in the environment the thing ships to, not only the one you develop in.** Both 25.1 and 25.2 are invisible from the repo and obvious from the sandbox. The packaged skill is the product; this repo is the workshop.
 
 A cheap proxy, since a claude.ai sandbox is not available from here: for anything the skill emits for someone else to RUN, ask what it resolves to when the current working directory is not this one — and for any dependency, check whether it is guaranteed or merely present on this machine.
