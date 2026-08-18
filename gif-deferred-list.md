@@ -91,6 +91,25 @@ care, and the byte-identical/behavior-preservation discipline this whole project
 `Sonnet5-XHigh`.
 
 ### `[P3 · M · Sonnet5-High]` `--verify`'s `protected_region_coverage` false-positives on a legitimately punched sub-hole inside a translating candidate region
+
+**✅ CLOSED 2026-08-17 — confirmed against this item's own asset.** `military-tag.gif` IS on this
+machine (`~/Downloads/Diors-builds Emojis/`); the earlier "not on this machine" note was wrong.
+Re-rendering §14's pipeline uncropped and running `--verify` with both scripts: **0.462 →
+0.757**, `looks_unprotected` **true → false**. The 0.462 reproduces §14's recorded 46.2% exactly,
+so this is a real reproduction, not two clean runs agreeing by luck.
+
+⚠️ Verifying against the DELIVERED file would have been a vacuous pass — it is cropped (536x570 vs
+640x640), so `--verify` skips every pixel check and reports only timing.
+
+**The residual 0.757 is correct, and now self-explaining.** Decomposed, the non-opaque remainder is
+ONE blob per frame in all 126 frames, 441–457px — the punched pinhole, which is background-coloured
+and *should* be transparent. A new additive `residual_nonopaque` field reports persistence, blob
+count, size CV and footprint fraction so this reads as a cutout rather than an unexplained defect;
+falsified against a deliberately unprotected render (1.00 blob/cv 0.025/0.243 → cutout; 2.13/0.586/
+1.000 → not). **Correction to the original diagnosis below:** cause (1), the translating bbox,
+contributes nothing measurable here — cause (2) was doing all of it. Full case: `references/
+lessons.md` §22.
+
 **Added:** 2026-08-07, from `military-tag.gif` production job (see `references/lessons.md` §14 for
 the full case).
 
@@ -162,7 +181,142 @@ don't get re-flagged as forgotten work by a future review.*
 
 ## 🔔 Reminders / watch-for
 
-**None open right now.**
+### AUTONOMY BACKLOG — `--recommend` still needs manual correction on these (opened 2026-08-17)
+**Six of the nine items below were CLOSED on 2026-08-17** — see `references/lessons.md` §18 for
+the measurements behind each. Remaining open: 5 and 9.
+
+1. ~~`--pixel-art` emitted on thin-AA vector art~~ — **CLOSED.** Added a second discriminator,
+   `antialiasing_blend_ratio` (are there real background-to-art blends at all?). Synthetic pixel
+   art 0.000; the lowest real asset 1.530. `appears_hard_edged` now needs BOTH measures. The
+   fixture still gets the flag; love and heart no longer do. §18.1
+2. ~~`--erosion-exempt-max-size` emitted for love~~ — **CLOSED.** The classifier was already
+   right (love's 4 buttons ARE detected as design); the SIZE THRESHOLD was the problem — 487px
+   sat above the buttons' own 286–306px, so it would have exempted them anyway. Now suppressed
+   whenever the transient and persistent size ranges overlap. §18.2
+3. ~~heart's `--feather-band-multiplier 1.5` unverified~~ — **CLOSED, and it was actively
+   harmful.** Measured fringe fraction 0.2186 at 1.5 and 0.1831 at 2.5 against 0.0000 at the
+   default — the recommendation was producing the fringe. The `max(1.5, ...)` clamp was the bug.
+   Only recommended at ≥3.0 now; `--protect-band-only` carries the rest (97.7% of the same
+   protection, no fringe). §18.3
+4. ~~gift's white strip never surfaced~~ — **CLOSED.** Not a colour-detection failure: the
+   union-across-frames footprint had merged the strip with a transient pocket (21,184px →
+   25,219px), and nothing encloses a shape that never exists. Added per-frame re-verification.
+   gift now auto-recommends `--protect-outline-color 002864`; protected coverage 0.0 → 0.874,
+   fringe 0.0388 → 0.007. §18.4
+5. **STILL OPEN — gift's sparkle colour never appears at full opacity.** The curved sparkle is
+   `#052a75`, the SAME navy as the box outline, drawn at partial opacity; one colour is
+   simultaneously solid artwork and a translucent element, so marking it fading would stop the
+   outline blocking anything. The 4-dot sparkle separately needs `--fade-color 6969f2` because
+   its true colour never clears the palette frequency floor. **Do:** the per-pixel art prior
+   built for the flood barrier (§16) is the plausible basis — high prior ⇒ outline, low prior ⇒
+   sparkle. ⚠️ Read the REVERTED "saturation promotion" experiment in §16 first; the naive
+   version of this idea is measurably net-harmful. This is the one genuinely unsolved item and
+   it is a research task, not a parameter fix.
+6. ~~GIF `--target-kb` discards `--square-pad`~~ — **CLOSED: did not reproduce.** Measured
+   128×128 with and without `--crop`; padding survives the tier cascade. The original 128×110
+   came from a render script that never passed the flag to the GIF variant. §18.6
+7. ~~`--verify`'s `looks_fringed` is unreliable~~ — **CLOSED.** Replaced with the outer-ring
+   relative metric, and made TRI-STATE: True >0.15, False <0.04, None in between with the
+   reason. The bands overlap across assets (heart's fringed 0.0665 < crystal's clean 0.0830),
+   and tightening the ratio collapses every asset to 0.0000 — a test that cannot fail. Reporting
+   "inconclusive" is the honest answer. §18.5
+8. ~~**AVIF durations cannot be read back**~~ — **RESOLVED 2026-08-17.** Never an AVIF
+   limitation: Pillow populates `info['duration']` only in `load()`, and the reader used
+   seek-only, so every frame returned 0. Adding `load()` returns the true durations
+   (3000 ms, `[220, 20 x122, 340]`). Same root cause as the WebP source-duration shift —
+   see `references/lessons.md` §17.
+9. ~~**`--verify` has no 8-bit-alpha mode**~~ — **CLOSED 2026-08-17.** *(was: partially addressed)* the fringe
+   metric itself is now alpha-aware (`measure_outer_ring_background_fraction` counts only
+   near-opaque pixels, so a legitimate alpha ramp is not flagged), and `--auto`'s post-render
+   check runs on WebP/AVIF using it. `--verify` proper still refuses non-GIF because its OTHER
+   checks (leftover background, protected coverage) remain 1-bit assumptions. **Do:** give
+   those two the same partial-alpha treatment, then lift the refusal. (opened 2026-08-17, replaces the stale
+   duration-based reason). Now that WebP/AVIF durations read correctly, the ONLY thing
+   blocking `--verify` on those formats is that its checks are written for 1-bit alpha:
+   "leftover background" tests for an opaque background-coloured pixel, "fringe" for a pale
+   ring — and a recovered fade is legitimately both. **Do:** give each check a partial-alpha
+   definition (leftover background = alpha≈255 AND background-coloured; fringe = the
+   outer-opaque-ring metric from §16, which is already alpha-aware) rather than lifting the
+   refusal. Lifting it without redefining the checks reintroduces exactly the misleading pass
+   the refusal exists to prevent.
+
+10. ~~**`--verify`'s leftover-background count flags intentionally protected design**~~ — **CLOSED 2026-08-17.** Now also excludes the verified outline's own filled area (gift worst frame 14,243 → 0) and requires alpha>=250 so a partly transparent background-coloured pixel counts as the fade/ramp it is. §21.2. Original note:
+    (opened 2026-08-17). On gift, `leftover_background_opaque_px` reports 14,243px on its worst
+    frame; 73% of them are inside the protected white-strip region's own bbox. The strip is
+    background-COLOURED design that is *supposed* to stay opaque, so counting it as leftover
+    background is a false alarm — visually confirmed correct output. `analyze()`'s own leak
+    check agrees (`leaked_pixel_count: 0`). **Do:** exclude pixels inside a verified
+    protected region's per-frame footprint from the leftover count, the same way
+    `bbox_scope`-restricted enclosure already does for part of it. Low severity (a noisy
+    metric, not a bad output) but it undermines trust in an autonomous run's self-check.
+
+11. ~~**Replace the erosion-exempt SIZE threshold with per-region masks**~~ — **CLOSED 2026-08-17** via `--erosion-exempt-transient` + `find_transient_removed_regions()`, auto-recommended wherever the size threshold is refused. §21.4. Original note: (opened 2026-08-17
+    during the §20 audit — a better fix than the guard shipped in §18.2). The overlap guard
+    picks the safer side of a conflict rather than dissolving it: when transient noise and
+    design occupy the same size range, love gets no exemption at all, so the v3.1.0
+    small-region inflation bug can return. **The machinery to do it properly already exists** —
+    `find_tiny_removed_regions` produces per-frame MASKS and
+    `erode_alpha_edge_exempting_tiny_regions` consumes masks, so a size threshold is not
+    actually required. **Do:** classify each region persistent-vs-transient (the classifier is
+    already correct), build the exemption mask from the transient regions ONLY, and drop the
+    size threshold entirely. That exempts exactly the noise regardless of how big they are or
+    what size the design happens to be.
+
+12. ~~**gift's protected-region coverage is 0.874, not 1.0**~~ — **CLOSED 2026-08-17: it was never real.** Coverage was measured over every background-coloured pixel in the bounding RECTANGLE (12,371 at frame 0) instead of the enclosed footprint (10,257); the extra pixels are genuine background, correctly transparent. Restricted to the footprint it reads 1.000, so item 4 is genuinely closed. §21.1. Original note: (opened 2026-08-17). §18.4 took it
+    from 0.0, which is a real fix, but 12.6% of the region still is not opaque and I did not
+    check why. It may be legitimate (frames where the strip is genuinely occluded) or a real
+    remainder. **Do:** identify which frames and which pixels account for the gap before
+    treating item 4 as fully closed. "Improved" was reported; "resolved" was not established.
+
+13. **The whole threshold set rests on one art family** (opened 2026-08-17, §20.6). Five flat
+    vector icons on white plus a self-authored pixel-art fixture. No dark-background asset, no
+    real-world pixel art, no photographic-ish source was tested. The blend-ratio margin (0.000
+    vs 1.530) is wide; the rest (feather ≥3.0, fringe bands 0.04/0.15, floor tolerance 0.02,
+    post-render margin 0.05) are 4–5 points from one style. **Do:** re-measure against a
+    genuinely different asset before trusting any of the narrow constants on new content —
+    especially a non-white background, which the ring metric has never seen.
+
+### ~~PARKED: remove the controller from love.gif~~ — CLOSED 2026-08-17 (Harkirat edited it manually; skill rendered the deliverables). Retained below only for the mask-isolation findings, which stay valid if this is ever automated.
+Boundary reconstruction and the encoding path are SOLVED (static-in-canvas divide, degree-6
+fit at 0.33px RMS, no GIF round-trip). **Unsolved: isolating the controller mask on frames
+26–34**, where it touches the heart outline. Four approaches measured — see the handoff.
+
+
+### Re-test gifsicle's colour dither on a GRADIENT-heavy corpus (opened 2026-08-17)
+The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot-
+measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that
+matter for animation:
+
+| dither | KiB | mean colour err | frame-to-frame instability in static regions |
+|---|---|---|---|
+| floyd-steinberg (current default) | 1649.3 | 0.039 | 1.32% |
+| atkinson | 1655.7 | 0.028 | 1.12% |
+| ordered / o8 | 1658.4 | **0.026** | **0.97%** |
+| none | 1654.1 | 0.026 | 1.01% |
+
+i.e. it buys ~0.6% file size for the worst colour fidelity AND the most temporal crawl — the same
+error-diffusion instability that disqualified it for ALPHA (measured separately: Floyd-Steinberg
+changed 8.1% of pixels in a region that was byte-identical between frames; both Bayer sizes changed
+0). Crawl also fights GIF inter-frame compression, so the size win may not even survive on other
+content.
+
+**NOT acted on, deliberately.** `love.gif` is flat 6-colour vector art, so a 200-colour palette
+reproduces it almost exactly and dithering barely engages — all five options sit within 0.7% size
+and 0.013 colour error, too close to call. The tiers exist precisely for content where quantization
+DOES bite, and that content is what should decide this.
+
+**What a future session should do:** assemble a corpus with real gradients/soft shading (not the
+flat vector icons this skill is usually pointed at), run the same three measurements (bytes, colour
+error against the pre-quantization frames, and static-region frame-to-frame instability) across
+`floyd-steinberg` / `atkinson` / `o8` / `ordered` / none at both `medium` and `heavy`, and change
+the tier default only if a clear winner emerges on gradient content without regressing flat art.
+
+⚠️ **Jarvis, Sierra and Stucki are NOT options here** — verified by enumeration against the
+installed gifsicle 1.6.0: it implements only `floyd-steinberg` and `atkinson` as error-diffusion
+kernels (plus `ordered`/`o3`/`o4`/`o8`/`halftone`/`squarehalftone`/`diagonal`/`ro64`). Using them
+would mean doing colour reduction outside gifsicle entirely, which is a much larger change than a
+flag and should be scoped separately if the corpus test suggests error diffusion is worth
+improving at all.
 
 ---
 
@@ -179,3 +333,64 @@ don't get re-flagged as forgotten work by a future review.*
   documentation gap (two `candidate_regions` fields shipped in Phase 1 but never documented, and
   `--recommend`'s actual outline-trust gate wasn't stated in "Run the real processing"). Pure docs
   change, no script touched. `references/lessons.md` gained a symptom→section lookup table.
+
+---
+
+### `[P1 · L · Opus5-High]` `edge_hardness` misclassifies pixel art on coloured backgrounds — 6 of 8 real assets
+
+**Added 2026-08-17.** Harkirat supplied `local/Diors-builds Emojis/others/` — 9 real assets, 8 of
+them genuine pixel art on COLOURED backgrounds. The tool calls 6 of the 8 antialiased. Full ground-
+truth table, both failure mechanisms, and the measured numbers: `references/lessons.md` §23.
+
+**Why P1 despite being pre-existing:** it is a correctness failure on a whole content class the
+skill explicitly claims to support, and it fails toward the destructive setting (feather + 2px
+erosion + LANCZOS on hard-edged art). §18's second discriminator was validated against a synthetic
+fixture generated in-session, which is circular — this is what that circularity was hiding.
+
+**Shipped 2026-08-17 (two rounds, still partial):** (1) zero transition band is dispositive;
+(2) `change_line_density` — a geometric, palette-free measure — is dispositive below 0.5. Scored
+against 37 labelled assets: **17/37 -> 30/37, pixel art 5/25 -> 18/25, false positives 0/12
+throughout.** Corpus renders unchanged; love still byte-identical.
+
+**Remaining: 7 assets, all one class** — dithered or photographic pixel art, where dithering puts a
+change on every line and saturates the density measure (0.592-1.000).
+
+**Next action:** measure density on a dither-suppressed copy (small median filter, or count only
+changes persisting across several adjacent lines) and re-score against the same 37. The corpus and
+labels are in `local/Diors-builds Emojis/others/` with `LABELS.json` + `README.md`.
+
+**Two structural ideas were tried and scored before one was believed** (§23.4): modal run length
+is DEAD (the vector corpus scores k=19-20, so a `k>=4` rule flags all six vector icons — §18's
+catastrophe reintroduced); an integer-lattice fit is sound but narrow (0 false positives, 11/25,
+because a 500x500 export of a 32px sprite is a 15.625x upscale on no integer grid).
+
+⚠️ **Do not ship a bare blend-ratio threshold.** It looks tempting — pixel art spans
+   0.000–1.074 and the antialiased corpus 1.530–2.529, so ~1.3 would score 13 of 14 — but the sole
+   overlap is the jar (antialiased, 0.999) against DFB2A5D7 (pixel art, 1.074), and a threshold
+   justified by a 0.075 gap between two assets is a margin of DEGREE, the exact trap §18 set out to
+   escape and then fell into.
+
+---
+
+### `[P2 · L · Opus5-High]` Translucent glass/jar: three roles for identical `#ffffff` pixels
+
+**Added 2026-08-17**, from `local/Diors-builds Emojis/others/2d4a092f5494a8d2455703857ee83d5c.gif`
+(Harkirat's own framing): a bunny holding a transparent bag of popcorn. The same `#ffffff` plays
+three different roles — outer background (remove entirely), bunny body (keep fully opaque), and jar
+interior (make TRANSLUCENT, so it reads as glass). Current behaviour does one or the other: either
+the jar interior is removed with the background, or it is protected and stays solid white.
+
+**No pixel-level threshold can separate these** — the pixels are byte-identical. The distinction is
+semantic, so this needs either a region/colour flag naming the glass, or a structural signal.
+
+**Only expressible in WebP/AVIF.** GIF's 1-bit alpha cannot hold "20% opaque", so this sits on top
+of the 8-bit alpha pathway added in v5.0.0 (§16), and is a natural extension of it rather than a
+new subsystem.
+
+**Cheap first measurement, not yet done:** check whether the jar's interior is topologically
+CONNECTED to the outer background through the bag's opening. If it is, flood-fill-from-border
+reaches straight into it, which would exactly explain the "removes the white inside the jar"
+half of the observed behaviour and would point at the fix.
+
+**Notable:** this asset is also the only ANTIALIASED file in `others/`, so it doubles as the
+negative control for the pixel-art item above (`blend` 0.999, `ratio_max` 0.649).

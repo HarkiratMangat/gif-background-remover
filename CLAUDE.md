@@ -15,11 +15,41 @@ of truth for the skill's actual operating instructions; `references/lessons.md` 
 bug-postmortem/tool-evaluation history behind those instructions; this memory folder is the
 collaboration layer on top of both.
 
+## THE END GOAL — full autonomy (Harkirat, stated 2026-08-17, reiterated the same day)
+> "the end goal of this skill is to be completely automatically run-able, with it doing the
+> analysis and recommendation itself correctly. So these edge cases and minor edits/fixes are
+> essentially training and improvement meant to help it reach that completely autonomous phase.
+> As such these fixes need to be considered and implemented properly into the skill's script so
+> it can genuinely catch them and not repeat them. we need it to learn these mishaps, improve it,
+> and stop them from happening again. We can't be manually force-tweaking things to get the
+> correct output when edge cases like this happen. the manual tweaks are essentially just a
+> verification/investigation layer to figure out *how* the mishap occured and how to fix it in
+> the skill"
+
+**What this means in practice, and it changes what counts as "done":**
+- A manual flag tweak that fixes an output is **not the fix** — it is the *investigation result*.
+  The fix is whatever change to `--analyze`/`--recommend`/the script makes the tool reach that
+  same answer by itself next time. Delivering the corrected file while leaving the skill unable
+  to derive it is an unfinished job, not a completed one.
+- **Never hand back a good output produced by flags the skill did not recommend without also
+  closing the gap that made the override necessary** — or, if it genuinely cannot be closed this
+  session, recording it in `gif-deferred-list.md`'s AUTONOMY BACKLOG with the measured evidence
+  and a concrete next action. Silent overrides are how the same edge case gets rediscovered.
+- A *warning* in `--recommend`'s evidence does not count as a fix on its own: an autonomous run
+  takes the suggested flags verbatim, so a warning nobody reads changes nothing. Prefer a real
+  discriminator; emit evidence in addition, never instead.
+- When a check cannot be made reliable, it is better for it to say so than to return a
+  confident wrong answer — an unverifiable check must report "unverified", never a vacuous pass
+  (`references/lessons.md` §13, §16, §17).
+
 ## File layout
 - `SKILL.md` — the skill itself: lean, actionable core instructions (kept under ~500 lines per
   Anthropic's progressive-disclosure convention for skills — this is what loads into context
   whenever the skill triggers, so it stays focused on "what to do," not "why," or "what we tried
   before").
+- `references/version-history.md` — per-version detail for every release before the current one,
+  moved out of SKILL.md in v5.0.0 (it had grown to 241 of that file's 896 lines). SKILL.md keeps
+  only the current version's entry plus the versioning convention itself.
 - `references/lessons.md` — long-form bug postmortems, tool-evaluation writeups (gifski vs.
   pngquant, etc.), and measured evidence. Read on demand — see the memory folder's
   `feedback_check_lessons_before_rediagnosing.md` for when. Has its own table of contents.

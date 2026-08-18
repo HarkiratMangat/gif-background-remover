@@ -63,6 +63,7 @@ import contextlib
 import copy
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -191,6 +192,28 @@ def gifsicle_optimize(path, level='lossless', timeout=60):
         return False
 
 
+def frame_duration_ms(im, default=0):
+    """
+    Duration in ms of the frame `im` is CURRENTLY seeked to.
+
+    The im.load() is load-bearing, not defensive. GifImagePlugin populates
+    info['duration'] during seek(), so seek-then-read has always worked for a
+    GIF -- but WebPImagePlugin populates it only in load(), so on a WebP the
+    same pattern returns the PREVIOUS frame's value: a silent one-position
+    lag that no exception ever reports.
+
+    Measured on a real 124-frame WebP source (references/lessons.md SS17): the
+    durations read back as [100, 220, 20 x122] against a true
+    [220, 20 x122, 340] -- a bogus 100ms frame prepended, the final 340ms
+    frame dropped, and every WebP/AVIF written from a WebP source came out
+    240ms short with its timing shifted by one frame. It stayed invisible
+    because the readback used this same lagged pattern, so intended and
+    written agreed with each other and the script reported success.
+    """
+    im.load()
+    return im.info.get('duration', default)
+
+
 def average_frame_delay(durations):
     return sum(durations) / max(len(durations), 1)
 
@@ -254,6 +277,90 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
         'ratio': round(ratio, 3),
         'appears_hard_edged': ratio < 0.5,
     }
+
+
+def measure_change_line_density(rgb):
+    """Fraction of scan lines that differ from the previous line -- LOW means pixel art.
+
+    Pixel art is drawn on a coarse grid and enlarged, so sweeping across it finds a change only at
+    block boundaries. Antialiased art changes at nearly every line, because an edge ramp differs
+    from its neighbour by construction.
+
+    This measure exists because BOTH of the other two are defined relative to bg_rgb, and both
+    collapse when a solid palette colour sits near the background (inflating the transition band)
+    or on a background->art line (inflating the blend ratio) -- see references/lessons.md SS23,
+    where 6 of 8 real pixel-art assets on coloured backgrounds were called antialiased, one of
+    them scoring a band ratio of 20.895, higher than any genuinely antialiased asset measured.
+    Counting WHERE the image changes never looks at a colour value, so neither collision reaches it.
+
+    It is also scale-free, which an integer-lattice fit is not: a 500x500 export of a 32px sprite
+    is a 15.625x upscale and lands on no integer grid at all. Measured across 37 labelled assets:
+    antialiased 0.986-1.000, pixel art 0.041-0.245 for 18 of 25 -- a margin of KIND, with the
+    remaining 7 (dithered or photographic pixel art, whose dithering puts noise on every line)
+    saturating at the antialiased end. So a LOW value is dispositive for pixel art; a HIGH value
+    proves nothing either way.
+    """
+    def _axis(a):
+        nz = np.flatnonzero((a != a[0, 0]).any(axis=(0, 2)))
+        if nz.size < 16:
+            return 1.0
+        sub = a[:, nz[0]:nz[-1] + 1]
+        return float((np.diff(sub.astype(np.int16), axis=1) != 0).any(axis=(0, 2)).mean())
+    return max(_axis(rgb), _axis(np.ascontiguousarray(rgb.transpose(1, 0, 2))))
+
+
+def measure_antialiasing_presence(rgb, bg_rgb, palette, tolerance=15, ring=3):
+    """
+    Fraction of near-boundary pixels that are TRUE blends of the background and
+    one of the art's own flat colours, per pixel of boundary perimeter.
+
+    This is the second discriminator `edge_hardness.ratio` needed and lacked.
+    That ratio counts pixels in a narrow band just outside the background
+    tolerance, so a clean vector export made mostly of straight edges -- which
+    needs only a thin antialiasing band -- scores LOW and reads as pixel art.
+    Two real assets scored 0.425 and 0.316 against a 0.5 threshold and would
+    have had --pixel-art applied, which disables feathering and erosion and is
+    destructive on curved antialiased art.
+
+    Asking instead "are there real background-to-art blends here at all?"
+    separates the two cleanly, because genuine pixel art has NONE by
+    construction -- every pixel is a palette colour, never a mixture.
+    Measured (mean over sampled frames):
+
+        synthetic pixel art  0.000      <- the fixture from SS1
+        love                 0.538
+        explosion            1.221
+        crystal              1.226
+        gift                 1.395
+        heart                1.581
+
+    Zero versus 0.538 is a far wider margin than 0.425 versus 0.5, and it is a
+    margin of KIND (blends exist / do not) rather than of degree.
+    """
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    dist = np.abs(rgb.astype(int) - np.asarray(bg_rgb).astype(int)).max(axis=-1)
+    hard_bg = dist <= tolerance
+    boundary = ndimage.binary_dilation(hard_bg) & ~hard_bg
+    boundary_count = int(boundary.sum())
+    if boundary_count == 0:
+        return 0.0
+    near = ndimage.binary_dilation(hard_bg, iterations=ring) & ~hard_bg
+    v = rgb[near].astype(np.float32) - bg
+    palette = np.asarray(palette, dtype=np.float32).reshape(-1, 3)
+    if v.size == 0 or len(palette) == 0:
+        return 0.0
+    is_blend = np.zeros(len(v), dtype=bool)
+    for pc in palette:
+        c = pc - bg
+        L = float(c @ c)
+        if L < 1.0:
+            continue
+        t = (v @ c) / L
+        res = np.linalg.norm(v - t[:, None] * c, axis=1)
+        # t bounded away from 0 and 1 so the endpoints themselves (pure
+        # background, pure art colour) are not counted as evidence of a blend.
+        is_blend |= (t > 0.12) & (t < 0.88) & (res < 14.0)
+    return round(float(is_blend.sum()) / boundary_count, 3)
 
 
 def get_source_transparency_mask(im0):
@@ -351,14 +458,17 @@ def analyze(input_path, max_samples=40, tolerance=15):
     worst_margin = None
     worst_margin_frame = None
     all_small_sizes = []
+    per_frame_small_sizes = []
     for i in range(n_frames):
         frame_bg_mask = color_mask(all_rgb_frames[i], bg_rgb, tolerance)
         m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
             worst_margin = m['margin_ratio']
             worst_margin_frame = i
-        all_small_sizes.extend(collect_small_removed_region_sizes(
-            all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask))
+        _frame_small = collect_small_removed_region_sizes(
+            all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
+        per_frame_small_sizes.append(_frame_small)
+        all_small_sizes.extend(_frame_small)
     tumble_risk = {
         'worst_margin_ratio': worst_margin,
         'worst_margin_frame_index': worst_margin_frame,
@@ -448,14 +558,85 @@ def analyze(input_path, max_samples=40, tolerance=15):
             # removal_mask's own docstring guidance that the ring should be
             # at least as wide as the real antialiasing fringe.
             'band_only_width': None if is_fade else 4,
-            'recommendation': '--dither-mode none' if is_fade else '--protect-band-only 4',
+            # A gradient_fade is a translucent element the source flattened
+            # against the background. --dither-mode none is the best GIF can do
+            # (it just cuts the faintest stages); --recover-fade-alpha into a
+            # webp/avif reconstructs the real alpha. Name the better answer
+            # first -- see references/lessons.md SS16.
+            'recommendation': ('--recover-fade-alpha with a .webp/.avif output '
+                               '(or --dither-mode none if it must be a GIF)'
+                               if is_fade else '--protect-band-only 4'),
         })
+
+    # Persistence split. The <=500px ceiling above exists to keep genuine
+    # protected DESIGN regions out of this measurement, but it assumes design
+    # regions are LARGE. Confirmed false on a real asset (references/lessons.md
+    # SS16): four ~287px controller buttons -- the exact detail the user asked to
+    # preserve -- sailed under the ceiling and were reported as 1070 "small
+    # removed regions", which made --recommend suggest --erosion-exempt-max-size
+    # for regions that were about to be protected anyway. Per SS14, the robust
+    # discriminator is not size but PERSISTENCE: a design element is physically
+    # constant (present in essentially every frame at a stable size), while the
+    # incidental gaps SS11 cares about appear transiently at particular frames.
+    # Cluster by RELATIVE tolerance, not fixed-width bins. Fixed bins were tried
+    # first and are measurably wrong: the motivating asset's buttons measure
+    # 286-306px, which straddles a 25px bin edge, so the two halves scored 47.6%
+    # and 83.9% and NEITHER cleared the persistence threshold -- despite the
+    # region being present in every single frame. A stable-size region must not
+    # be split by where an arbitrary boundary happens to fall.
+    _n_sampled = max(len(per_frame_small_sizes), 1)
+    _clusters = []                     # each: [representative_size, {frame indices}]
+    for _fi, _sizes in enumerate(per_frame_small_sizes):
+        for _sz in _sizes:
+            for _c in _clusters:
+                if abs(_sz - _c[0]) <= 0.15 * max(_sz, _c[0]):
+                    _c[1].add(_fi)
+                    break
+            else:
+                _clusters.append([_sz, {_fi}])
+    _persistent_reps = [c[0] for c in _clusters if len(c[1]) / _n_sampled >= 0.9]
+
+    def _is_persistent(sz):
+        return any(abs(sz - r) <= 0.15 * max(sz, r) for r in _persistent_reps)
+
+    _transient = [sz for sz in all_small_sizes if not _is_persistent(sz)]
+    _persistent = [sz for sz in all_small_sizes if _is_persistent(sz)]
+
+    # --erosion-exempt-max-size is a SIZE threshold: it exempts every removed
+    # region at or below it. So it can only separate incidental noise from
+    # design if the two size ranges do not overlap. Classifying regions
+    # correctly is not enough on its own -- on love the four controller buttons
+    # ARE correctly identified as persistent design (497 of 1070 regions), and
+    # the suggestion computed from the transient regions still came out at 487,
+    # well above the buttons' own 286-306px, so applying it would have exempted
+    # the design anyway and reintroduced the v3.3.3 fringe. When the ranges
+    # overlap the honest answer is that no threshold works, not a threshold
+    # picked from one side of the overlap.
+    _exempt_suppressed = None
+    _exempt_suggestion = int(max(_transient) * 1.1) + 1 if _transient else 0
+    if _exempt_suggestion and _persistent:
+        _pmin = min(_persistent)
+        if _exempt_suggestion >= _pmin:
+            _exempt_suppressed = (
+                f"a threshold of {_exempt_suggestion}px (from the largest transient "
+                f"region, {max(_transient)}px) would also exempt PERSISTENT regions, "
+                f"the smallest of which is {_pmin}px -- the transient and design size "
+                f"ranges overlap, so no single size threshold separates them")
+            _exempt_suggestion = 0
 
     small_removed_regions = {
         'sizes_sample': sorted(all_small_sizes, reverse=True)[:20],
         'count': len(all_small_sizes),
         'max_small_region_px': max(all_small_sizes) if all_small_sizes else 0,
-        'suggested_erosion_exempt_max_size': int(max(all_small_sizes) * 1.1) + 1 if all_small_sizes else 0,
+        # Persistent regions are excluded from the suggestion: they look like
+        # design, and erosion-exempting design is what produced a real fringe
+        # bug in v3.3.3.
+        'persistent_count': len(_persistent),
+        'transient_count': len(_transient),
+        'max_transient_region_px': max(_transient) if _transient else 0,
+        'min_persistent_region_px': min(_persistent) if _persistent else None,
+        'suggested_erosion_exempt_max_size': _exempt_suggestion,
+        'erosion_exempt_suppressed_reason': _exempt_suppressed,
     }
 
     union_mask = np.zeros((H, W), dtype=bool)
@@ -553,6 +734,51 @@ def analyze(input_path, max_samples=40, tolerance=15):
         outline_color, outline_filled_area, outline_shape = find_verified_outline_color(
             true_footprint_frame_rgb, bg_rgb, true_footprint, tolerance)
 
+        # PER-FRAME FALLBACK for exactly the union-overstatement case the note
+        # above describes. When the union merges a real design region with
+        # incidental pockets that exist in different frames, the merged
+        # footprint is enclosed by nothing, so verification fails on a region
+        # whose real shape has a perfectly good outline.
+        #
+        # Measured on gift.gif: the white strip is reported as design
+        # (enclosure_ratio 1.0) but got candidate_outline_color None, so nothing
+        # protected it and --verify came back with protected_region_coverage
+        # 0.0 -- while 052a75/002864 encloses the region's own 21,184px
+        # footprint in 40 of 40 sampled frames. The union had inflated it to
+        # 25,219px by merging a neighbouring transient pocket.
+        #
+        # So: re-verify against what is ACTUALLY enclosed in each frame
+        # (footprint INTERSECTED with that frame's own enclosed-background
+        # mask), and accept a colour only if it verifies in >=90% of the frames
+        # where the region really appears. That keeps the conservatism the note
+        # argues for -- it is still a verified containment check, run more times
+        # and on cleaner inputs, not a guess.
+        if outline_color is None and ratio >= 0.9:
+            _votes = {}
+            _checked = 0
+            for _i in sample_idxs[:15]:
+                _frgb = all_rgb_frames[_i]
+                _fm = color_mask(_frgb, bg_rgb, tolerance)
+                _lb, _ = ndimage.label(_fm, structure=STRUCTURE)
+                _border = (set(_lb[0, :]) | set(_lb[-1, :])
+                           | set(_lb[:, 0]) | set(_lb[:, -1]))
+                _border.discard(0)
+                _here = comp_footprint & _fm & ~np.isin(_lb, list(_border))
+                if _here.sum() < 20:
+                    continue
+                _checked += 1
+                _c, _, _ = find_verified_outline_color(_frgb, bg_rgb, _here, tolerance)
+                if _c:
+                    _votes[_c] = _votes.get(_c, 0) + 1
+            if _checked and _votes:
+                _best = max(_votes, key=_votes.get)
+                if _votes[_best] / _checked >= 0.9:
+                    outline_color = _best
+                    _om = color_mask(true_footprint_frame_rgb,
+                                     hex_to_rgb(_best), 40)
+                    outline_shape = ndimage.binary_fill_holes(_om)
+                    outline_filled_area = int(outline_shape.sum())
+
         outline_enclosure_all_frames = None
         outline_background_leak = None
         if outline_color is not None:
@@ -613,12 +839,65 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'note': note,
         })
 
+    # Edge hardness across SAMPLED FRAMES, not frame 0 alone. Frame 0 is not
+    # representative on animated art: love's ratio ranges 0.290-7.863 across its
+    # 124 frames and heart's 0.239-9.008 across 35, so which frame you happen to
+    # measure decides the answer. `ratio` stays frame 0 for continuity with
+    # every previously recorded number; the DECISION uses the max, because
+    # antialiasing is a property of the artwork -- if any frame clearly shows a
+    # ramp, the art is antialiased no matter how many frames hide it.
+    _eh0 = measure_edge_hardness(rgb0, bg_rgb, tolerance)
+    _eh_ratios = [measure_edge_hardness(all_rgb_frames[i], bg_rgb, tolerance)['ratio']
+                  for i in sample_idxs]
+    _eh_max = max(_eh_ratios) if _eh_ratios else _eh0['ratio']
+    _art_palette = build_art_palette([all_rgb_frames[i] for i in sample_idxs], bg_rgb)
+    _blend_ratio = max(
+        (measure_antialiasing_presence(all_rgb_frames[i], bg_rgb, _art_palette, tolerance)
+         for i in sample_idxs), default=0.0)
+    # BOTH must agree before calling something hard-edged. The band ratio alone
+    # produced two false positives on real vector art (SS18); requiring an
+    # actual absence of background-to-art blends is what closes them.
+    #
+    # ...EXCEPT when there is no transition band AT ALL. SS18 asserted that
+    # "genuine pixel art has no background-to-art blends by construction" and
+    # validated that against a synthetic fixture I generated myself -- which is
+    # circular, and false. Real pixel art (SS23: a 1667x1667 sprite, palette of
+    # 9) scores blend_ratio 0.638, because measure_antialiasing_presence cannot
+    # tell a true blend from a SOLID palette colour that happens to lie on the
+    # segment between the background and another palette colour. Here the sky is
+    # 9cd6f7 and the art carries solid whites at 255,255,255 / 252,252,253 /
+    # 228,246,255 -- residuals 4.69, 2.35 and 2.92 from that line, all well
+    # inside the 14 the blend test allows. The blend measure then VETOED a
+    # correct verdict and handed pixel art the antialiased defaults, which are
+    # destructive on it (measured 0% survival, SS4).
+    #
+    # Zero transition pixels in every sampled frame is dispositive: antialiasing
+    # IS intermediate pixels, so none of them means none of it, and a blend
+    # ratio computed on top of that is measuring palette collisions. This cannot
+    # reopen SS18's false positives -- those scored 7.863 and 9.008, not 0.
+    _no_transition_band_at_all = (_eh_max == 0.0)
+    # A low change-line density is dispositive on its own (see the measure's docstring for the
+    # 37-asset separation and why a HIGH value proves nothing). Threshold 0.5 sits between a
+    # measured 0.245 and 0.986 -- deliberately mid-gap rather than tuned to either edge.
+    _density = float(np.median([measure_change_line_density(all_rgb_frames[i])
+                                for i in sample_idxs])) if sample_idxs else 1.0
+    _hard = (_no_transition_band_at_all or (_density < 0.5)
+             or ((_eh_max < 0.5) and (_blend_ratio < 0.15)))
+    edge_hardness = dict(_eh0)
+    edge_hardness.update({
+        'ratio_max_across_frames': round(float(_eh_max), 3),
+        'ratio_min_across_frames': round(float(min(_eh_ratios)), 3) if _eh_ratios else None,
+        'antialiasing_blend_ratio': _blend_ratio,
+        'change_line_density': round(_density, 3),
+        'appears_hard_edged': bool(_hard),
+    })
+
     return {
         'n_frames_total': n_frames,
         'frames_sampled': len(sample_idxs),
         'detected_bg_color': rgb_to_hex(bg_rgb),
         'source_has_pre_existing_transparency': 'transparency' in im.info,
-        'edge_hardness': measure_edge_hardness(rgb0, bg_rgb, tolerance),
+        'edge_hardness': edge_hardness,
         'tumble_risk': tumble_risk,
         'band_interior_regions': band_interior_regions,
         'small_removed_regions': small_removed_regions,
@@ -640,11 +919,33 @@ def recommend(input_path, tolerance=15):
     region_notes = []
     flags = []
 
-    if report['edge_hardness']['appears_hard_edged']:
+    _eh = report['edge_hardness']
+    _hardness = float(_eh['ratio'])
+    _hard_max = float(_eh.get('ratio_max_across_frames', _hardness))
+    _blend = float(_eh.get('antialiasing_blend_ratio', 0.0))
+    if _eh['appears_hard_edged']:
         flags.append('--pixel-art')
         evidence.append(
-            f"Hard-edged art detected (edge_hardness ratio "
-            f"{report['edge_hardness']['ratio']}) -- recommending --pixel-art.")
+            f"Hard-edged art detected -- recommending --pixel-art. Two independent "
+            f"measures agree: the transition band is empty in every sampled frame "
+            f"(edge_hardness ratio {_hardness:.3f}, max across frames "
+            f"{_hard_max:.3f}), AND there are essentially no background-to-art blend "
+            f"pixels (antialiasing_blend_ratio {_blend:.3f}, below the 0.15 floor). "
+            f"Genuine pixel art measures 0.000 on the second; the lowest real vector "
+            f"asset measured 0.538.")
+    elif _hard_max < 0.5:
+        # The exact false positive SS18 documents: a thin-antialiasing vector
+        # export whose band ratio reads as hard-edged. Reported as evidence
+        # rather than silently dropped, so the run is auditable.
+        evidence.append(
+            f"NOT recommending --pixel-art despite a low edge_hardness ratio "
+            f"({_hardness:.3f}, max across frames {_hard_max:.3f}, under the 0.5 "
+            f"hard-edged threshold): real background-to-art blends ARE present "
+            f"(antialiasing_blend_ratio {_blend:.3f}, above the 0.15 floor), so this "
+            f"is antialiased vector art with a thin band -- typical of shapes made "
+            f"mostly of straight edges -- not pixel art. --pixel-art here would "
+            f"disable feathering and erosion and damage the ramp "
+            f"(references/lessons.md SS1, SS18).")
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
@@ -669,15 +970,36 @@ def recommend(input_path, tolerance=15):
 
             all_frames = region.get('outline_enclosure_all_frames')
             leak = region.get('outline_background_leak')
+            # ⚠️ A nonzero anomalous_frame_count means "this outline needs the
+            # substitution path", NOT "this outline is unusable". Gating it out
+            # entirely was measurably the wrong call: on crystal.gif the outline
+            # is verified with enclosure_ratio 1.0 but breaks on 75/130 frames
+            # (a sparkle crossing it), so --recommend fell through to
+            # --protect-band-only -- which loses 19.99% of the artwork against
+            # the 0.91% the outline loses. Nearly a 22x worse result from a gate
+            # meant to be conservative.
+            #
+            # The substitution is now clamped to each frame's own silhouette
+            # (see build_protected_masks_robust), which removes the artifact
+            # that made anomalous frames untrustworthy in the first place. So
+            # recommend it, and say plainly that the substitution will engage.
+            # A background LEAK is still a hard reject -- that one over-protects
+            # and there is no safe fallback.
             if (region['outline_color_verified'] and all_frames
-                    and all_frames['anomalous_frame_count'] == 0
                     and not (leak and leak['over_protects_background'])):
                 outline_colors.append(region['candidate_outline_color'])
+                anom = all_frames['anomalous_frame_count']
                 region_notes.append(
                     f"Region {rid}: outline {region['candidate_outline_color']} verified "
                     f"across {all_frames['frames_checked']} frames "
                     f"({all_frames['enclosure_ratio_all_frames'] * 100:.0f}% enclosed) -- "
-                    f"recommending --protect-outline-color.")
+                    f"recommending --protect-outline-color."
+                    + ("" if anom == 0 else
+                       f" Enclosure breaks on {anom}/{all_frames['frames_checked']} frames "
+                       f"(another element crossing the outline); the per-frame mask "
+                       f"substitution handles it, clamped to each frame's own silhouette. "
+                       f"Measured on a real asset, using the outline anyway beat falling back "
+                       f"to --protect-band-only by ~22x on preserved artwork."))
             elif leak and leak['over_protects_background']:
                 region_notes.append(
                     f"Region {rid}: outline {region['candidate_outline_color']} fills into "
@@ -698,10 +1020,8 @@ def recommend(input_path, tolerance=15):
                         f"identification, not auto-recommended.")
             else:
                 region_notes.append(
-                    f"Region {rid}: outline {region['candidate_outline_color']} verified on "
-                    f"the first sampled frame, but {all_frames['anomalous_frame_count']} of "
-                    f"{all_frames['frames_checked']} frames show a break in enclosure (not a "
-                    f"background leak) -- needs manual review before trusting "
+                    f"Region {rid}: outline {region['candidate_outline_color']} could not be "
+                    f"confirmed across frames -- needs manual review before trusting "
                     f"--protect-outline-color for this region.")
 
     if outline_colors:
@@ -710,6 +1030,11 @@ def recommend(input_path, tolerance=15):
     band_regions = report.get('band_interior_regions', [])
     if any(r['classification'] == 'gradient_fade' for r in band_regions):
         flags.append('--dither-mode none')
+        evidence.append(
+            "NOTE: --dither-mode none is the best GIF can do for a fade. If the "
+            "deliverable can be WebP or AVIF, use --recover-fade-alpha with a "
+            ".webp/.avif output instead -- it reconstructs the original alpha "
+            "exactly rather than cutting the faintest stages (lessons SS16).")
         evidence.append(
             "Band-interior region(s) show a gradient-fade signature (color distance from "
             "background varies across the frames it appears in) -- recommending "
@@ -722,7 +1047,68 @@ def recommend(input_path, tolerance=15):
             "Band-interior region(s) show a uniform solid-tint signature (constant across "
             "frames) -- recommending --protect-band-only to keep them fully opaque instead "
             "of allowlist-only protection.")
-    elif tint_widths and outline_colors:
+    # A SOLID art colour whose distance from the background falls inside the
+    # feather band (tolerance .. tolerance*multiplier) is given partial alpha and
+    # then dithered/eroded away -- it vanishes from a GIF output even though it is
+    # not the background colour at all. Confirmed on real assets: #d2dcfd (dist
+    # 57) and #d1dcfb (dist 58) against the default band of 15..60 wiped the pale
+    # interior of an explosion and the white strip of a gift box. --protect-band-
+    # only alone did NOT save them; narrowing the band so the colour falls OUTSIDE
+    # it does. Compute that multiplier instead of leaving it to be rediscovered.
+    _band_top = tolerance * 4.0
+    _tint_dists = [r.get('mean_distance_from_bg') for r in report.get('band_interior_regions', [])
+                   if r.get('classification') == 'solid_tint' and r.get('mean_distance_from_bg')]
+    _at_risk = [d for d in _tint_dists if tolerance < d <= _band_top]
+    if _at_risk:
+        # ⚠️ The band cannot be narrowed arbitrarily far. Narrowing it protects the
+        # tint, but the SAME band is what gives the antialiasing ramp its partial
+        # alpha -- past a point the ramp stops being removed and survives as a
+        # visible pale fringe. Which side you land on depends on how far the tint
+        # sits from the background, and the old max(1.5, ...) clamp silently
+        # crossed that line:
+        #
+        #   tint at 57-58 (explosion, gift) -> 3.3 -> band 15..49.5, ramp still
+        #       removed. This is the case the flag was built for and it works.
+        #   tint at 27 (heart)              -> 1.3, CLAMPED UP to 1.5 -> band
+        #       15..22.5. Measured fringe fraction 0.2186 at 1.5 and 0.1831 at
+        #       2.5, against 0.0000 at the default 4.0 -- a real fringe, produced
+        #       by the recommendation itself.
+        #
+        # The clamp was the bug: it manufactured a value that satisfied the
+        # formula while failing the thing the formula was for. Below 3.0 the tint
+        # is close enough to the background that --protect-band-only must carry
+        # it instead -- measured on heart, band-only alone keeps 117,027 of the
+        # 119,810 near-background solid pixels the multiplier keeps (97.7%) with
+        # NO fringe, so the multiplier buys ~2% more protection at the cost of a
+        # visibly fringed edge.
+        _computed = (min(_at_risk) / tolerance) - 0.5
+        if _computed >= 3.0:
+            flags.append(f"--feather-band-multiplier {_computed:.1f}")
+            evidence.append(
+                f"A SOLID art colour sits {min(_at_risk):.0f} from the background, inside the "
+                f"default feather band ({tolerance:.0f}..{_band_top:.0f}) -- it would be given "
+                f"partial alpha and dithered away in a GIF even though it is not the background. "
+                f"Recommending --feather-band-multiplier {_computed:.1f} so the band stops short "
+                f"of it while still reaching {tolerance * _computed:.0f}, far enough to keep "
+                f"removing the antialiasing ramp. (For a WebP/AVIF output this cannot happen: "
+                f"--recover-fade-alpha identifies it as a solid palette colour and keeps it "
+                f"opaque. See references/lessons.md SS16.)")
+        else:
+            evidence.append(
+                f"A SOLID art colour sits {min(_at_risk):.0f} from the background, inside the "
+                f"default feather band ({tolerance:.0f}..{_band_top:.0f}), but NOT recommending "
+                f"--feather-band-multiplier: the value that would clear it is {_computed:.1f}, "
+                f"which narrows the band to {tolerance:.0f}..{tolerance * max(_computed, 1.5):.0f} "
+                f"and stops the antialiasing ramp being removed -- measured on a real asset, that "
+                f"produces a fringe fraction of 0.219 against 0.000 at the default. "
+                + ("--protect-band-only is already recommended above and carries this case "
+                   "instead (measured: 97.7% of the same protection, no fringe)."
+                   if tint_widths and not outline_colors else
+                   "Protect this colour explicitly (--protect-band-only or "
+                   "--protect-outline-color) rather than narrowing the band.")
+                + " See references/lessons.md SS18.")
+
+    elif tint_widths and outline_colors:  # documented: combining the two shrinks protection
         evidence.append(
             f"{len(tint_widths)} solid-tint band-interior region(s) observed, but a "
             f"verified --protect-outline-color is already recommended -- not adding "
@@ -732,16 +1118,74 @@ def recommend(input_path, tolerance=15):
             f"these tints fall outside the verified outline's interior, they need manual "
             f"review.")
 
+    # FORMAT RECOMMENDATION. The output container is the first decision, not a
+    # packaging afterthought: it decides whether partial transparency is even
+    # representable. A gradient_fade region means the source has a translucent
+    # element flattened against the background, which GIF structurally cannot
+    # carry (references/lessons.md SS16).
+    _fades = [r for r in report.get('band_interior_regions', [])
+              if r.get('classification') == 'gradient_fade']
+    # Ranking is Harkirat's stated preference (2026-08-17), weighted for
+    # COMPATIBILITY as well as bytes -- not smallest-file-wins:
+    #   full resolution      WebP lossless > AVIF q85 > GIF
+    #   under a byte cap     AVIF > WebP > GIF   (AVIF keeps every frame; the
+    #                        others must drop a third to two-thirds)
+    #   compatibility        WebP > GIF > AVIF
+    #   GIF                  only when explicitly required, or a genuine win on
+    #                        size/render-time at near-equal visual quality
+    _rank = ("  full resolution -> WebP lossless (bit-exact, widest support), "
+             "then AVIF q85 (smaller, still excellent), then GIF.\n"
+             "  under a byte cap (e.g. 256 KB emoji) -> AVIF first: measured, it keeps EVERY "
+             "frame where WebP and GIF each drop a third to two-thirds. Then WebP, then GIF.\n"
+             "  maximum compatibility -> WebP, then GIF, then AVIF.\n"
+             "  Prefer GIF only when the destination requires it, or when it is a genuine win on "
+             "size or render time at near-equal visual quality. Always report frame counts "
+             "alongside file sizes -- under a cap, frames are what actually gets spent.")
+    if _fades:
+        report['recommended_format'] = 'webp-or-avif'
+        evidence.insert(0,
+            f"FORMAT: .webp or .avif, with --recover-fade-alpha. {len(_fades)} region(s) show a "
+            f"translucent element that was flattened against the background at authoring time. GIF "
+            f"has 1-bit alpha and CANNOT represent it -- the faded stages render as opaque pale "
+            f"blobs or vanish, and no tolerance setting fixes it. Ranking:\n" + _rank)
+    else:
+        report['recommended_format'] = 'gif-ok'
+        evidence.insert(0,
+            "FORMAT: no translucent/fading element detected, so GIF can represent this asset "
+            "faithfully and is a legitimate choice on compatibility grounds. WebP/AVIF still keep "
+            "real antialiasing on the silhouette instead of dithering it, and need far less "
+            "per-asset flag tuning. Ranking:\n" + _rank)
+
     small = report.get('small_removed_regions', {})
     if small.get('suggested_erosion_exempt_max_size'):
         flags.append(f"--erosion-exempt-max-size {small['suggested_erosion_exempt_max_size']}")
         evidence.append(
-            f"{small['count']} small removed region(s) observed, largest "
-            f"{small['max_small_region_px']}px -- recommending --erosion-exempt-max-size "
-            f"{small['suggested_erosion_exempt_max_size']} to protect them from erosion "
-            f"inflation. (Regions above ~500px are excluded from this measurement as "
-            f"presumed candidate/design regions, not incidental gaps -- if a deliberately "
-            f"small removed region larger than that genuinely exists, measure it manually.)")
+            f"{small['transient_count']} TRANSIENT small removed region(s) observed "
+            f"(largest {small['max_transient_region_px']}px) -- recommending "
+            f"--erosion-exempt-max-size {small['suggested_erosion_exempt_max_size']} to "
+            f"protect them from erosion inflation. "
+            f"{small['persistent_count']} further small region(s) were seen in ~every "
+            f"frame at a stable size and are treated as DESIGN, not incidental noise, so "
+            f"they are excluded from this suggestion.")
+    elif small.get('erosion_exempt_suppressed_reason'):
+        flags.append('--erosion-exempt-transient')
+        evidence.append(
+            f"{small['transient_count']} transient small region(s) need exempting, but "
+            f"{small['erosion_exempt_suppressed_reason']}. A SIZE threshold therefore "
+            f"cannot separate them from the {small['persistent_count']} design region(s) "
+            f"-- exempting the noise would also exempt the design and leave the fringe "
+            f"regression v3.3.3 documents. Recommending --erosion-exempt-transient "
+            f"instead, which exempts by IDENTITY (present in ~every frame at a stable "
+            f"size = design, eroded normally; comes and goes = incidental, exempt), so "
+            f"the two size ranges are free to overlap.")
+    elif small.get('persistent_count'):
+        evidence.append(
+            f"{small['persistent_count']} small removed region(s) found, but every one is "
+            f"present in ~all frames at a stable size -- that is the signature of a design "
+            f"element (a hole/cutout the art intends), not of the incidental gaps "
+            f"--erosion-exempt-max-size exists for. NOT recommending the flag: applying it "
+            f"to real design skips the normal edge cleanup and leaves a fringe (confirmed "
+            f"regression, v3.3.3). If these should stay opaque, protect them instead.")
     elif len(report['candidate_regions']) > 0:
         evidence.append(
             "No small removed regions found under the ~500px heuristic ceiling -- if this "
@@ -753,6 +1197,7 @@ def recommend(input_path, tolerance=15):
         suggested += " " + " ".join(flags)
 
     return {
+        'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
         'evidence': evidence + region_notes,
         'analysis': report,
@@ -1037,6 +1482,17 @@ BAYER4 = np.array([
     [3, 11, 1, 9],
     [15, 7, 13, 5],
 ], dtype=float) / 16.0
+
+
+def _bayer_matrix(n):
+    """Recursive Bayer threshold matrix of size n (n a power of 2), normalised 0..1."""
+    M = np.array([[0]])
+    while M.shape[0] < n:
+        M = np.block([[4 * M, 4 * M + 2], [4 * M + 3, 4 * M + 1]])
+    return M.astype(float) / (n * n)
+
+
+BAYER8 = _bayer_matrix(8)
 
 
 def ordered_dither_mask(alpha, tile=BAYER4):
@@ -1398,6 +1854,14 @@ def compute_alpha_mask(rgb, protected, args):
         rgb, bg_rgb, protected, args.tolerance, args.feather_band_multiplier
     )
     dither_mode = getattr(args, 'dither_mode', 'bayer')
+    if dither_mode == 'continuous':
+        # No dither and no cutoff: keep the estimated alpha as real 8-bit
+        # partial transparency. Only meaningful for a container that
+        # supports it (WebP); GIF has 1 bit of alpha, which is the entire
+        # reason the bayer/none modes above exist. See references/lessons.md
+        # SS16 for the measured case that motivated this.
+        alpha = np.clip(np.rint(alpha_f * 255.0), 0, 255).astype(np.uint8)
+        return alpha, recolored
     if dither_mode == 'none':
         # Hard 50% cutoff on the ALREADY-defringed alpha, instead of a
         # spatial Bayer pattern. Keeps the color-unmixing benefit (no
@@ -1423,7 +1887,8 @@ def compute_alpha_mask(rgb, protected, args):
         # final placement context isn't known to be textured/varied.
         keep = alpha_f > 0.5
     else:
-        keep = ordered_dither_mask(alpha_f)
+        keep = ordered_dither_mask(
+            alpha_f, tile=BAYER8 if getattr(args, 'bayer_size', 8) == 8 else BAYER4)
     # Outside the transition band, alpha_f is already exactly 0 or 1 (or 1 if
     # protected), so dithering there is a no-op; this keeps behavior identical
     # to the hard-cutoff path away from edges.
@@ -1486,6 +1951,14 @@ def detect_anomalous_frame_sizes(sizes, window=5, local_ratio_threshold=0.8, gap
         below, above = sorted_sizes[max_gap_idx], sorted_sizes[max_gap_idx + 1]
         if below > 0 and above / below >= gap_ratio_threshold:
             gap_threshold = (below + above) / 2
+            # ⚠️ A "flag only a minority of frames" guard was TRIED HERE AND
+            # REVERTED (2026-08-17). The theory was that occlusion is the
+            # exception, so a small-mode majority must be the baseline. Measured
+            # on crystal.gif, where the small mode IS the majority (75/130):
+            # suppressing the flags took art loss from 0.95% to 7.07% and left
+            # an 11,451 px hole, because there the small mode is the BROKEN
+            # state -- the outline genuinely fails to enclose in those frames.
+            # A majority can be wrong. Do not re-add this guard.
             gap_flags = sizes < gap_threshold
 
     return local_flags | gap_flags
@@ -1619,9 +2092,37 @@ def build_protected_masks_robust(rgb_frames, args):
                   f"the outline) on {len(bad_idxs)}/{n} frames; substituting "
                   f"the nearest good frame's mask for those so the "
                   f"protected region doesn't flicker.", file=sys.stderr)
+            # ⚠️ CLAMP the borrowed mask to THIS frame's own silhouette. A mask
+            # lifted from another frame describes that frame's geometry, so on
+            # anything that moves or grows it protects background the current
+            # frame does not cover. Confirmed real case (crystal.gif): a yellow
+            # sparkle crossing the outline broke enclosure on 75/130 frames, and
+            # the borrowed masks left a white wedge floating above the tall
+            # crystal's tip in frames 0-18 -- ~1,600 px/frame of background kept
+            # opaque, visible against any non-white backdrop. Intersecting with
+            # the frame's own filled silhouette keeps the useful part of the
+            # substitution (interior detail that IS enclosed here) and drops the
+            # part that describes a different frame.
+            # UNION, then clamp -- do not REPLACE. The frame's own mask is
+            # partially correct even when flagged: it encloses whatever this
+            # frame does enclose. Replacing it with a borrowed mask throws that
+            # away, and anything the borrowed mask happens to miss at this
+            # frame's geometry is simply lost. Confirmed on crystal.gif: pure
+            # replacement deleted ~500 px from inside the left crystal in
+            # frames 0-19, while the frame's own mask covered it correctly.
+            #
+            # The clamp to this frame's filled silhouette stays, because a
+            # borrowed mask describes ANOTHER frame's geometry and would
+            # otherwise protect background this frame does not cover (the white
+            # wedge above the tall crystal's tip, ~1,600 px/frame).
+            bg_for_clamp = hex_to_rgb(args.bg_color)
+            own_raw = list(frame_masks)
             for bi in bad_idxs:
                 nearest = min(good_idxs, key=lambda gi: abs(gi - bi))
-                frame_masks[bi] = frame_masks[nearest]
+                silhouette = ndimage.binary_fill_holes(
+                    ~color_mask(rgb_frames[bi], bg_for_clamp, args.tolerance),
+                    structure=STRUCTURE)
+                frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & silhouette
         per_color_masks[hex_color] = frame_masks
 
     result = []
@@ -1665,7 +2166,7 @@ def describe_written_timing(output_path, intended_durations):
                     im.seek(i)
                 except EOFError:
                     break
-                written.append(im.info.get('duration') or 0)
+                written.append(frame_duration_ms(im) or 0)
                 i += 1
     except Exception as exc:
         # Readback is a reporting nicety, never a reason to fail a job that
@@ -1704,7 +2205,7 @@ def load_gif_rgba_frames(path):
     rgb_frames, alpha_frames, durations = [], [], []
     for i in range(n):
         im.seek(i)
-        durations.append(im.info.get('duration', 100))
+        durations.append(frame_duration_ms(im, 100))
         arr = np.array(im.convert('RGBA'))
         # .copy(): a bare slice is a VIEW into arr, so without copying,
         # every element of rgb_frames/alpha_frames keeps its own frame's
@@ -1833,6 +2334,9 @@ def verify(input_path, output_path, tolerance=15):
     # really just background" -- see the docstring above for why this is
     # necessary, not optional polish.
     input_analysis = analyze(input_path, tolerance=tolerance)
+    _ext = os.path.splitext(output_path)[1].lower()
+    _out_fmt = {'.webp': 'webp', '.avif': 'avif'}.get(_ext, 'gif')
+
     protected_regions = [r for r in input_analysis['candidate_regions']
                           if r['likely_intentional_design']]
     H, W = in_rgb[0].shape[:2]
@@ -1850,6 +2354,9 @@ def verify(input_path, output_path, tolerance=15):
     leftover_bg_counts = []
     fringed_pixel_fractions = []
     bg_masks = []
+    # Art palette for the fringe metric below. Built from the INPUT, whose flat
+    # colours are the reference the ring is compared against.
+    _fringe_palette = build_art_palette(in_rgb[::max(1, n // 8)] or in_rgb[:1], bg_rgb)
     for i in range(n):
         bg_mask = color_mask(in_rgb[i], bg_rgb, tolerance)
         bg_masks.append(bg_mask)
@@ -1869,7 +2376,25 @@ def verify(input_path, output_path, tolerance=15):
         border_labels.discard(0)
         enclosed = bg_mask & ~np.isin(labeled, list(border_labels)) & bbox_scope
 
-        still_opaque = bg_mask & (out_alpha[i] > 0) & ~enclosed
+        # Also exclude whatever a VERIFIED outline colour legitimately protects.
+        # `enclosed` only covers regions that are enclosed in THIS frame, but a
+        # protected region can open to the outside in some frames while still
+        # being correctly kept opaque -- those pixels are then counted as
+        # leftover background even though keeping them was the whole point.
+        # Measured on gift: 3,878 px on the worst frame, all of them the white
+        # strip the outline protects. Reconstructing the same fill the pipeline
+        # would apply takes it to 0.
+        _protected_fill = np.zeros_like(bg_mask)
+        for _r in protected_regions:
+            _hex = _r.get('candidate_outline_color')
+            if _r.get('outline_color_verified') and _hex:
+                _protected_fill |= ndimage.binary_fill_holes(
+                    color_mask(in_rgb[i], hex_to_rgb(_hex), 40))
+        # An 8-bit-alpha output legitimately carries partly transparent
+        # background-coloured pixels (a recovered fade, an antialiasing ramp);
+        # only a essentially-opaque one is leftover background.
+        still_opaque = (bg_mask & (out_alpha[i] >= 250)
+                        & ~enclosed & ~_protected_fill)
         leftover_bg_counts.append(int(still_opaque.sum()))
 
         # Fraction of the edge ring still close to the background color, not
@@ -1880,20 +2405,90 @@ def verify(input_path, output_path, tolerance=15):
         # this check exists for) can't move a whole-silhouette mean
         # anywhere near `tolerance`. A per-pixel fraction is scale-free and
         # localized regardless of the art's own dominant colors.
-        edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=2) & (out_alpha[i] > 0)
+        # iterations=1: the OUTERMOST opaque ring only. That is exactly the ring
+        # erosion removes, and measured at 2 it dilutes the signal with pixels one
+        # step further in that erosion never touches (love erosion-0 reads 0.2647
+        # at ring 1 versus 0.1726 at ring 2, against an unchanged clean baseline).
+        edge_ring = ndimage.binary_dilation(out_alpha[i] == 0, iterations=1) & (out_alpha[i] > 0)
         if edge_ring.any():
-            ring_dist = np.linalg.norm(
-                out_rgb[i][edge_ring].astype(float) - np.array(bg_rgb, dtype=float), axis=-1)
-            fringed_pixel_fractions.append(float((ring_dist <= tolerance).mean()))
+            # ⚠️ This used to ask whether a ring pixel was WITHIN `tolerance` of
+            # the background colour, which is far too strict to detect a real
+            # fringe: a pale fringe pixel is a BLEND, tens of units away from
+            # pure background, so it passed. That version returned
+            # looks_fringed=False at erosion 0, 1 AND 2 on the same asset --
+            # including a level with a fringe visible by eye -- and the false
+            # negative was trusted and shipped a regression (SS16).
+            #
+            # The question that actually discriminates is RELATIVE: is this
+            # ring pixel closer to the background than to any real art colour?
+            # Measured on the asset that exposed the false negative, erosion
+            # 0/1/2: 49.1% / 0.2% / 0.7%.
+            _v = measure_outer_ring_background_fraction(
+                out_rgb[i], out_alpha[i], bg_rgb, _fringe_palette)
+            if _v is not None:
+                fringed_pixel_fractions.append(_v)
 
     report['leftover_background_opaque_px'] = {
         'max_per_frame': max(leftover_bg_counts) if leftover_bg_counts else 0,
         'worst_frame_index': int(np.argmax(leftover_bg_counts)) if leftover_bg_counts else None,
         'total_frames_with_any': sum(1 for c in leftover_bg_counts if c > 0),
     }
+    _fringe_mean = float(np.mean(fringed_pixel_fractions)) if fringed_pixel_fractions else None
+    if _fringe_mean is None:
+        _fringe_verdict, _fringe_basis = None, 'no opaque edge ring found in any frame'
+    elif _fringe_mean > 0.15:
+        _fringe_verdict, _fringe_basis = True, (
+            f'{_fringe_mean:.4f} is above 0.15, higher than every measured clean output '
+            f'(worst clean 0.0830) -- a real pale fringe')
+    elif _fringe_mean < 0.04:
+        _fringe_verdict, _fringe_basis = False, (
+            f'{_fringe_mean:.4f} is below 0.04, lower than every measured fringed output '
+            f'(faintest fringed 0.0665) -- edge is clean')
+    else:
+        _fringe_verdict, _fringe_basis = None, (
+            f'{_fringe_mean:.4f} falls in the 0.04-0.15 band where fringed and clean outputs '
+            f'OVERLAP across assets (art with a baked-in fade carries pale near-background '
+            f'pixels at its boundary legitimately). INCONCLUSIVE -- do not use this to choose '
+            f'--edge-cleanup-erosion. Compare this asset against its own erosion 0/1/2 outputs, '
+            f'or composite over a dark solid and look')
+    report['output_format'] = _out_fmt
+    if _out_fmt != 'gif':
+        report['scope_note'] = (
+            "8-bit-alpha output. Every check here is now partial-alpha aware: "
+            "leftover background counts only ESSENTIALLY OPAQUE (alpha>=250) "
+            "background-coloured pixels, because a recovered fade or an antialiasing "
+            "ramp is legitimately pale AND semi-transparent; the fringe metric looks "
+            "only at the outermost near-opaque ring for the same reason. Before "
+            "2026-08-17 --verify refused non-GIF output entirely rather than report "
+            "a 1-bit-assumption result as though it meant something.")
     report['edge_fringe_check'] = {
-        'mean_fringed_pixel_fraction': round(float(np.mean(fringed_pixel_fractions)), 4) if fringed_pixel_fractions else None,
-        'looks_fringed': bool(fringed_pixel_fractions and np.mean(fringed_pixel_fractions) > 0.02),
+        'mean_fringed_pixel_fraction': round(_fringe_mean, 4) if _fringe_mean is not None else None,
+        'metric': 'fraction of outermost opaque ring closer to background than to any art colour',
+        # TRI-STATE, and deliberately so. Measured across 4 real assets at
+        # erosion 0 (fringed) vs 1 and 2 (clean):
+        #
+        #   asset     er0      er1      er2
+        #   love      0.2647   0.0765   0.0755
+        #   heart     0.0665   0.0000   0.0000
+        #   gift      0.4000   0.0372   0.0362
+        #   crystal   0.1681   0.0830   0.0823
+        #
+        # The metric separates cleanly WITHIN each asset (every er0 is 2-4x its
+        # own clean baseline) but the ranges OVERLAP across assets: heart's
+        # fringed 0.0665 sits below crystal's clean 0.0830, because an asset
+        # with a baked-in fade carries pale near-background pixels at its
+        # boundary legitimately. Tightening the ratio does not rescue it --
+        # tested at 0.6, 0.4 and 0.25 of the art distance, and 0.4 and below
+        # collapse every asset to 0.0000, a test that cannot fail.
+        #
+        # So no single global threshold is honest here, and inventing one is how
+        # this check earned its previous false negative. Above 0.15 is above
+        # every measured clean value; below 0.04 is below every measured fringed
+        # value; in between the check reports None and says why, rather than
+        # guessing. An unverifiable answer must present as unverified
+        # (SS13/SS16/SS17), never as a pass.
+        'looks_fringed': _fringe_verdict,
+        'verdict_basis': _fringe_basis,
     }
 
     # Protected-region coverage: the opposite failure direction from
@@ -1911,16 +2506,47 @@ def verify(input_path, output_path, tolerance=15):
     # data) -- silently collapsing those two into the same 0.0 would hide a
     # measurement gap behind what looks like a confirmed failure. Mirrors
     # edge_fringe_check's own None-when-empty handling just above.
+    # ⚠️ The footprint must be the ENCLOSED region, not every background-coloured
+    # pixel inside its bounding RECTANGLE. A bbox around an irregular shape also
+    # contains real background, which is correctly transparent in the output and
+    # drags the fraction down as though the region were half-unprotected.
+    # Measured on gift: 12,371 background-coloured pixels in the bbox against
+    # 10,257 actually enclosed, reporting coverage 0.874 for a region that is in
+    # fact 100% protected. Restricting to the enclosed footprint reads 1.000.
     protected_coverage = []
     for r in protected_regions:
         x0, y0, x1, y1 = r['bbox_xyxy']
         opacities = []
+        residual_stats = []
         for i in range(n):
-            region_bg_mask = bg_masks[i][y0:y1 + 1, x0:x1 + 1]
-            if not region_bg_mask.any():
+            _scope = np.zeros_like(bg_masks[i])
+            _scope[y0:y1 + 1, x0:x1 + 1] = True
+            _lb, _nl = ndimage.label(bg_masks[i], structure=STRUCTURE)
+            _border = (set(_lb[0, :]) | set(_lb[-1, :])
+                       | set(_lb[:, 0]) | set(_lb[:, -1]))
+            _border.discard(0)
+            region_fp = bg_masks[i] & ~np.isin(_lb, list(_border)) & _scope
+            if not region_fp.any():
                 continue
-            region_alpha = out_alpha[i][y0:y1 + 1, x0:x1 + 1]
-            opacities.append(float((region_alpha[region_bg_mask] > 0).mean()))
+            opacities.append(float((out_alpha[i][region_fp] > 0).mean()))
+
+            # Characterise WHAT the non-opaque remainder actually is, so a
+            # sub-1.0 coverage number is self-explaining instead of inviting
+            # a re-investigation. Confirmed on military-tag.gif 2026-08-17:
+            # coverage 0.757 with the whole 24.3% remainder being ONE blob
+            # per frame, 441-457px, in all 126 frames -- the deliberately
+            # punched pinhole, which is background-coloured, enclosed, and
+            # CORRECTLY transparent. §14 predicted exactly this residual
+            # ("would need verify() to know about deliberately-carved
+            # sub-holes, which it currently cannot express"). verify() only
+            # receives an input and an output path, so it cannot read the
+            # render's flags and can never *know* a cutout was intended --
+            # but it can measure whether the remainder has the shape of one.
+            _resid = region_fp & (out_alpha[i] == 0)
+            _rn = int(_resid.sum())
+            if _rn:
+                _rl, _rc = ndimage.label(_resid, structure=STRUCTURE)
+                residual_stats.append((_rn, _rc, int(region_fp.sum())))
         if not opacities:
             protected_coverage.append({
                 'region_id': r['id'],
@@ -1941,11 +2567,43 @@ def verify(input_path, output_path, tolerance=15):
         # nothing ever claimed to protect it. Report the real number
         # either way, but only assert the boolean for verified regions.
         looks_unprotected = (mean_opacity < 0.5) if r['outline_color_verified'] else None
+
+        # A deliberately punched cutout and a genuine protection failure both
+        # show up as non-opaque footprint pixels, but they do NOT look alike:
+        #   - a cutout is a physical feature of the art, so it appears in
+        #     essentially every frame, as one or two blobs, at a stable size,
+        #     and occupies a SMALL fraction of the footprint;
+        #   - a protection failure takes out a large share of the footprint
+        #     (and drives mean_opacity below the 0.5 boolean anyway).
+        # The size-fraction ceiling is what stops this from becoming an excuse
+        # for a real failure -- without it, "persistent and stable" would also
+        # describe a region that is reliably, wholly unprotected in every frame.
+        residual = None
+        if residual_stats and opacities:
+            _fracs = [rn / fp for rn, _rc, fp in residual_stats]
+            _sizes = [rn for rn, _rc, _fp in residual_stats]
+            _mean = sum(_sizes) / len(_sizes)
+            _cv = ((sum((x - _mean) ** 2 for x in _sizes) / len(_sizes)) ** 0.5
+                   / _mean) if _mean else 0.0
+            _mean_frac = sum(_fracs) / len(_fracs)
+            _mean_blobs = sum(rc for _rn, rc, _fp in residual_stats) / len(residual_stats)
+            _present = len(residual_stats) / len(opacities)
+            residual = {
+                'frames_with_residual_fraction': round(_present, 3),
+                'mean_blobs_per_frame': round(_mean_blobs, 2),
+                'mean_residual_px_per_frame': int(round(_mean)),
+                'residual_size_cv': round(_cv, 3),
+                'mean_residual_fraction_of_footprint': round(_mean_frac, 3),
+                'consistent_with_deliberate_cutout': bool(
+                    _present >= 0.9 and _cv <= 0.15
+                    and _mean_blobs <= 2.0 and _mean_frac <= 0.35),
+            }
         protected_coverage.append({
             'region_id': r['id'],
             'frames_with_data': len(opacities),
             'mean_opacity_fraction': round(mean_opacity, 3),
             'looks_unprotected': looks_unprotected,
+            'residual_nonopaque': residual,
         })
     report['protected_region_coverage'] = protected_coverage
 
@@ -2126,7 +2784,578 @@ def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
     return os.path.getsize(output_path)
 
 
-def resize_rgba_frames(rgb_frames, alpha_frames, scale, resample=None):
+# --- Baked-in fade recovery (palette unmixing) -------------------------------
+#
+# Motivating real case, references/lessons.md SS16: art whose glow/sparkle/pulse
+# FADES OUT was authored with real alpha, but GIF has none, so the authoring
+# tool flattened each fade stage against the background -- a 40%-opacity yellow
+# pulse became a solid pale cream. The information is not lost, just encoded:
+# every faded pixel lies on the straight line between the background colour and
+# the element's true colour, and its position along that line IS the original
+# alpha. Recovering it is exact arithmetic, not estimation.
+#
+# Why the normal feather path cannot do this: estimate_alpha_and_defringe only
+# assigns partial alpha inside `tolerance`..`tolerance*band_multiplier` (15..60
+# by default) of the background. On the motivating asset the fade stages sat at
+# distance 36/73/110/146 -- only the faintest fell inside. Widening the band is
+# NOT a fix: a real solid art colour (a pale lavender) sat at 121.7, so any band
+# wide enough to catch the fade also dissolves genuine artwork. The two ranges
+# overlap, so no single distance threshold separates them. Asking "is this pixel
+# explained as background blended with ONE known art colour?" does separate them.
+
+FADE_RESIDUAL_TOLERANCE = 10.0   # max distance off the bg<->colour line to count as a blend
+FADE_BARRIER_ALPHA = 0.5         # unmixed alpha at/above which a solid colour blocks flood fill
+FADE_EDGE_DILATE = 3             # px around true background that may carry partial alpha
+FADE_OPAQUE_BLOCK = 0.90         # a fading colour this opaque occludes what it covers
+FADE_ART_PRIOR = 0.30            # ...but only where art is present in >=30% of frames
+
+
+def unmix_against_palette(rgb, bg_rgb, palette):
+    """
+    For every pixel, the best explanation of "background blended with ONE
+    palette colour": returns (index, alpha, residual) arrays.
+
+    Kept as (N, K) throughout via |r|^2 = |v|^2 - 2t(v.d) + t^2|d|^2 rather than
+    materialising an (N, K, 3) difference -- the naive form is ~40x slower here
+    and was the original reason a 124-frame job took minutes.
+    """
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    d = palette - bg
+    dd = (d * d).sum(1)
+    v = (rgb.astype(np.float32) - bg).reshape(-1, 3)
+    proj = v @ d.T
+    t = np.clip(proj / dd, 0.0, 1.0)
+    r2 = (v * v).sum(1)[:, None] - 2.0 * t * proj + (t * t) * dd
+    k = r2.argmin(1)
+    n = np.arange(len(v))
+    res = np.sqrt(np.maximum(r2[n, k], 0.0))
+    shape = rgb.shape[:2]
+    return k.reshape(shape), t[n, k].reshape(shape), res.reshape(shape)
+
+
+def build_art_palette(rgb_frames, bg_rgb, sample_stride=8, protect_parents=None,
+                      force_include=None):
+    """
+    The small set of SOLID colours the art is actually drawn from.
+
+    ⚠️ The ordering here is load-bearing, and getting it wrong is a real bug that
+    was hit and fixed on the motivating asset. A fading element's intermediate
+    stages cover tens of thousands of pixels per frame, so they rank as
+    "dominant colours" and get admitted as solid palette entries of their own.
+    Every faded pixel then unmixes against its OWN stage at alpha ~1.0 and
+    renders fully opaque -- reproducing, inside the new format, the exact GIF
+    artifact this whole path exists to avoid.
+
+    The fix: consider candidates FURTHEST from the background first (a fade
+    stage is always closer to the background than the colour it fades from),
+    and reject any candidate already explained as a blend of the background and
+    an accepted colour.
+
+    ⚠️ That rejection is too aggressive on its own, and the failure is severe.
+    A SOLID art colour can legitimately sit on the line between the background
+    and another art colour -- a pale tint, a light shade of a mid-tone. Rejecting
+    it means it never becomes a palette entry, so it gets unmixed as
+    "background + its parent" and rendered SEMI-TRANSPARENT. Confirmed on a real
+    asset (crystal.gif): #d2dcfd is a genuine solid colour that is also exactly
+    43% #93b2f4 over white, and 1,092,411 solid pixels across 130 frames came out
+    at alpha ~109/255 instead of 255 -- the background visibly showing through
+    the artwork.
+
+    The discriminator is the PARENT: a fade stage's parent is a fading colour, a
+    solid tint's parent is not. `protect_parents` is the set of parent colours
+    whose blends may be rejected (i.e. the detected fading colours). None means
+    reject every blend -- correct ONLY for the provisional first pass that exists
+    to find the fading colours in the first place.
+    """
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    sample = np.concatenate(
+        [f.reshape(-1, 3) for f in rgb_frames[::sample_stride]], 0).astype(np.uint8)
+    cols, counts = np.unique(sample, axis=0, return_counts=True)
+    floor = max(1, int(len(sample) * 0.0008))
+    cand = [(c.astype(np.float32), int(n)) for c, n in zip(cols, counts)
+            if n >= floor and np.linalg.norm(c.astype(np.float32) - bg) > 40]
+    cand.sort(key=lambda cn: -float(np.linalg.norm(cn[0] - bg)))
+
+    # force_include seeds the palette so a manually named colour survives even
+    # when it is too rare to clear the frequency floor -- see the fade_hexes
+    # branch in recover_fade_alpha_frames for the real case.
+    palette = [np.asarray(c, dtype=np.float32) for c in (force_include or [])]
+    for col, _n in cand:
+        v = col - bg
+        explained = False
+        for prev in palette:
+            d = prev - bg
+            dd = float(d @ d)
+            t = min(max(float(v @ d) / dd, 0.0), 1.0)
+            if float(np.linalg.norm(v - t * d)) < FADE_RESIDUAL_TOLERANCE:
+                if protect_parents is not None and not any(
+                        float(np.linalg.norm(prev - q)) < 1e-6 for q in protect_parents):
+                    continue          # parent is solid art -> this is a real colour
+                explained = True
+                break
+        if explained or any(np.linalg.norm(col - q) < 30 for q in palette):
+            continue
+        palette.append(col)
+
+    # ⚠️ SATURATION PROMOTION WAS TRIED HERE AND REVERTED (2026-08-17) -- do not
+    # re-attempt without reading this. The idea: an element drawn at constant
+    # partial opacity never appears at full strength, so its TRUE colour can fall
+    # under the frequency floor while its blended stage clears it; the blend then
+    # enters the palette as "solid" and renders OPAQUE PALE. Real case, gift.gif:
+    # a sparkle at ~27% opacity put #d1dcfb in the palette instead of #6969f2, so
+    # it turned whitish instead of staying translucent purple.
+    #
+    # The attempted fix walked each accepted colour's background->colour ray
+    # looking for a more saturated colour present at a lower count, and promoted
+    # to it. MEASURED NET-HARMFUL across the corpus:
+    #   * crystal.gif: promoted the genuinely-solid #d2dcfd to #8599f5, which
+    #     re-broke the exact semi-transparency bug the two-pass palette fixes.
+    #   * explosion.gif: emitted a duplicate palette entry (#93b2f4 twice).
+    #   * gift.gif: only reached #c4d0f2, still not the true #6969f2.
+    # Root reason it cannot work from a histogram alone: "pale colour is a blend
+    # of a rarer saturated colour" and "pale colour is solid art that happens to
+    # be collinear with a saturated colour" are INDISTINGUISHABLE in colour
+    # statistics. Separating them needs evidence this function does not have
+    # (e.g. per-region temporal behaviour). --fade-color is the working escape
+    # hatch meanwhile, and it injects the named colour into the palette.
+    return np.array(palette, dtype=np.float32)
+
+
+def detect_fading_colors(rgb_frames, bg_rgb, palette, min_px=2000, partial_fraction=0.9):
+    """
+    Which palette colours appear as a LARGE region at a flat PARTIAL alpha --
+    i.e. are translucent elements flattened against the background, not solid art.
+
+    Scans EVERY frame. An earlier version sampled every 10th frame for speed and
+    silently stopped detecting the fade on the motivating asset, producing a
+    plausible-looking but wrong result. That is this repo's own SS10 lesson
+    ("verify against every frame, not a spot-check sample") reasserting itself;
+    unmixing is ~50ms/frame, so a full scan is affordable and a sample is not
+    worth the failure mode.
+    """
+    fading = set()
+    for rgb in rgb_frames:
+        k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
+        for ki in range(len(palette)):
+            if ki in fading:
+                continue
+            m = (k == ki) & (res <= FADE_RESIDUAL_TOLERANCE) & (t > 0.05)
+            if int(m.sum()) < min_px:
+                continue
+            if float(((t[m] > 0.08) & (t[m] < 0.92)).mean()) > partial_fraction:
+                fading.add(ki)
+    return fading
+
+
+def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
+    """
+    Full alpha for every frame by palette unmixing, recovering translucency that
+    was flattened against the background at authoring time. Returns
+    (rgb_frames_out, alpha_frames) with 8-bit alpha -- for a container that can
+    hold it (WebP/AVIF), never GIF.
+
+    Per frame: unmix -> mark solid non-fading art as a flood-fill barrier ->
+    flood from the canvas border -> anything the flood reaches (plus a thin
+    dilated rim, which is the real antialiased silhouette) gets its unmixed
+    alpha; anything enclosed and unreached is interior design and stays fully
+    opaque with its original pixels.
+
+    A FADING colour is deliberately NOT a barrier. At full opacity it is still
+    see-through in intent, and treating it as a wall lets it enclose real
+    background -- on the motivating asset that turned the gap between the heart
+    outline and the pulse ring into an opaque white band.
+    """
+    say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
+    # TWO PASSES. Pass 1 rejects every background-blend candidate, which is what
+    # makes the fading colours findable at all. Pass 2 rebuilds the palette
+    # KEEPING solid near-background tints, rejecting only blends whose PARENT is
+    # actually a fading colour -- see build_art_palette's docstring for the real
+    # bug this closes.
+    provisional = build_art_palette(rgb_frames, bg_rgb)
+    if len(provisional) == 0:
+        raise SystemExit(
+            "--recover-fade-alpha found no solid art colours distinct from the "
+            "background. This path assumes flat-colour art (vector icon/sticker "
+            "style); it cannot work on photographic or heavily-gradient content.")
+    if fade_hexes:
+        # --fade-color ADDS the colour when it isn't already present, rather than
+        # snapping to the nearest existing entry. Confirmed necessary on a real
+        # asset (gift.gif): a translucent sparkle drawn at ~27% opacity means its
+        # TRUE colour (#6969f2) barely exists at full strength anywhere in the
+        # animation, so it never clears the frequency floor -- only its blended
+        # stage (#d1dcfb) does, which then gets admitted as a solid colour and
+        # renders OPAQUE PALE. Snapping to the nearest entry would just re-select
+        # that same wrong pale colour; the point of the override is to name the
+        # colour the detector could not see.
+        _want = [np.array(hex_to_rgb(h), dtype=np.float32) for h in fade_hexes]
+        parents = []
+        for w in _want:
+            dists = np.linalg.norm(provisional - w, axis=1)
+            i = int(np.argmin(dists))
+            if float(dists[i]) <= 12.0:
+                parents.append(provisional[i])
+            else:
+                provisional = np.vstack([provisional, w[None, :]])
+                parents.append(w)
+    else:
+        parents = [provisional[i] for i in
+                   sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))]
+    palette = build_art_palette(rgb_frames, bg_rgb, protect_parents=parents,
+                                force_include=parents if fade_hexes else None)
+    if len(palette) == 0:
+        raise SystemExit(
+            "--recover-fade-alpha found no solid art colours distinct from the "
+            "background. This path assumes flat-colour art (vector icon/sticker "
+            "style); it cannot work on photographic or heavily-gradient content.")
+    say("palette: " + ', '.join('#%02x%02x%02x' % tuple(int(v) for v in c)
+                                for c in palette))
+
+    if fade_hexes:
+        want = [np.array(hex_to_rgb(h), dtype=np.float32) for h in fade_hexes]
+        fading = set()
+        for w in want:
+            i = int(np.argmin(np.linalg.norm(palette - w, axis=1)))
+            if float(np.linalg.norm(palette[i] - w)) > 30:
+                raise SystemExit(
+                    f"--fade-color #{rgb_to_hex(tuple(int(x) for x in w))} does not match any "
+                    f"detected art colour. Detected: " +
+                    ', '.join('#%02x%02x%02x' % tuple(int(v) for v in c) for c in palette))
+            fading.add(i)
+        say("fading colours (from --fade-color): " +
+            ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in sorted(fading)))
+    else:
+        fading = {i for i, c in enumerate(palette)
+                  if any(float(np.linalg.norm(c - q)) < 1e-6 for q in parents)}
+        say("fading colours (auto-detected): " +
+            (', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i])
+                       for i in sorted(fading)) or 'none'))
+
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    solid_idx = [i for i in range(len(palette)) if i not in fading]
+    struct8 = ndimage.generate_binary_structure(2, 2)
+
+    # ART PRIOR -- how often each pixel position is SOLID art across the whole
+    # animation. Needed because a fading colour is deliberately NOT a flood-fill
+    # barrier (background behind a translucent element must stay reachable), but
+    # at FULL opacity such an element occludes whatever it covers. Where it
+    # crosses solid artwork, exempting it punches a hole clean through, and the
+    # background flood pours in.
+    #
+    # Confirmed real case (crystal.gif): an opaque yellow sparkle lying across the
+    # crystal's navy outline emptied the crystal's white interior in 59 of 130
+    # frames -- 24,520 px in one blob.
+    #
+    # Colour alone cannot separate "opaque sparkle over navy" from "opaque
+    # sparkle over background". Position over TIME can: the outline is art in
+    # most frames, the background is not. So a near-opaque fading pixel blocks
+    # only where art usually lives. Measured: fixes all 59 crystal frames with
+    # ZERO cost to love.gif's gap-between-outline-and-ring (which must stay
+    # reachable THROUGH the ring). A plain opacity cut with no prior fixed
+    # crystal too but sealed love's gap in 27 frames -- that trade was rejected.
+    art_prior = np.zeros(rgb_frames[0].shape[:2], np.float32)
+    for rgb in rgb_frames:
+        k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
+        solid = np.isin(k, solid_idx)
+        art_prior += ((res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA)))
+    art_prior /= max(len(rgb_frames), 1)
+
+    out_rgb, out_alpha = [], []
+    coverage_total = coverage_ok = 0
+    interior_total = interior_leaky = 0
+
+    for rgb in rgb_frames:
+        rgbf = rgb.astype(np.float32)
+        k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
+        coverage_total += res.size
+        coverage_ok += int((res <= FADE_RESIDUAL_TOLERANCE).sum())
+
+        solid = np.isin(k, solid_idx)
+        barrier = (res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA))
+        # A near-opaque translucent element occludes; block it, but only where
+        # solid art usually lives (see art_prior above).
+        barrier |= (t >= FADE_OPAQUE_BLOCK) & (~solid) & (art_prior >= FADE_ART_PRIOR)
+        lab, _ = ndimage.label(~barrier)
+        border = set(np.unique(np.concatenate(
+            [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
+        outside = np.isin(lab, list(border)) if border else np.zeros_like(barrier)
+        bgside = ndimage.binary_dilation(outside, struct8, iterations=FADE_EDGE_DILATE)
+
+        alpha = np.full(rgb.shape[:2], 255.0, dtype=np.float32)
+        rgb_out = rgbf.copy()
+
+        exact = bgside & (res <= FADE_RESIDUAL_TOLERANCE)
+        alpha[exact] = t[exact] * 255.0
+        rgb_out[exact] = palette[k[exact]]
+
+        # Corners where two art colours meet the background are not a clean
+        # two-colour blend. Unmix them generically; the alpha floor keeps the
+        # unpremultiplied colour in gamut so compositing back over the
+        # background still reproduces the source pixel exactly.
+        gen = bgside & (res > FADE_RESIDUAL_TOLERANCE)
+        if gen.any():
+            ref = np.sqrt(((palette - bg) ** 2).sum(1))[k]
+            dist = np.linalg.norm(rgbf - bg, axis=2)
+            lo = np.where(rgbf < bg, (bg - rgbf) / np.maximum(bg, 1e-6),
+                          (rgbf - bg) / np.maximum(255.0 - bg, 1e-6)).max(axis=2)
+            ag = np.clip(np.maximum(dist / np.maximum(ref, 1e-6), lo), 0.0, 1.0)
+            alpha[gen] = ag[gen] * 255.0
+            rgb_out[gen] = bg + (rgbf[gen] - bg) / np.maximum(ag[gen], 1e-3)[:, None]
+
+        clear = alpha < 1.0
+        alpha[clear] = 0.0
+        rgb_out[clear] = bg
+
+        interior = (~barrier) & (~outside)
+        interior_total += int(interior.sum())
+        interior_leaky += int((interior & (alpha < 255)).sum())
+
+        out_rgb.append(np.clip(rgb_out, 0, 255).astype(np.uint8))
+        out_alpha.append(np.clip(np.rint(alpha), 0, 255).astype(np.uint8))
+
+    cov = coverage_ok / max(coverage_total, 1)
+    say(f"palette coverage: {cov*100:.1f}% of pixels explained as background + one art colour")
+    if cov < 0.90:
+        # Without this the tool fails SILENTLY on the wrong content type: every
+        # pixel becomes a "residual" case, gets forced opaque, and the run
+        # reports success while having recovered nothing.
+        print(f"WARNING: only {cov*100:.1f}% of pixels are explained as a blend of the "
+              f"background and a single flat art colour. --recover-fade-alpha assumes "
+              f"flat-colour vector art; this looks like gradient/photographic content, "
+              f"where it will mostly no-op (regions left opaque) rather than recover "
+              f"anything. Check the result carefully or drop the flag.", file=sys.stderr)
+    if interior_leaky:
+        print(f"WARNING: {interior_leaky} of {interior_total} enclosed interior pixels came out "
+              f"partially transparent when they should be fully opaque. If a protected "
+              f"detail looks see-through, the art likely has strokes thinner than "
+              f"{2*FADE_EDGE_DILATE}px, letting the edge rim reach through from both sides.",
+              file=sys.stderr)
+    return out_rgb, out_alpha
+
+
+def resolve_output_format(output_path, args):
+    """
+    'gif', 'webp' or 'avif' for this run. --format wins; otherwise the output
+    file extension decides, defaulting to gif.
+    """
+    explicit = getattr(args, 'format', None)
+    if explicit and explicit != 'auto':
+        return explicit
+    low = str(output_path).lower()
+    if low.endswith('.webp'):
+        return 'webp'
+    if low.endswith('.avif'):
+        return 'avif'
+    return 'gif'
+
+
+def render_frames_to_webp(rgb_frames, alpha_frames, durations, loop, output_path,
+                          lossless=True, quality=90, method=4):
+    """
+    Save RGB+alpha arrays as an animated WebP with true 8-bit alpha.
+
+    Unlike render_frames_to_gif there is no shared-palette/quantization step
+    and no transparency index -- WebP stores straight (non-premultiplied)
+    RGBA directly, so partial alpha survives and no dithering is needed.
+
+    `method` defaults to 2. Measured across 5 real assets: m2 costs 0.6-8.3%
+    more bytes than m4 while encoding ~2x faster. m6 is never worth it (45x
+    slower than m4 for 2.3%); m0 is faster still but its size penalty ranges
+    from +14% to +134% depending on content, so it must be measured, not
+    assumed.
+
+    On flat vector art, `lossless=True` is usually SMALLER as well as better
+    than lossy: measured 2109 KB lossless vs 3005 KB at quality 90 on the
+    same asset, because lossy injects noise into large uniform regions and
+    that defeats inter-frame prediction. Reach for lossy only when fitting a
+    hard byte cap.
+    """
+    ims = []
+    for rgb_out, alpha in zip(rgb_frames, alpha_frames):
+        ims.append(Image.fromarray(
+            np.dstack([rgb_out, alpha[:, :, None]]).astype(np.uint8), 'RGBA'))
+    kw = dict(save_all=True, append_images=ims[1:], duration=list(durations),
+              loop=loop, minimize_size=True, method=method)
+    if lossless:
+        kw.update(lossless=True, quality=100)
+    else:
+        kw.update(lossless=False, quality=quality, alpha_quality=100)
+    ims[0].save(output_path, 'WEBP', **kw)
+    return os.path.getsize(output_path)
+
+
+def render_frames_to_avif(rgb_frames, alpha_frames, durations, loop, output_path,
+                          quality=70):
+    """
+    Save RGB+alpha arrays as an animated AVIF with 8-bit alpha.
+
+    Measured against WebP on the same 128x128 emoji-sized content (SS16): AVIF
+    held ALL 124 frames inside Discord's 256 KB emoji cap at quality 70
+    (244 KB), where WebP had to drop to 42 frames to fit. Roughly a 3x frame
+    budget at equivalent apparent quality, so AVIF is the better choice
+    whenever a hard byte cap is forcing frames out of a WebP.
+
+    ⚠️ Acceptance is not playback. A platform listing AVIF as an accepted
+    upload type does not prove its clients ANIMATE it inline -- verify with a
+    real upload before shipping an animated AVIF, and keep a WebP fallback.
+    (Diors-Builds settled the same question for WebP only by testing a real
+    Discord client on desktop and mobile.)
+    """
+    ims = [Image.fromarray(np.dstack([r, a[:, :, None]]).astype(np.uint8), 'RGBA')
+           for r, a in zip(rgb_frames, alpha_frames)]
+    ims[0].save(output_path, 'AVIF', save_all=True, append_images=ims[1:],
+                duration=list(durations), loop=loop, quality=quality)
+    return os.path.getsize(output_path)
+
+
+def read_animation_timing(path):
+    """
+    (frame_count, total_ms) read back from a written animation, or None if this
+    environment cannot read it.
+
+    Returning None rather than a guess is the point: asserting the durations we
+    intended to write produces a message that CANNOT fail, which is exactly the
+    defect SS13 documents and SS16 repeats for WebP.
+    """
+    try:
+        im = Image.open(path)
+        n = getattr(im, 'n_frames', 1)
+        total = 0
+        for i in range(n):
+            im.seek(i)
+            total += frame_duration_ms(im, 0) or 0
+        if total > 0:
+            return n, total
+        # Pillow reports 0 for animated WebP; fall back to the container.
+        d = read_webp_durations(path)
+        if d:
+            return len(d), sum(d)
+        return None
+    except Exception:
+        return None
+
+
+def read_webp_durations(path):
+    """
+    Per-frame durations of an animated WebP, read from the container.
+
+    Pillow does NOT expose `duration` when READING an animated WebP -- every
+    frame comes back 0, so a naive timing check passes vacuously against a
+    file whose timing is actually wrong. Same footgun class as SS9's
+    Pillow-duration issue on GIF. Uses `webpmux -info`; returns None if
+    webpmux isn't available, so callers can say "unverified" rather than
+    silently report 0.
+    """
+    if shutil.which('webpmux') is None:
+        return None
+    try:
+        out = subprocess.run(['webpmux', '-info', path],
+                             capture_output=True, text=True, timeout=60).stdout
+    except Exception:
+        return None
+    d = [int(m) for m in re.findall(
+        r'^\s*\d+:\s+\d+\s+\d+\s+\w+\s+\d+\s+\d+\s+(\d+)', out, re.M)]
+    return d or None
+
+
+def square_pad_frames(rgb_frames, alpha_frames, bg_rgb):
+    """
+    Pad every frame with transparent margin to a square canvas, centred.
+    Emoji/sticker slots are square; padding here rather than letting the host
+    letterbox keeps the art centred and unstretched.
+    """
+    h, w = alpha_frames[0].shape
+    side = max(h, w)
+    if side == h == w:
+        return rgb_frames, alpha_frames
+    oy, ox = (side - h) // 2, (side - w) // 2
+    out_rgb, out_alpha = [], []
+    for rgb, alpha in zip(rgb_frames, alpha_frames):
+        r = np.zeros((side, side, 3), np.uint8)
+        r[:, :] = np.asarray(bg_rgb, dtype=np.uint8)
+        a = np.zeros((side, side), np.uint8)
+        r[oy:oy + h, ox:ox + w] = rgb
+        a[oy:oy + h, ox:ox + w] = alpha
+        out_rgb.append(r)
+        out_alpha.append(a)
+    return out_rgb, out_alpha
+
+
+def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
+                        target_kb, fmt, args, log=None):
+    """
+    Shrink a WebP/AVIF under `target_kb`, preferring the least destructive lever
+    first. Measured ordering (references/lessons.md SS16), NOT guesswork:
+
+      * Quality before resolution before frames. On a real 128x128 emoji, AVIF
+        held all 124 frames at 244 KB where WebP had to fall to 42 frames --
+        dropping frames is the most visible loss, so it goes last.
+      * For WebP at NATIVE resolution, lossy is worse than lossless on BOTH
+        axes (2675 KB at q85 vs 2114 KB lossless), so the ladder only reaches
+        for WebP lossy once the frames have been scaled down, where the
+        ordering genuinely reverses (at 128px: 650 KB lossy vs 1190 lossless).
+      * AVIF quality=100 is NOT lossless and is the biggest output of all --
+        never used as a rung.
+
+    Leaves the best attempt on disk either way and returns (size_bytes, hit).
+    """
+    say = (lambda m: log.append(m)) if log is not None else (lambda m: None)
+    target_bytes = target_kb * 1024
+    resample = Image.NEAREST if getattr(args, 'pixel_art', False) else Image.LANCZOS
+
+    def encode(fr, al, dur, scale, quality, lossless):
+        if scale != 1.0:
+            fr, al = resize_rgba_frames(fr, al, scale, resample=resample, binarize=False)
+        if fmt == 'avif':
+            return render_frames_to_avif(fr, al, dur, loop, output_path, quality=quality)
+        return render_frames_to_webp(fr, al, dur, loop, output_path,
+                                     lossless=lossless, quality=quality,
+                                     method=getattr(args, 'webp_method', 4))
+
+    # ⚠️ If the caller already chose an explicit output size (--resize-max-dim,
+    # e.g. a platform's 128x128 emoji slot), this cascade must NOT shrink below
+    # it. Confirmed bug: the scale ladder was applied ON TOP of an explicit
+    # 128px resize and silently produced 48x48 / 64x64 / 96x96 "128px emoji"
+    # files. A byte cap is a constraint; the requested resolution is a
+    # REQUIREMENT. Trade quality and frames instead, and if it still will not
+    # fit, say so rather than quietly delivering a different size.
+    _pinned = getattr(args, 'resize_max_dim', None) is not None
+    _scales = (1.0,) if _pinned else (1.0, 0.75, 0.5, 0.375, 0.25)
+    if fmt == 'avif':
+        rungs = [(sc, q, False) for sc in _scales for q in (95, 85, 75, 65, 55, 45)]
+    else:
+        rungs = []
+        for sc in _scales:
+            rungs += [(sc, 100, True)] + [(sc, q, False) for q in (95, 90, 80, 70, 60)]
+
+    best = None
+    for stride in (1, 2, 3, 4):
+        fr, al, dur = (reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
+                       if stride > 1 else (rgb_frames, alpha_frames, durations))
+        for scale, quality, lossless in rungs:
+            size = encode(fr, al, dur, scale, quality, lossless)
+            desc = (f"stride={stride} scale={scale:g} "
+                    f"{'lossless' if lossless else f'q{quality}'}")
+            say(f"  tried {desc}: {size/1024:.1f} KB")
+            if best is None or size < best[0]:
+                best = (size, desc, (stride, scale, quality, lossless))
+            if size <= target_bytes:
+                say(f"Hit target: {size/1024:.1f} KB <= {target_kb} KB ({desc})")
+                return size, True
+    # Nothing fit. Re-encode the SMALLEST configuration so the file left on disk
+    # is the one we report -- otherwise the file is whatever the last rung
+    # happened to produce, and the reported number describes a different file.
+    if best is not None and best[2] is not None:
+        stride, scale, quality, lossless = best[2]
+        fr, al, dur = (reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
+                       if stride > 1 else (rgb_frames, alpha_frames, durations))
+        encode(fr, al, dur, scale, quality, lossless)
+    say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]})."
+        + (" The output size was pinned by --resize-max-dim, so resolution was NOT "
+           "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else ""))
+    return os.path.getsize(output_path), False
+
+
+def resize_rgba_frames(rgb_frames, alpha_frames, scale, resample=None, binarize=True):
     """
     Resize every frame's RGB and alpha by `scale`, re-binarizing alpha.
     `resample` defaults to LANCZOS (smooth, correct for antialiased vector
@@ -2141,11 +3370,28 @@ def resize_rgba_frames(rgb_frames, alpha_frames, scale, resample=None):
     for rgb, alpha in zip(rgb_frames, alpha_frames):
         h, w = alpha.shape
         new_w, new_h = max(1, round(w * scale)), max(1, round(h * scale))
-        rgb_im = Image.fromarray(rgb).resize((new_w, new_h), resample)
-        alpha_im = Image.fromarray(alpha).resize((new_w, new_h), resample)
-        new_rgb.append(np.array(rgb_im))
-        a = np.array(alpha_im)
-        new_alpha.append(np.where(a > 127, 255, 0).astype(np.uint8))
+        if binarize:
+            rgb_im = Image.fromarray(rgb).resize((new_w, new_h), resample)
+            alpha_im = Image.fromarray(alpha).resize((new_w, new_h), resample)
+            new_rgb.append(np.array(rgb_im))
+            a = np.array(alpha_im)
+            new_alpha.append(np.where(a > 127, 255, 0).astype(np.uint8))
+        else:
+            # 8-bit-alpha path: PREMULTIPLY before resampling, unpremultiply after.
+            # Resampling straight (non-premultiplied) RGBA lets fully-transparent
+            # pixels' colour bleed into the edge, which for this script means the
+            # BACKGROUND COLOUR haloes exactly the silhouette we just cut out.
+            # Re-binarizing would also throw away the partial alpha that is the
+            # whole point of a WebP/AVIF output.
+            af = alpha.astype(np.float32) / 255.0
+            pm = np.dstack([rgb.astype(np.float32) * af[:, :, None], alpha.astype(np.float32)])
+            im = Image.fromarray(np.clip(pm, 0, 255).astype(np.uint8), 'RGBA').resize(
+                (new_w, new_h), resample)
+            r = np.array(im).astype(np.float32)
+            a2 = r[:, :, 3:4] / 255.0
+            rgb_out = np.where(a2 > 1e-4, r[:, :, :3] / np.maximum(a2, 1e-4), 255.0)
+            new_rgb.append(np.clip(rgb_out, 0, 255).astype(np.uint8))
+            new_alpha.append(r[:, :, 3].astype(np.uint8))
     return new_rgb, new_alpha
 
 
@@ -2238,6 +3484,75 @@ def collect_small_removed_region_sizes(rgb, bg_rgb, tolerance, max_plausible_siz
             if lab != largest_label and sizes[lab - 1] <= max_plausible_size]
 
 
+def find_transient_removed_regions(alpha_frames, max_size=500, persistence=0.9,
+                                    size_tolerance=0.15):
+    """
+    Like find_tiny_removed_regions, but keeps ONLY the regions that are
+    incidental -- and needs no size threshold to tell them apart.
+
+    `--erosion-exempt-max-size` is a size threshold, so it exempts every removed
+    region at or below it. That only separates incidental noise from design when
+    the two occupy DIFFERENT size ranges, and on real art they need not: love's
+    four controller buttons are design at 286-306px while its transient noise
+    reaches 442px, so any threshold that covers the noise also covers the
+    buttons and reintroduces the v3.3.3 fringe (SS18.2). The guard added there
+    detects the overlap and declines to recommend the flag -- which picks the
+    safer side of the conflict rather than resolving it, leaving the v3.1.0
+    small-region inflation bug live for those assets.
+
+    This resolves it instead, using the classification analyze() already does
+    correctly: a region present in ~every frame at a stable size is DESIGN; one
+    that comes and goes is incidental. Exempt by identity, not by size, and the
+    two size ranges are free to overlap completely.
+
+    Returns a list of per-frame boolean masks, same shape as
+    find_tiny_removed_regions, so it drops straight into
+    erode_alpha_edge_exempting_tiny_regions.
+    """
+    struct = np.ones((3, 3), dtype=bool)
+    per_frame = []          # [(label_array, {label: size}), ...]
+    for alpha in alpha_frames:
+        removed = (alpha == 0)
+        labeled, num = ndimage.label(removed, structure=struct)
+        sizes = {}
+        if num > 0:
+            counts = ndimage.sum(removed, labeled, range(1, num + 1))
+            largest = int(np.argmax(counts)) + 1
+            for lab in range(1, num + 1):
+                if lab == largest:
+                    continue        # the true background component
+                sz = int(counts[lab - 1])
+                if sz <= max_size:
+                    sizes[lab] = sz
+        per_frame.append((labeled, sizes))
+
+    # Cluster observed sizes across frames, the same way analyze() does, so a
+    # region whose size jitters by a few pixels is not split into two clusters.
+    clusters = []                       # [representative_size, {frame indices}]
+    for fi, (_, sizes) in enumerate(per_frame):
+        for sz in sizes.values():
+            for c in clusters:
+                if abs(sz - c[0]) <= size_tolerance * max(sz, c[0]):
+                    c[1].add(fi)
+                    break
+            else:
+                clusters.append([sz, {fi}])
+    n = max(len(per_frame), 1)
+    persistent_reps = [c[0] for c in clusters if len(c[1]) / n >= persistence]
+
+    def _is_design(sz):
+        return any(abs(sz - r) <= size_tolerance * max(sz, r) for r in persistent_reps)
+
+    masks = []
+    for labeled, sizes in per_frame:
+        m = np.zeros(labeled.shape, dtype=bool)
+        for lab, sz in sizes.items():
+            if not _is_design(sz):
+                m |= (labeled == lab)
+        masks.append(m)
+    return masks
+
+
 def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks):
     """
     Same contraction as erode_alpha_edge, EXCEPT any pixel inside a given
@@ -2309,6 +3624,89 @@ def erode_alpha_edge_exempting_tiny_regions(alpha_frames, iterations, tiny_masks
         a[tiny] = 0  # restore each tiny region to its own exact original pixels
         final.append(a)
     return final
+
+
+def measure_outer_ring_background_fraction(rgb, alpha, bg_rgb, palette,
+                                           opaque_min=250):
+    """
+    Fraction of the outermost NEAR-OPAQUE ring that is closer to the background
+    colour than to any of the art's own flat colours. High = a pale fringe the
+    edge cleanup should have removed.
+
+    `opaque_min` is what makes this usable on 8-bit alpha. On a GIF every pixel
+    is 0 or 255 and the ring is just "the edge". On WebP/AVIF the edge is a real
+    alpha ramp, and those ramp pixels are SUPPOSED to be pale and semi-
+    transparent -- counting them would flag correct output as fringed. Looking
+    only at pixels that are essentially fully opaque asks the right question in
+    both cases: is there anything SOLID here that should not be?
+
+    Returns None when the frame has no such ring, so callers can tell "measured
+    zero" apart from "nothing to measure".
+    """
+    solid = alpha >= opaque_min
+    ring = ndimage.binary_dilation(~solid, iterations=1) & solid
+    if not ring.any():
+        return None
+    pal = np.asarray(palette, np.float32).reshape(-1, 3)
+    if len(pal) == 0:
+        return None
+    px = rgb[ring].astype(np.float32)
+    d_bg = np.linalg.norm(px - np.asarray(bg_rgb, np.float32), axis=-1)
+    d_art = np.linalg.norm(px[:, None, :] - pal[None, :, :], axis=-1).min(axis=1)
+    return float((d_bg < d_art).mean())
+
+
+def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
+                                    candidates=(0, 1, 2, 3), tiny_masks=None,
+                                    tolerance_above_floor=0.02, log=None):
+    """
+    Choose --edge-cleanup-erosion by comparing THIS asset against ITSELF.
+
+    This exists because the fringe metric has no honest global threshold. It
+    separates cleanly WITHIN one asset -- every erosion-0 reading is 2-4x that
+    same asset's own clean baseline -- but the ranges OVERLAP across assets:
+    measured, heart's genuinely fringed 0.0665 sits BELOW crystal's perfectly
+    clean 0.0830, because art with a baked-in fade legitimately carries pale
+    near-background pixels at its boundary (references/lessons.md SS18.5).
+
+    A constant cannot express "2-4x above THIS asset's floor". So rather than
+    invent one, measure the asset at each candidate erosion and read the answer
+    off its own curve. The pick is the SMALLEST erosion whose reading is within
+    `tolerance_above_floor` of that asset's own minimum -- smallest because
+    erosion also eats thin strokes, so the goal is the least erosion that has
+    already removed the fringe, not the most.
+
+    One rule covers both failure directions: too little erosion reads well above
+    the floor, too much shows no further improvement and loses the tie to the
+    smaller candidate.
+
+    Runs on in-memory alpha before any encode, so it costs one extra erosion
+    pass per candidate -- not one extra render.
+    """
+    log = log if log is not None else []
+    table = {}
+    for e in candidates:
+        if e == 0:
+            cand_alpha = alpha_frames
+        elif tiny_masks is not None:
+            cand_alpha = erode_alpha_edge_exempting_tiny_regions(alpha_frames, e, tiny_masks)
+        else:
+            cand_alpha = erode_alpha_edge(alpha_frames, iterations=e)
+        vals = [v for rgb, al in zip(rgb_frames, cand_alpha)
+                if (v := measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)) is not None]
+        table[e] = round(float(np.mean(vals)), 4) if vals else None
+    measured = {e: v for e, v in table.items() if v is not None}
+    if not measured:
+        log.append("erosion calibration: no measurable opaque edge ring -- keeping the default.")
+        return None, table
+    floor = min(measured.values())
+    best = min(e for e, v in measured.items() if v <= floor + tolerance_above_floor)
+    log.append("erosion calibrated against this asset's own curve ("
+               + ", ".join(f"{e}:{v}" for e, v in sorted(measured.items()))
+               + f") -> {best}; floor {floor:.4f}, and {best} is the smallest level "
+                 f"already within {tolerance_above_floor} of it, so the fringe is gone "
+                 f"without eroding more than necessary.")
+    return best, table
 
 
 def erode_alpha_edge(alpha_frames, iterations=1):
@@ -2664,7 +4062,73 @@ def build_preview(rgb_frames, alpha_frames, n_preview=6):
     return Image.fromarray(canvas)
 
 
-def process(input_path, output_path, args):
+def process(input_path, output_path, args, diagnostics=None):
+    args = copy.copy(args)          # never mutate the caller's args (batch reuses them)
+    out_format = resolve_output_format(output_path, args)
+    if getattr(args, 'dither_mode', None) is None:
+        args.dither_mode = 'continuous' if out_format in ('webp', 'avif') else 'bayer'
+    if getattr(args, 'recover_fade_alpha', False) and out_format == 'gif':
+        raise SystemExit(
+            "--recover-fade-alpha recovers PARTIAL transparency, which GIF cannot "
+            "store (1-bit alpha). Write a .webp or .avif output instead -- that is "
+            "the whole point of the flag; see references/lessons.md SS16.")
+    if out_format == 'gif' and args.dither_mode == 'continuous':
+        raise SystemExit("--dither-mode continuous needs 8-bit alpha, which GIF "
+                         "does not have. Write a .webp output (or --format webp).")
+    # --edge-cleanup-erosion's 2px default is calibrated for the BAYER-DITHER
+    # path, where the last ring of edge pixels carries dither noise worth
+    # trimming. With --dither-mode none there is no such ring: defringing has
+    # already recoloured those pixels to the pure art colour and the cutoff is
+    # applied to that clean alpha, so erosion removes real artwork and nothing
+    # else. Measured across 5 real assets (references/lessons.md SS16) --
+    # non-background pixels wrongly deleted, erosion 2 vs erosion 0:
+    #   crystal 931,569 -> 2,631   explosion 448,205 -> 3,174   gift 635,720 -> 0
+    #   love    807,343 -> 116,013 heart     257,143 -> 51,979
+    # with --verify reporting looks_fringed=False at EVERY level, i.e. the
+    # artifact erosion exists to remove was not present in any of them. It hits
+    # thin strokes hardest (a 2px bite from each side of a 4px outline erases
+    # it), which is why it showed up as "thin lines" and "large transparent
+    # areas" on real review.
+    if args.edge_cleanup_erosion is None:
+        # 2 is calibrated for the BAYER-DITHER path. Under --dither-mode none the
+        # dither noise it targets does not exist, and 2px bites thin strokes from
+        # both sides -- measured across 5 assets, non-background pixels wrongly
+        # deleted at erosion 2 vs 1: crystal 931,569 vs 466,092, explosion
+        # 448,205 vs 223,686, gift 635,720 vs 313,631.
+        #
+        # ⚠️ But 0 is NOT the answer, and --verify's looks_fringed says False at
+        # EVERY level, so it cannot be used to decide this -- a false negative
+        # that cost a shipped regression. Measure the outer opaque ring instead:
+        # at erosion 0, 49.1% of ring pixels are closer to the BACKGROUND colour
+        # than to the art colour (mean distance to the true outline colour 162.3)
+        # -- a visible pale fringe. At erosion 1 that collapses to 0.2% (mean
+        # distance 15.6). 1 keeps the edge clean AND keeps thin strokes.
+        args.edge_cleanup_erosion = (
+            0 if out_format in ('webp', 'avif')
+            else 1 if (args.dither_mode == 'none' and not args.pixel_art)
+            else 2)
+        if args.edge_cleanup_erosion != 2:
+            print(f"edge-cleanup erosion defaulted to {args.edge_cleanup_erosion} "
+                  f"({'8-bit alpha needs no fringe trim' if out_format != 'gif' else 'no Bayer noise to trim under --dither-mode none, and 2 deletes thin strokes'}). "
+                  f"Pass --edge-cleanup-erosion explicitly to override.", file=sys.stderr)
+    if out_format in ('webp', 'avif'):
+        # --compress is GIF-encoder specific (palette quantization + gifsicle).
+        # --target_kb is NOT: it is handled by fit_to_target_bytes below.
+        gif_only = [n for n in ('compress',) if getattr(args, n, None)]
+        if gif_only:
+            raise SystemExit("These options are GIF-only and have no effect on WebP "
+                             "output: " + ", ".join('--' + n.replace('_', '-')
+                                                    for n in gif_only))
+        if False:  # superseded by the unified erosion default resolved above
+            # Erosion exists to hide the whitish fringe left by imperfect
+            # unmixing under a 1-bit cutoff. With continuous alpha the
+            # defringed partial-alpha edge is already correct, and eroding
+            # it would eat the real soft edge instead of cleaning it.
+            args.edge_cleanup_erosion = 0
+            print("8-bit alpha output: edge-cleanup erosion defaulted to 0 "
+                  "(it exists to hide 1-bit-cutoff fringe, which does not occur "
+                  "here). Pass --edge-cleanup-erosion explicitly to override.",
+                  file=sys.stderr)
     im0 = Image.open(input_path)
     n_frames = im0.n_frames
     loop = im0.info.get('loop', 0)
@@ -2676,7 +4140,7 @@ def process(input_path, output_path, args):
 
     for i in range(n_frames):
         im0.seek(i)
-        durations.append(im0.info.get('duration', 100))
+        durations.append(frame_duration_ms(im0, 100))
         source_trans_mask = get_source_transparency_mask(im0)  # BEFORE convert('RGB')
         frame = im0.convert('RGB')
         rgb = np.array(frame)
@@ -2699,7 +4163,19 @@ def process(input_path, output_path, args):
             for rgb in rgb_frames_raw
         ]
     else:
-        protected_masks = build_protected_masks_robust(rgb_frames_raw, args)
+        protected_masks = ([None] * n_frames
+                           if getattr(args, 'recover_fade_alpha', False)
+                           else build_protected_masks_robust(rgb_frames_raw, args))
+
+    recovered_rgb = recovered_alpha = None
+    if getattr(args, 'recover_fade_alpha', False):
+        fade_log = []
+        recovered_rgb, recovered_alpha = recover_fade_alpha_frames(
+            rgb_frames_raw, hex_to_rgb(args.bg_color),
+            fade_hexes=[h.strip() for h in args.fade_color.split(',')] if getattr(args, 'fade_color', None) else None,
+            log=fade_log)
+        for line in fade_log:
+            print(line, file=sys.stderr)
 
     rgb_frames = []
     alpha_frames = []
@@ -2707,6 +4183,17 @@ def process(input_path, output_path, args):
 
     for i in range(n_frames):
         rgb = rgb_frames_raw[i]
+        if recovered_rgb is not None:
+            # Palette unmixing derives protection topologically (enclosed =
+            # opaque), so it needs neither protected_masks nor the feather path.
+            alpha, rgb_out = recovered_alpha[i], recovered_rgb[i]
+            source_trans_mask = source_trans_masks[i]
+            if source_trans_mask is not None and source_trans_mask.any():
+                any_source_transparency = True
+                alpha = np.where(source_trans_mask, 0, alpha)
+            rgb_frames.append(rgb_out)
+            alpha_frames.append(alpha)
+            continue
         protected = protected_masks[i]
         if getattr(args, 'protect_band_only', None) is not None:
             removable_core = ~protected
@@ -2765,8 +4252,41 @@ def process(input_path, output_path, args):
                   f"linework.", file=sys.stderr)
         alpha_frames_pre_erosion = alpha_frames
         exempt_max = getattr(args, 'erosion_exempt_max_size', None)
-        if exempt_max is not None and exempt_max > 0:
-            tiny_masks = find_tiny_removed_regions(alpha_frames, exempt_max)
+        if getattr(args, 'erosion_exempt_transient', False):
+            _tiny_for_cal = find_transient_removed_regions(
+                alpha_frames, max_size=exempt_max if exempt_max else 500)
+            print("erosion exemption by PERSISTENCE, not size: regions present in ~every "
+                  "frame at a stable size are treated as design and eroded normally; only "
+                  "incidental ones are exempt.", file=sys.stderr)
+        else:
+            _tiny_for_cal = (find_tiny_removed_regions(alpha_frames, exempt_max)
+                             if exempt_max is not None and exempt_max > 0 else None)
+        if getattr(args, 'auto_erosion', False) and not args.pixel_art:
+            _cal_pal = build_art_palette(
+                rgb_frames[::max(1, len(rgb_frames) // 8)], hex_to_rgb(args.bg_color))
+            _cal_log = []
+            _picked, _cal_table = calibrate_edge_cleanup_erosion(
+                rgb_frames, alpha_frames, hex_to_rgb(args.bg_color), _cal_pal,
+                tiny_masks=_tiny_for_cal, log=_cal_log)
+            for _l in _cal_log:
+                print(_l, file=sys.stderr)
+            if diagnostics is not None:
+                diagnostics['erosion_table'] = _cal_table
+                diagnostics['erosion_picked'] = _picked
+            if _picked is not None and _picked != args.edge_cleanup_erosion:
+                print(f"auto: --edge-cleanup-erosion {args.edge_cleanup_erosion} -> {_picked}",
+                      file=sys.stderr)
+                args.edge_cleanup_erosion = _picked
+        # ⚠️ process() works on a COPY of args, so anything resolved in here is
+        # invisible to the caller. Report the value actually used through the
+        # diagnostics sink -- auto_run escalates from it, and reading it off the
+        # caller's args instead produced a re-render at the SAME erosion level
+        # while reporting a different one (caught in testing).
+        if diagnostics is not None:
+            diagnostics['erosion_used'] = args.edge_cleanup_erosion
+        if _tiny_for_cal is not None or (exempt_max is not None and exempt_max > 0):
+            tiny_masks = (_tiny_for_cal if _tiny_for_cal is not None
+                          else find_tiny_removed_regions(alpha_frames, exempt_max))
             alpha_frames = erode_alpha_edge_exempting_tiny_regions(
                 alpha_frames, args.edge_cleanup_erosion, tiny_masks
             )
@@ -2851,6 +4371,7 @@ def process(input_path, output_path, args):
     # --frame-stride's pattern. Without a tier it's an opt-in lever for an
     # arbitrary target that doesn't match either fixed tier size (e.g.
     # 128px for a platform that wants exactly that). With a tier, it
+    _fmt = resolve_output_format(output_path, args)
     # overrides that tier's own resize target instead of stacking with it
     # (handled below via resize_override passed into apply_tier).
     if tier is None and args.resize_max_dim:
@@ -2858,15 +4379,33 @@ def process(input_path, output_path, args):
         scale = fit_scale_for_max_dimension(w, h, args.resize_max_dim)
         if scale < 1.0:
             resample = Image.NEAREST if args.pixel_art else Image.LANCZOS
-            rgb_frames, alpha_frames = resize_rgba_frames(rgb_frames, alpha_frames, scale, resample=resample)
+            # An 8-bit-alpha output must NOT be re-binarized or eroded here.
+            # Confirmed bug, caught end-to-end: with the default binarize=True
+            # a 128px emoji came back with 14 distinct alpha levels and 99.4% of
+            # pixels fully opaque-or-transparent -- the recovered fade was
+            # silently destroyed by the resize, and the file merely LOOKED
+            # pleasingly small (97 KB) because the pulses were gone.
+            # --recover-fade-alpha bypasses compute_alpha_mask entirely, so it
+            # produces 8-bit alpha regardless of dither_mode -- test both.
+            keeps_alpha = _fmt in ('webp', 'avif') and (
+                args.dither_mode == 'continuous'
+                or getattr(args, 'recover_fade_alpha', False))
+            rgb_frames, alpha_frames = resize_rgba_frames(
+                rgb_frames, alpha_frames, scale, resample=resample,
+                binarize=not keeps_alpha)
             new_h, new_w = alpha_frames[0].shape
             print(f"Resized to fit {args.resize_max_dim}px on the longer "
                   f"side: {w}x{h} -> {new_w}x{new_h}"
-                  f"{' (nearest-neighbor, pixel-art mode)' if args.pixel_art else ''}.",
+                  f"{' (nearest-neighbor, pixel-art mode)' if args.pixel_art else ''}"
+                  f"{' (alpha-correct, premultiplied)' if keeps_alpha else ''}.",
                   file=sys.stderr)
             if args.pixel_art:
                 print("Skipped post-resize erosion (pixel-art mode -- "
                       "nearest-neighbor resize has no fuzz to clean up).",
+                      file=sys.stderr)
+            elif keeps_alpha:
+                print("Skipped post-resize erosion (8-bit alpha -- the resize "
+                      "produced real partial alpha, not fuzz to trim).",
                       file=sys.stderr)
             else:
                 alpha_frames = erode_alpha_edge(alpha_frames, iterations=1)
@@ -2889,11 +4428,47 @@ def process(input_path, output_path, args):
         for line in tier_log:
             print(line, file=sys.stderr)
 
-    size_bytes = render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
-                                       quantizer=args.quantizer)
+    if getattr(args, 'square_pad', False):
+        before = alpha_frames[0].shape
+        rgb_frames, alpha_frames = square_pad_frames(
+            rgb_frames, alpha_frames, hex_to_rgb(args.bg_color))
+        print(f"Square-padded {before[1]}x{before[0]} -> "
+              f"{alpha_frames[0].shape[1]}x{alpha_frames[0].shape[0]}", file=sys.stderr)
+    if _fmt == 'avif':
+        size_bytes = render_frames_to_avif(
+            rgb_frames, alpha_frames, durations, loop, output_path,
+            quality=args.avif_quality)
+        # Read the written file back rather than restating what we intended to
+        # write -- the SS13/SS16 footgun. If the reader cannot supply timing,
+        # say so instead of asserting a number that cannot fail.
+        written = read_animation_timing(output_path)
+        if written is None:
+            timing = (f"{len(rgb_frames)} frames intended; timing not read back "
+                      f"(no reader available for this container)")
+        else:
+            n, total = written
+            timing = (f"{n} frames, {total}ms total"
+                      + ("" if total == sum(durations)
+                         else f" -- WARNING: source was {sum(durations)}ms"))
+    elif _fmt == 'webp':
+        size_bytes = render_frames_to_webp(
+            rgb_frames, alpha_frames, durations, loop, output_path,
+            lossless=not args.webp_lossy, quality=args.webp_quality,
+            method=args.webp_method)
+        written = read_webp_durations(output_path)
+        if written is None:
+            timing = (f"{len(rgb_frames)} frames; timing not verified "
+                      f"(webpmux not available to read it back)")
+        else:
+            timing = (f"{len(written)} frames, {sum(written)}ms total"
+                      + ("" if sum(written) == sum(durations)
+                         else f" -- WARNING: source was {sum(durations)}ms"))
+    else:
+        size_bytes = render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
+                                           quantizer=args.quantizer)
+        timing = describe_written_timing(output_path, durations)
     out_w, out_h = alpha_frames[0].shape[1], alpha_frames[0].shape[0]
-    print(f"Saved {output_path} ({describe_written_timing(output_path, durations)})",
-          file=sys.stderr)
+    print(f"Saved {output_path} ({timing})", file=sys.stderr)
     print(f"Output: {out_w}x{out_h}, {size_bytes/1024:.1f} KB", file=sys.stderr)
 
     # gifsicle pass matching the tier. No tier at all = no gifsicle either
@@ -2916,7 +4491,23 @@ def process(input_path, output_path, args):
                   f"the gifsicle encoding pass, so the size reduction will "
                   f"be smaller than normal for this tier.", file=sys.stderr)
 
-    if args.target_kb:
+    if args.target_kb and _fmt in ('webp', 'avif'):
+        final_size = os.path.getsize(output_path)
+        if final_size / 1024 <= args.target_kb:
+            print(f"Already under the {args.target_kb} KB target -- no further "
+                  f"optimization needed.", file=sys.stderr)
+        else:
+            print(f"Over the {args.target_kb} KB target -- fitting (quality, then "
+                  f"resolution, then frames)...", file=sys.stderr)
+            fit_log = []
+            size_bytes, hit = fit_to_target_bytes(
+                rgb_frames, alpha_frames, durations, loop, output_path,
+                args.target_kb, _fmt, args, log=fit_log)
+            for line in fit_log:
+                print(line, file=sys.stderr)
+            print(f"Final: {os.path.getsize(output_path)/1024:.1f} KB "
+                  f"(saved over {output_path})", file=sys.stderr)
+    elif args.target_kb:
         final_size = os.path.getsize(output_path)
         if final_size / 1024 <= args.target_kb:
             print(f"Already under the {args.target_kb} KB target — no further "
@@ -3086,6 +4677,229 @@ def apply_pixel_art_preset(args):
         args.edge_cleanup_erosion = 0
 
 
+def typed_option_names(argv=None):
+    """
+    The long-option names the user ACTUALLY typed, as attribute names.
+
+    argparse records no provenance, so comparing a parsed value against the
+    default cannot tell "user passed the default explicitly" from "user passed
+    nothing". Any feature that promises explicit flags win has to read argv.
+    """
+    out = set()
+    for tok in (sys.argv[1:] if argv is None else argv):
+        name = tok.split('=', 1)[0]
+        if name.startswith('--'):
+            out.add(name[2:].replace('-', '_'))
+    return out
+
+
+def post_render_fringe_check(input_path, output_path, tolerance=15):
+    """
+    Re-measure the fringe metric on the ENCODED file, not on the in-memory
+    frames the calibration used.
+
+    These can genuinely disagree, which is the whole reason to look twice: GIF
+    palette quantization can snap an edge pixel onto a different palette entry
+    and merge identical frames, and a lossy WebP/AVIF can shift edge colours.
+    A calibration done before the encoder runs cannot see any of that.
+
+    Returns the mean fraction, or None if it could not be measured.
+    """
+    try:
+        in_rgb, _, _ = load_gif_rgba_frames(input_path)
+        out_rgb, out_alpha, _ = load_gif_rgba_frames(output_path)
+    except Exception:
+        return None
+    if not in_rgb or not out_rgb:
+        return None
+    bg = detect_bg_color(in_rgb[0])
+    pal = build_art_palette(in_rgb[::max(1, len(in_rgb) // 8)], bg)
+    vals = [v for rgb, al in zip(out_rgb, out_alpha)
+            if (v := measure_outer_ring_background_fraction(rgb, al, bg, pal)) is not None]
+    return round(float(np.mean(vals)), 4) if vals else None
+
+
+def auto_run(input_path, output_path, args, parser):
+    """
+    TWO PASSES, not a loop: analyse -> recommend -> render -> re-verify the
+    RENDERED file -> at most ONE corrective re-render.
+
+    ⚠️ There is deliberately no iteration construct here. Worst case is two
+    renders, bounded by the code's shape rather than by a counter, so there is
+    no counter that could fail to increment and no runaway. Two is the right
+    number for a reason, not out of caution:
+      * Pass 1 already corrects everything predictable from the source, and the
+        erosion calibration is EXHAUSTIVE over its candidate set -- it measures
+        all of them rather than stepping toward an answer, so iterating it
+        would add nothing.
+      * Pass 2 exists for exactly one thing the first pass structurally cannot
+        see: the encoder. Palette quantization and lossy edge shifts are a
+        single discrete effect, not something that compounds.
+      * There is no third class of error a third pass would address; it would
+        re-measure the same encoder on the same input and learn nothing new.
+
+    If anyone ever does turn this into a real loop, it MUST also carry: an
+    explicit iteration cap, the keep-the-better-render rule implemented below
+    (each pass can make things worse), and a monotonic-progress check, since
+    escalating erosion has diminishing returns and eventually destroys artwork.
+
+    Harkirat's framing, and the reason this exists: the manual tweaks were only
+    ever an investigation layer, so anything learned there belongs in the script
+    as something it can derive itself. --recommend already reasons about the
+    SOURCE; this adds the second half, reasoning about the RESULT.
+
+    Explicit flags always win. A recommended flag is applied only where the user
+    left that option at its default, so --auto never silently overrides a
+    deliberate choice -- it fills in the ones nobody expressed an opinion about.
+    """
+    print("=== AUTO 1/3: analysing source ===", file=sys.stderr)
+    rec = recommend(input_path, tolerance=args.tolerance)
+    rec_tokens = shlex.split(rec['suggested_command'])[4:]
+
+    base = parser.parse_args([input_path, output_path])
+    rec_ns = parser.parse_args([input_path, output_path] + rec_tokens)
+
+    # Which options did the user ACTUALLY type? Comparing against the default
+    # is not good enough: a user who explicitly passes the default value is
+    # indistinguishable from one who passed nothing, and --auto would then
+    # override a deliberate choice while claiming explicit flags always win.
+    # argparse keeps no provenance, so read it off argv directly.
+    _typed = typed_option_names()
+
+    applied, overridden = [], []
+    for k in vars(rec_ns):
+        rv, dv, uv = getattr(rec_ns, k), getattr(base, k), getattr(args, k, None)
+        if rv == dv:
+            continue
+        if k in _typed:
+            if uv != rv:
+                overridden.append(
+                    f"--{k.replace('_', '-')}: recommended {rv}, you set {uv} -- keeping yours")
+        elif uv == dv:
+            setattr(args, k, rv)
+            applied.append(f"--{k.replace('_', '-')} {rv}")
+        elif uv != rv:
+            overridden.append(
+                f"--{k.replace('_', '-')}: recommended {rv}, you set {uv} -- keeping yours")
+    for line in rec['evidence']:
+        print("  evidence: " + line[:220].replace("\n", " "), file=sys.stderr)
+    _recfmt = rec.get('recommended_format')
+    print(f"  recommended format: {_recfmt}", file=sys.stderr)
+    # The container is the single most consequential decision and --auto does
+    # NOT make it -- the user named the output file. But proceeding silently
+    # when the analysis says this asset cannot be represented in that container
+    # would be the tool knowingly shipping a wrong result.
+    _outfmt = resolve_output_format(output_path, args)
+    if _recfmt == 'webp-or-avif' and _outfmt == 'gif':
+        print("  ⚠️  FORMAT CONFLICT: this source has a translucent element that was "
+              "flattened against the background, and GIF's 1-bit alpha CANNOT represent "
+              "it -- the faded stages will render as opaque pale blobs or vanish, and no "
+              "setting fixes that. You asked for a .gif, so that is what will be written. "
+              "Re-run with a .webp or .avif output plus --recover-fade-alpha for a correct "
+              "result (references/lessons.md SS16).", file=sys.stderr)
+    print(f"  applying: {' '.join(applied) if applied else '(nothing beyond defaults)'}",
+          file=sys.stderr)
+    for line in overridden:
+        print(f"  {line}", file=sys.stderr)
+
+    # Do NOT re-enable calibration when the user typed an erosion value -- main()
+    # already turned it off for exactly that reason, and unconditionally setting
+    # it back here would silently override them (caught in testing: an explicit
+    # --edge-cleanup-erosion 2 was still being recalibrated down to 1).
+    args.auto_erosion = 'edge_cleanup_erosion' not in _typed
+    diag = {}
+    print("=== AUTO 2/3: rendering ===", file=sys.stderr)
+    process(input_path, output_path, args, diagnostics=diag)
+
+    print("=== AUTO 3/3: verifying the RENDERED file ===", file=sys.stderr)
+    post = post_render_fringe_check(input_path, output_path, tolerance=args.tolerance)
+    table = diag.get('erosion_table') or {}
+    measured = {e: v for e, v in table.items() if v is not None}
+    floor = min(measured.values()) if measured else None
+    if post is None:
+        print("  post-render fringe: not measurable on this output -- reporting "
+              "unverified rather than assuming a pass.", file=sys.stderr)
+        return
+    print(f"  post-render fringe fraction: {post}"
+          + (f" (pre-encode floor for this asset: {floor})" if floor is not None else ""),
+          file=sys.stderr)
+    # The comparison is against THIS asset's own pre-encode floor, never a
+    # global constant -- the same reason calibrate_edge_cleanup_erosion exists.
+    # 0.05 is not an absolute threshold -- it is a margin ABOVE THIS ASSET'S OWN
+    # pre-encode floor, so the comparison stays within-asset (the whole point of
+    # SS19). The size of the margin is calibrated: across five real assets the
+    # largest benign encoder gap measured 0.0021, so 0.05 is ~24x the worst
+    # observed agreement. Measured on flat vector icon art over white; an art
+    # style far outside that corpus may warrant re-measuring.
+    if floor is not None and post > floor + 0.05:
+        _used = diag.get('erosion_used')
+        if _used is None:
+            _used = args.edge_cleanup_erosion or 0
+        newe = _used + 1
+        print(f"  DISAGREEMENT: the encoded file is {post - floor:.4f} above the floor the "
+              f"in-memory calibration predicted -- the encoder reintroduced edge pixels the "
+              f"calibration could not see. Re-rendering ONCE at "
+              f"--edge-cleanup-erosion {newe} (up from {_used}).", file=sys.stderr)
+        # Preserve the first render. A correction is not guaranteed to help, and
+        # overwriting a better file with a worse one and merely printing a warning
+        # would leave the inferior result on disk -- the same failure shape as
+        # reporting a pass that was never verified (SS13/SS17).
+        _keep = output_path + '.pass1'
+        shutil.copyfile(output_path, _keep)
+        args.edge_cleanup_erosion = newe
+        args.auto_erosion = False          # do not re-calibrate over the escalation
+        try:
+            process(input_path, output_path, args)
+            post2 = post_render_fringe_check(input_path, output_path,
+                                             tolerance=args.tolerance)
+            if post2 is not None and post2 < post:
+                print(f"  after correction: {post2} -- improved, keeping the corrected render.",
+                      file=sys.stderr)
+            else:
+                shutil.copyfile(_keep, output_path)
+                print(f"  after correction: {post2} -- NOT an improvement over {post}. "
+                      f"Reverted: the file on disk is the FIRST render "
+                      f"(--edge-cleanup-erosion {_used}). The encoder disagreement is "
+                      f"real but more erosion is not the remedy; inspect this asset by hand.",
+                      file=sys.stderr)
+        finally:
+            if os.path.exists(_keep):
+                os.remove(_keep)
+    else:
+        print("  the rendered file agrees with the calibration -- no correction needed.",
+              file=sys.stderr)
+
+    # Fringe is only one of the things that can be wrong. For a GIF output the
+    # full verify() is available and free, and it covers the duration/frame-count
+    # class that SS17 was -- so report all of it rather than implying that a clean
+    # fringe reading means a clean file.
+    if resolve_output_format(output_path, args) == 'gif':
+        try:
+            _v = verify(input_path, output_path, tolerance=args.tolerance)
+            _lb = _v.get('leftover_background_opaque_px', {})
+            _tm = _v.get('timing', {}) or {}
+            print(f"  full verify -- leftover background (worst frame): "
+                  f"{_lb.get('max_per_frame')}", file=sys.stderr)
+            _pc = [p for p in (_v.get('protected_region_coverage') or [])
+                   if p.get('mean_opacity_fraction') is not None]
+            if _pc:
+                _worst = min(_pc, key=lambda x: x['mean_opacity_fraction'])
+                print(f"  full verify -- worst protected-region coverage: "
+                      f"{_worst['mean_opacity_fraction']}", file=sys.stderr)
+            if _tm:
+                print(f"  full verify -- timing: {_tm}", file=sys.stderr)
+        except SystemExit:
+            pass
+        except Exception as _exc:
+            print(f"  full verify unavailable ({_exc}) -- reporting the fringe check only, "
+                  f"not a clean bill of health.", file=sys.stderr)
+    else:
+        print("  (8-bit-alpha output: only the alpha-aware fringe check ran. "
+              "verify()'s leftover-background and protected-coverage checks are still "
+              "1-bit assumptions -- backlog item 9 -- so this is NOT a full verification.)",
+              file=sys.stderr)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -3188,7 +5002,7 @@ def main():
     p.add_argument('--feather-band-multiplier', type=float, default=4.0,
                     help='Width of the edge transition band, as a multiple of '
                          '--tolerance (default 4.0). Larger = softer/wider edge.')
-    p.add_argument('--edge-cleanup-erosion', type=int, default=2,
+    p.add_argument('--edge-cleanup-erosion', type=int, default=None,
                     help='Pixels of erosion applied to the opaque/transparent '
                          'boundary to clean up feather-fringe artifacts -- '
                          'background color-unmixing doesn\'t perfectly '
@@ -3363,8 +5177,79 @@ def main():
                          '4px was sufficient on the motivating case; widen '
                          'if fringe survives, matching the real '
                          'antialiasing blend width in the source art.')
-    p.add_argument('--dither-mode', choices=['bayer', 'none'], default='bayer',
-                    help='How feathered edges resolve to GIF\'s 1-bit '
+    p.add_argument('--square-pad', action='store_true',
+                    help='Pad the canvas to a square with transparent margin '
+                         '(centred) before encoding. Emoji/sticker slots are '
+                         'square; pairs naturally with --crop --target-kb.')
+    p.add_argument('--recover-fade-alpha', action='store_true',
+                    help='Recover partial transparency that was FLATTENED against '
+                         'the background when the source was authored -- a fading '
+                         'glow/sparkle/pulse that GIF had to bake into progressively '
+                         'paler versions of the background colour. Works by unmixing '
+                         'each pixel against the art\'s own flat palette, so the '
+                         'recovered alpha is arithmetic rather than an estimate. '
+                         'Requires .webp or .avif output. Assumes flat-colour vector '
+                         'art; warns if the content does not look like that. See '
+                         'references/lessons.md SS16.')
+    p.add_argument('--fade-color', default=None,
+                    help='Comma-separated hex colour(s) to TREAT as the fading '
+                         'translucent element, overriding --recover-fade-alpha\'s '
+                         'auto-detection. Use when a fade is too brief or too small '
+                         'to be detected automatically, or when a solid colour is '
+                         'wrongly detected as fading.')
+    p.add_argument('--avif-quality', type=int, default=70,
+                    help='AVIF quality 0-100 (default 70). AVIF fits roughly 3x the '
+                         'frames of WebP under the same byte cap at comparable '
+                         'apparent quality -- measured 124 frames at 244 KB where '
+                         'WebP needed to drop to 42.')
+    p.add_argument('--format', choices=['auto', 'gif', 'webp', 'avif'], default='auto',
+                    help='Output container. "auto" (default) picks webp when '
+                         'the output filename ends in .webp, else gif. WebP '
+                         'supports true 8-bit alpha, so it is the right '
+                         'choice for art with a fade/glow that was baked '
+                         'against the background at authoring time -- GIF '
+                         'physically cannot represent that (references/'
+                         'lessons.md SS16).')
+    p.add_argument('--webp-lossy', action='store_true',
+                    help='Encode WebP lossily. Default is lossless, which on '
+                         'flat vector art is usually SMALLER as well as '
+                         'better (measured 2109 KB lossless vs 3005 KB lossy '
+                         'on the same asset). Use only to hit a hard byte cap.')
+    p.add_argument('--webp-quality', type=int, default=90,
+                    help='Quality 0-100 for --webp-lossy (default 90). Alpha '
+                         'is always kept at maximum quality.')
+    p.add_argument('--webp-method', type=int, default=2,
+                    help='WebP encoder effort 0-6 (default 2). Measured across 5 '
+                         'real assets: m2 costs only 0.6-8.3%% more bytes than m4 '
+                         'but encodes ~2x faster, which is the better default. '
+                         'm0 is faster still but its size cost is wildly '
+                         'content-dependent (+134%% on one asset, +14%% on another '
+                         '-- measure before using it). Do NOT raise to 6: 45x '
+                         'slower (415s vs 9.2s) for 2.3%%.')
+    p.add_argument('--bayer-size', type=int, choices=[4, 8], default=8,
+                    help='Bayer threshold-matrix size for --dither-mode bayer '
+                         '(default 8). Measured: 8x8 gives 64 threshold levels '
+                         'against 4x4\'s 16 and tracks the intended alpha 2.5x '
+                         'more closely (mean local-density error 0.0051 vs '
+                         '0.0128), at identical temporal stability -- both are '
+                         'ORDERED dithers, so a static region is byte-identical '
+                         'frame to frame. Pass 4 to reproduce output from before '
+                         'v5.0.0. (Error-diffusion dithers -- Floyd-Steinberg, '
+                         'Jarvis, Sierra, Stucki -- are NOT offered for alpha: '
+                         'measured, Floyd-Steinberg changed 8.1%% of pixels in a '
+                         'region that was byte-identical between frames, i.e. '
+                         'visible crawl on every edge, and it defeats GIF '
+                         'inter-frame compression. gifsicle still uses '
+                         'Floyd-Steinberg for COLOUR in the compress tiers.)')
+    p.add_argument('--dither-mode', choices=['bayer', 'none', 'continuous'],
+                    default=None,
+                    help='How feathered edges resolve to the container\'s '
+                         'alpha. Defaults to "bayer" for GIF output and '
+                         '"continuous" for WebP output. "continuous" keeps '
+                         'the estimated alpha as real 8-bit partial '
+                         'transparency and is only valid for WebP -- GIF '
+                         'has 1 bit of alpha, which is why the other two '
+                         'modes exist at all. For GIF: '
                          'alpha. "bayer" (default) uses a spatial dither '
                          'pattern to simulate a soft edge -- looks good '
                          'over varied/textured backgrounds but can read as '
@@ -3426,10 +5311,48 @@ def main():
                          'a JSON report of the mechanical verification checks: leftover '
                          'background, protected-region coverage, edge fringe, small '
                          'removed-region inflation, and duration/frame-count.')
+    p.add_argument('--erosion-exempt-transient', action='store_true',
+                   help='Exempt small removed regions from edge-cleanup erosion by '
+                        'IDENTITY rather than by size: regions present in ~every frame at '
+                        'a stable size are treated as design and eroded normally, and only '
+                        'incidental ones are exempt. Use instead of '
+                        '--erosion-exempt-max-size when the two overlap in size -- on a real '
+                        'asset the design sat at 286-306px while the incidental noise reached '
+                        '442px, so NO size threshold separated them (references/lessons.md '
+                        'SS18.2, SS21). Optionally still bounded by --erosion-exempt-max-size '
+                        'as a sanity cap.')
+    p.add_argument('--auto', action='store_true',
+                   help='FULLY AUTONOMOUS MODE. Runs --recommend, applies its flags '
+                        '(only where you left that option at its default -- your explicit '
+                        'flags always win), renders, then RE-VERIFIES the rendered file and '
+                        'corrects/re-renders if the encoded result disagrees with what the '
+                        'pre-encode calibration predicted. Also enables --auto-erosion.')
+    p.add_argument('--auto-erosion', action='store_true',
+                   help='Choose --edge-cleanup-erosion by measuring THIS asset against '
+                        'itself (its own erosion 0/1/2/3 curve) instead of a fixed default. '
+                        'Exists because the fringe metric has no honest global threshold: it '
+                        'separates cleanly within one asset but the ranges overlap across '
+                        'assets (heart fringed 0.0665 < crystal clean 0.0830). Picks the '
+                        'SMALLEST erosion already at that asset\'s own floor, so it removes '
+                        'the fringe without eating thin strokes. In-memory: costs one erosion '
+                        'pass per candidate, not one render.')
     args = p.parse_args()
 
-    if sum([args.analyze, args.recommend, args.verify]) > 1:
-        p.error('Use only one of --analyze, --recommend, or --verify at a time')
+    if sum([args.analyze, args.recommend, args.verify, args.auto]) > 1:
+        p.error('Use only one of --analyze, --recommend, --verify, or --auto at a time')
+    if args.auto:
+        if args.batch:
+            p.error('--auto processes a single file; use --batch without --auto, or '
+                    'run --auto per file')
+        args.auto_erosion = True
+    # An explicitly typed --edge-cleanup-erosion outranks the calibration. Gating
+    # this on the parsed value would not work: the user may have typed the default
+    # on purpose, and that is indistinguishable from silence without argv.
+    if args.auto_erosion and 'edge_cleanup_erosion' in typed_option_names():
+        args.auto_erosion = False
+        print(f"--edge-cleanup-erosion {args.edge_cleanup_erosion} was given explicitly, "
+              f"so erosion auto-calibration is OFF for this run (your value wins).",
+              file=sys.stderr)
 
     if args.analyze:
         if not args.input_gif:
@@ -3451,6 +5374,15 @@ def main():
                     '(input_gif = original source, output_gif = the file to verify)')
         report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
+        return
+
+    if args.auto:
+        if not args.input_gif or not args.output_gif:
+            p.error('both input_gif and output_gif are required when using --auto')
+        if not args.bg_color:
+            _im = Image.open(args.input_gif)
+            args.bg_color = rgb_to_hex(detect_bg_color(np.array(_im.convert('RGB'))))
+        auto_run(args.input_gif, args.output_gif, args, p)
         return
 
     if args.batch:
