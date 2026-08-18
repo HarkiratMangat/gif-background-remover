@@ -167,3 +167,36 @@ It reads GIF, WebP, AVIF, APNG, PNG and JPEG. The name reinforces the GIF-only m
 ### `[P1 · S]` Project hooks are installed but NOT VERIFIED FIRING
 
 `.claude/hooks/` + `.claude/settings.json` were added 2026-08-17. A filesystem tracer proved the hook process **never ran** — neither hook fires, on either event. ⚠️ **The cause is UNKNOWN.** "Project settings load at session start" is NOT it: Dior's Builds disproved that live (`reference_enforcement_hooks` — editing settings.json IS picked up mid-session). Not the `hookEventName` discard bug either, since the process never starts. Most likely a new project settings file needs trusting/approving, but that is unverified. See `.claude/hooks/README.md`. Until confirmed, every gate they encode is MANUAL.
+
+---
+
+### `[P1 · S]` REOPENED — the corpus has no genuine non-white background asset
+
+**2026-08-17.** An earlier probe this session reported "26 non-white background assets" and item 3.2 was treated as self-serviceable on that basis. **That was wrong.** The probe ran `detect_bg_color` on `im.convert('RGB')`, which drops alpha and exposes the GIF's TRANSPARENCY-INDEX palette entry as though it were a painted background. Checked directly afterwards: `Calendar`, `Best`, `Timestamps`, `Settings`, `DMZBuilds` and `eyedropper_blurple_v2_bleed` all have `transparency` in `info` — they are already transparent, and the "background" colour was never there to remove.
+
+Caught when Harkirat asked why a README panel captioned "magenta background" showed a white one: compositing the RGBA frame over white revealed the truth the RGB conversion had hidden.
+
+**So every threshold in this skill is still calibrated on white-background art only**, which is exactly what item 3.2 warned about. The consequence is not hypothetical — §23 found both edge-hardness measures collapse when a solid palette colour sits near the background, and that is far likelier on a coloured one.
+
+**Next action:** ask Harkirat for genuine coloured-background art, or synthesise it honestly by compositing existing transparent assets onto solid colours (which is a fair test for background DETECTION and removal, though not for authored-against-a-colour antialiasing). ⚠️ When auditing for this, check `'transparency' in im.info` FIRST — an RGB conversion will lie to you.
+
+---
+
+### `[P1 · M]` `--recommend` chose `--protect-band-only` where `--protect-outline-color` was needed — 100% of a design region destroyed
+
+**Found 2026-08-17** on `local/Diors-builds Emojis/others/Cut loop.gif` (76 frames, Pikachu bursting from a pokéball, background `#f7f7f9`).
+
+The pokéball's pale interior is `#eeeeee` — a per-channel gap of 9/9/11 from the background, inside the default tolerance of 15, so colour alone cannot separate them. `--analyze` DID see it: 12 `band_interior_regions`, including `#eeeeee` at distance 21.7 covering 8,177px. `--recommend` then chose `--protect-band-only 4`, which is the flag for a solid design colour near the background.
+
+**It was the wrong flag, and the result is catastrophic:**
+
+| flags | pale interior deleted | art deleted |
+|---|---|---|
+| `--auto` chose `--protect-band-only 4 --dither-mode none --erosion-exempt-max-size 521` | **593,583 / 593,583 = 100%** | 1,079,456 |
+| `--protect-outline-color 39215a --dither-mode none` | 7,398 / 148,918 = **5.0%** | 26,829 |
+
+**Why the chosen flag cannot work here:** `--protect-band-only` protects everything outside a thin ring around the *removable core*. The pokéball's lower half is an OPEN BOWL, so its interior is topologically continuous with the outer background — it IS part of the removable core, and the flag has nothing to hold. Only an enclosing outline closes the shape, and the dark purple stroke `#39215a` does exactly that.
+
+**Next action:** when `band_interior_regions` reports a large near-background region AND a candidate outline colour encloses it, prefer `--protect-outline-color` over `--protect-band-only`. The two are not interchangeable: band-only assumes the region is OUTSIDE the removable core, outline assumes it is ENCLOSED. Check enclosure before choosing.
+
+**Related:** this is the same topological root cause as the translucent-jar item. Two independent assets now hit it, which makes "a design region open to the background" the most common real-world failure in this corpus rather than an edge case.

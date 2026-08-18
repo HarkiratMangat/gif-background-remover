@@ -494,10 +494,45 @@ def analyze(input_path, max_samples=40, tolerance=15):
             all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         per_frame_small_sizes.append(_frame_small)
         all_small_sizes.extend(_frame_small)
+    # --tumble-safe defines the background as the single LARGEST connected
+    # bg-coloured component per frame. That premise fails outright when the
+    # foreground divides the background into several large pieces: everything
+    # outside the biggest piece is then silently kept.
+    #
+    # Measured 2026-08-17 on a 35-frame pixel-art asset whose limbs span the
+    # canvas: the yellow background splits into 3-7 disconnected regions, and
+    # --tumble-safe removed 69,548 of 158,899 background pixels on frame 0 --
+    # leaving 56% of it behind. Without the flag: 0 background left, 0 art lost.
+    # --recommend had suggested the one flag that breaks the asset, because
+    # edge-grazing (which is what triggers tumble risk) is EXACTLY the condition
+    # that also fragments the background.
+    _split_frac = []
+    for _i in (fg_sample_idxs if 'fg_sample_idxs' in dir() else range(min(n_frames, 8))):
+        _m = color_mask(all_rgb_frames[_i], bg_rgb, tolerance)
+        if not _m.any():
+            continue
+        _lb, _n = ndimage.label(_m, structure=STRUCTURE)
+        if _n <= 1:
+            _split_frac.append(0.0)
+            continue
+        _sz = ndimage.sum(_m, _lb, range(1, _n + 1))
+        _split_frac.append(float((_sz.sum() - _sz.max()) / _sz.sum()))
+    _bg_outside_largest = round(float(np.mean(_split_frac)), 3) if _split_frac else 0.0
+
     tumble_risk = {
         'worst_margin_ratio': worst_margin,
         'worst_margin_frame_index': worst_margin_frame,
-        'likely_tumble_risk': worst_margin is not None and worst_margin < 3.0,
+        'background_outside_largest_component': _bg_outside_largest,
+        # 0.35 sits MID-GAP, not at a convenient round number. Measured across the
+        # corpus: explosion 0.0%, love 1.1%, military-tag 1.5%, gift 4.8%,
+        # crystal 6.2%, heart 23.6% -- against 57.7% on the asset --tumble-safe
+        # actually stranded. A first attempt used 0.05, which fell BETWEEN gift
+        # and crystal, two assets 1.4 points apart: a margin of degree, and the
+        # exact trap SS18 and SS23 document. Anything from ~0.30 to ~0.50
+        # separates the real failure from every asset here.
+        'tumble_safe_would_strand_background': _bg_outside_largest > 0.35,
+        'likely_tumble_risk': (worst_margin is not None and worst_margin < 3.0
+                               and _bg_outside_largest <= 0.35),
     }
 
     if n_frames <= max_samples:
@@ -974,6 +1009,14 @@ def recommend(input_path, tolerance=15):
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
+    if tumble.get('tumble_safe_would_strand_background'):
+        evidence.append(
+            f"NOT recommending --tumble-safe despite an edge-grazing margin: "
+            f"{tumble['background_outside_largest_component']:.1%} of the background sits "
+            f"OUTSIDE its largest connected component, so the foreground divides the "
+            f"background into pieces. --tumble-safe keeps only the largest piece and would "
+            f"strand the rest -- measured on a real asset, it left 56% of the background "
+            f"behind (references/lessons.md SS25).")
     if tumble_safe:
         flags.append('--tumble-safe')
         evidence.append(
@@ -1054,12 +1097,24 @@ def recommend(input_path, tolerance=15):
 
     band_regions = report.get('band_interior_regions', [])
     if any(r['classification'] == 'gradient_fade' for r in band_regions):
-        flags.append('--dither-mode none')
+        # A fade means the FORMAT decision is already made: GIF structurally
+        # cannot carry it. So recommend the flag that RECONSTRUCTS the alpha,
+        # not the one that makes the loss look tidier.
+        #
+        # This used to always emit --dither-mode none -- the GIF-era workaround --
+        # and mention --recover-fade-alpha only in prose. `--auto` takes the flag
+        # list VERBATIM and never reads the prose, so on a real asset it produced
+        # ZERO translucent pixels where --recover-fade-alpha produced 249,774.
+        # CLAUDE.md's own rule: a warning in the evidence is not a fix, because an
+        # autonomous run cannot act on it.
+        flags.append('--recover-fade-alpha')
         evidence.append(
-            "NOTE: --dither-mode none is the best GIF can do for a fade. If the "
-            "deliverable can be WebP or AVIF, use --recover-fade-alpha with a "
-            ".webp/.avif output instead -- it reconstructs the original alpha "
-            "exactly rather than cutting the faintest stages (lessons SS16).")
+            "A translucent element was flattened against the background by the source "
+            "export -- recommending --recover-fade-alpha, which unmixes each pixel "
+            "against the art's own palette and reconstructs the original alpha "
+            "arithmetically. Requires a .webp/.avif output; GIF's 1-bit alpha cannot "
+            "carry the result. Measured on a real asset: 0 translucent pixels without "
+            "this flag, 249,774 with it (references/lessons.md SS16).")
         evidence.append(
             "Band-interior region(s) show a gradient-fade signature (color distance from "
             "background varies across the frames it appears in) -- recommending "
@@ -1224,7 +1279,11 @@ def recommend(input_path, tolerance=15):
     # only by luck. Every test of this was run FROM the repo root, where the wrong
     # path happens to be right: a check that could not fail.
     _self = os.path.abspath(__file__)
-    suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.gif>"
+    # The placeholder must name a container that can actually HOLD what the flags
+    # produce -- suggesting <output.gif> alongside --recover-fade-alpha emits a
+    # command line that exits with an error.
+    _ext = 'webp' if '--recover-fade-alpha' in flags else 'gif'
+    suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.{_ext}>"
     if flags:
         suggested += " " + " ".join(flags)
 
@@ -4826,10 +4885,25 @@ def auto_run(input_path, output_path, args, parser):
     # argparse keeps no provenance, so read it off argv directly.
     _typed = typed_option_names()
 
+    # Flags that the user's CHOSEN CONTAINER cannot honour must not be applied,
+    # however sound the recommendation. --recover-fade-alpha is correct advice on
+    # a faded asset AND exits with an error on a .gif output, so applying it to a
+    # gif run turns --auto into a crash. Caught by the determinism gate on
+    # 2026-08-18, immediately after --recover-fade-alpha started being
+    # recommended: --auto had produced no file at all on every faded asset
+    # written to .gif. The format conflict is still reported below -- the user is
+    # told the container is wrong; they are just not handed a traceback for it.
+    _out_fmt_early = resolve_output_format(output_path, args)
+    _incompatible = {'recover_fade_alpha'} if _out_fmt_early == 'gif' else set()
+
     applied, overridden = [], []
+    skipped_for_format = []
     for k in vars(rec_ns):
         rv, dv, uv = getattr(rec_ns, k), getattr(base, k), getattr(args, k, None)
         if rv == dv:
+            continue
+        if k in _incompatible and k not in _typed:
+            skipped_for_format.append(f"--{k.replace('_', '-')}")
             continue
         if k in _typed:
             if uv != rv:
@@ -4857,6 +4931,10 @@ def auto_run(input_path, output_path, args, parser):
               "setting fixes that. You asked for a .gif, so that is what will be written. "
               "Re-run with a .webp or .avif output plus --recover-fade-alpha for a correct "
               "result (references/lessons.md SS16).", file=sys.stderr)
+    if skipped_for_format:
+        print(f"  NOT applying {' '.join(skipped_for_format)}: a .gif output cannot carry "
+              f"partial transparency, so the flag would only error. See the format "
+              f"conflict note above.", file=sys.stderr)
     print(f"  applying: {' '.join(applied) if applied else '(nothing beyond defaults)'}",
           file=sys.stderr)
     for line in overridden:
