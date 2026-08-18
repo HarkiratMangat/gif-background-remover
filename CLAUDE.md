@@ -89,6 +89,38 @@ These are the load-bearing ones; the full reasoning for each lives in the memory
 - **Proactively recommend a model/effort level** when the task calls for a different fit than what's currently running — one clear recommendation, not a range, given *before* starting the work. If part of a batch is a poor fit for the session's setup, recommend deferring it to its own session rather than switching models mid-flow (a mid-session switch reprocesses the whole conversation at full price, no cache carryover).
 - **Mark chat chapters at real phase shifts** (setup → a specific GIF job → a bug investigation → a version bump), not every message.
 
+## Repo conventions established 2026-08-17 — REPO SIDE ONLY, do not move these into packaged files
+These govern how work is done in this repo. A claude.ai session neither needs them nor can act on them, so they must NOT go into `SKILL.md` or `references/` — that is the sandbox-boundary rule in the "Live skill sync workflow" section, applied in the other direction. (One of these lessons was written into `references/lessons.md` §24 first and had to be lifted back out; Harkirat's correction: "that's a lesson specific for the repo and belongs in repo read files.")
+
+### Markdown is SOFT-WRAPPED
+One physical line per paragraph, list item or quoted paragraph; the editor wraps for display. Adopted from Dior's Builds, whose reasoning applies here more strongly than there: measured 2026-08-17, **2,239 of 2,965 prose lines (75.5%) broke mid-sentence**, so `rg` could not match most multi-word phrases (Dior's Builds decided the same at 64.6%). After migration: 2-9%.
+
+Reflow with that repo's script, `--check` before `--write`; its token-preservation invariant is what makes the migration trustworthy, and it passed on all 28 files with 0 failures:
+```
+node "/Applications/Claude Code/Diors-Builds/scripts/reflow-prose.mjs" --check <files>
+```
+**This applies to every `.md` in scope, including the memory folder** — those were hand-wrapped during the very session that ran the migration, which Harkirat caught.
+
+### `references/lessons.md` upkeep — it is ~32k tokens and must stay navigable
+Whenever a section is ADDED to it:
+1. Add a **ToC entry** and at least one **symptom-table row**. Measured: 6 of 25 sections had become unreachable from the symptom table, including that session's own work — a lesson nobody can find is a lesson nobody has.
+2. If the section will exceed roughly 1,500 tokens, give its subsections **numbered anchors** (`### 16.5 …`) so a reader can extract a part. §16 was 6,500 tokens in 21 unnumbered subsections; numbering made §16.5 a 245-token read.
+3. Keep the "How to read this file" block accurate — a session must be told to grep or extract, never to read the file whole.
+
+### Release gates — run these BEFORE merging, not after
+0. **`python3 scripts/audit_docs.py` must pass.** It gates the packaged docs against the script: every argparse flag reachable from SKILL.md's instructional BODY (not just its changelog), every `§N` and `references/*.md` pointer resolving, every lessons section reachable from both the ToC and the symptom table. It exists because the docs passed every structural check while SIX flags — including `--auto` and `--auto-erosion`, the autonomy feature this project is aimed at — appeared nowhere but SKILL.md's version changelog. **A changelog reads like documentation and is not.** Proven non-vacuous: reintroducing the real defect makes it exit 1.
+
+The v5.1.1 release exists only because these ran after the v5.1.0 tag instead of before it, which cost two extra version bumps and two extra merges:
+1. **Build the `.skill` and gate the BUILT artifact** — not the working tree. Only the package shows what actually ships: it caught a private path (`local/Diors-builds Emojis/…`) and four pointers to `gif-deferred-list.md`, which is tracked but not packaged. Re-run the gate on every REBUILD; trusting the previous run missed one.
+2. **Every `references/…` pointer in the packaged `SKILL.md` must resolve inside the zip.**
+3. **No private paths** (`/Users/…`, `local/…`, `.remember`) and no pointers to unpackaged repo files.
+4. **Reconcile the version entry against the commits** — check whether an earlier bullet contradicts a later one, and whether any bullet describes as a FIX something later measurement reclassified. When correcting a stale claim, grep for the CLAIM, not the paragraph.
+5. **A checklist that omits the primary case manufactures confidence.** Auditing the frontmatter description, the term list was built from the NEW capabilities — WebP, AVIF, `--auto`, pixel art — and never tested "remove the background", the skill's entire purpose. The tidy column of pass/fail marks implied the core had been checked when it had not been looked at once; Harkirat caught it. **Before trusting a checklist, ask what the single most important case is and confirm it is ON the list.** Same failure as §23's circular fixture and the repo-root-only path test — reproduced while auditing for that exact class of error.
+5. **Confirm behaviour, not signatures.** A changed argparse default nearly caused six correct statements to be "fixed"; the default was a sentinel that resolves to the old value.
+
+### Merge discipline — the failure that motivated writing this down
+`main` advances only through a PR, and **push, merge and tag are each asked, every time; approval never carries over.** On 2026-08-17 one authorization ("commit, push, pr, tag, and merge") was treated as covering three consecutive releases, two of which were merged while Harkirat still had open questions. Batch audit findings into ONE release; ask again for each subsequent one.
+
 ## Validation status
 **Validated in practice on 2026-08-07** — the first real GIF jobs since the 2026-07-14/16 setup session. Three 640x640 white-background gem icons (`ruby`, `jewelry`, `gemstone`) were processed end to end with the v3.1.0 drop's script and accepted by Harkirat. What that exercised: `--protect-outline-color` enclosure verified per-frame across an overlapping-elements animation, `--erosion-exempt-max-size` on small isolated removed regions, and `--dither-mode none` on art with a fade baked in against the background. Two real findings came out of it — `references/lessons.md` §12 and §13.
 

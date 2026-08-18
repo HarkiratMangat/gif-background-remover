@@ -4,6 +4,29 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 **When to read this file:** before re-diagnosing anything that smells like a past case (flicker or a gap in a protected region, erosion eating fine detail, jagged edges surviving a resize, a wrong animation-length claim, a "grainy/messy" complaint after compression, a which-tool-or-quantizer question). Check the table of contents below for a matching section first. This history is long and specific, and several fixes were tried, looked right, and later regressed — re-deriving one from scratch risks retrying an approach already known to fail.
 
+## How to read this file — do NOT read it whole
+
+It is ~32,000 tokens. The median section is ~900. **Find the one section you need and read only that**; reading the file end to end costs 35x what the answer costs.
+
+Three routes, cheapest first:
+
+1. **Symptom table below** — scan it for something resembling what you are seeing, then jump to that section.
+2. **Grep for the symptom in your own words.** Prose here is soft-wrapped (one line per paragraph) specifically so that multi-word phrases match on a single line:
+   ```
+   grep -n "whitish fringe" references/lessons.md      # or: rg -n "whitish fringe"
+   ```
+3. **Extract one section by number**, without loading the rest:
+   ```
+   python3 -c "import re,sys;s=open('references/lessons.md').read();print(re.search(r'^## 16\..*?(?=^## \d+\.|\Z)',s,re.M|re.S).group(0))"
+   ```
+
+**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4` …), so you can extract a part rather than the whole. §16 alone is ~6,500 tokens across 21 sub-anchors; one of them is usually what you actually want:
+   ```
+   python3 -c "import re;s=open('references/lessons.md').read();print(re.search(r'^### 16\.5 .*?(?=^### |\Z)',s,re.M|re.S).group(0))"
+   ```
+
+If you are about to re-diagnose something that smells like a past case — a fringe, a flicker, erosion eating detail, a wrong duration, a tool-or-quantizer question, a check that disagrees with your eyes — spend one grep here first. Several fixes in this history were tried, looked right, and later regressed; re-deriving one from scratch risks repeating that.
+
 ## Table of contents
 1. [Edge-hardness caveat: geometry-heavy false positives](#1-edge-hardness-caveat-geometry-heavy-false-positives)
 2. [Why `--protect-region` is a last resort](#2-why---protect-region-is-a-last-resort)
@@ -27,8 +50,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 20. [Auditing §19: five defects found by reviewing my own work](#20-auditing-19-five-defects-found-by-reviewing-my-own-work)
 21. [Four verification defects, and exempting by identity instead of by size](#21-four-verification-defects-and-exempting-by-identity-instead-of-by-size)
 23. [`edge_hardness` fails on pixel art with a coloured background — 6 of 8 real assets](#23-edge_hardness-fails-on-pixel-art-with-a-coloured-background--6-of-8-real-assets)
-24. [Auditing the release entry: a cumulative list nobody reconciled](#24-auditing-the-release-entry-a-cumulative-list-nobody-reconciled)
-25. [Two defects that only exist in the deployment environment](#25-two-defects-that-only-exist-in-the-deployment-environment)
+24. [Two defects that only exist in the deployment environment](#24-two-defects-that-only-exist-in-the-deployment-environment)
 22. [Closing §14 on its own asset: the residual was the cutout, and 519 vs 371 measured](#22-closing-14-on-its-own-asset-the-residual-was-the-cutout-and-519-vs-371-measured)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
@@ -44,8 +66,24 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 | Scattered speckle dots where a fading element disappears | §16 |
 | A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
-| `--recommend`'s command fails with "No such file or directory" | §25.1 (repo-relative path) |
-| AVIF output fails after all the work is done | §25.2 (missing capability guard) |
+| "there's a white edge / outline / halo around it" | §16 (fringe), §19 (pick erosion by the asset's own curve) |
+| "it looks blurry / soft / smudged after resizing" | §5 (resize degradation), §1 (is it pixel art?) |
+| "the colours look wrong / washed out / banded" | §12 (dither mesh), §6 (quantizer choice) |
+| "it's too big" / "it won't upload" / a platform size limit | §8, and SKILL.md's compression tiers |
+| "it looks chunky / blocky / like it lost detail" | §4, §5 (erosion eating detail), §1 (pixel art misdetected) |
+| "part of the picture disappeared" | §3 (protected-region flicker), §10 (tumbling content) |
+| "it plays too fast / too slow / is cut short" | §13, §17 (duration read from the wrong frame) |
+| "the see-through part went solid" or a glow turned opaque | §16 (GIF cannot hold it — change format) |
+| Output is shorter than the source, or "durations preserved exactly" is a lie | §17 (non-GIF SOURCE: Pillow needs load(), not seek()) |
+| `--recommend` suggested a flag that made the output worse | §18, §20 (four wrong recommendations and why) |
+| A flag had to be tuned by hand to get a good result | §18 (the gap is the bug — the tool should derive it) |
+| Choosing `--edge-cleanup-erosion`, or `--auto` picked a surprising one | §19 (calibrated against the asset's OWN curve) |
+| Reviewing your own just-finished work | §20 (five defects found exactly this way) |
+| `--verify` flags something you believe is correct | §21 (footprint defects), §22 (`residual_nonopaque`) |
+| A check passes but the number looks implausible | §20 (a passing test with a wrong number IS a failing test) |
+| Something works here but might not in the claude.ai sandbox | §24 (two defects invisible from the repo) |
+| `--recommend`'s command fails with "No such file or directory" | §24.1 (repo-relative path) |
+| AVIF output fails after all the work is done | §24.2 (missing capability guard) |
 | Pixel art on a COLOURED background read as antialiased | §23 (both measures fail; check the art by eye) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -172,34 +210,34 @@ SKILL.md's rule: check whether the foreground shape rotates/translates significa
 
 **The real case:** a 640x640, 124-frame calendar/gamepad icon GIF where the whole card tumbles/rotates through a wide range of orientations (not a subtle wobble — real rotation, occasionally flipping to show a second card layer behind it), while a purple gamepad with a white cross and four white dots sits on the card's face, and the card's header has four navy "spiral-binding" loops each with a small white gap inside. Three different things needed different treatment (gamepad cross/dots stay opaque; the four spiral-hole gaps go transparent; everything else white goes transparent) while all of it tumbles together in lockstep.
 
-### Bug 1 (v1): a fixed-position region derived from one frame doesn't hold for other frames
+### 10.1 Bug 1 (v1): a fixed-position region derived from one frame doesn't hold for other frames
 `--analyze`'s `bbox_xyxy`/`suggested_protect_region` are correct for the sampled frames they came from, but nothing stops using those as a FIXED rectangle applied uniformly across all frames — a natural move when a region is a bad `--protect-region` fit (non-circular, no verified outline color; see §2's existing caution, which warns about the wrong GEOMETRY at one position but not about the position itself being wrong elsewhere). Confirmed real result: visibly destroyed frames mid-animation — chunks of the gamepad and card cut out — because by the time the tumbling icon reached other frames, the fixed pixel rectangle now overlapped completely different content.
 
 **Fix:** re-derive any frame-specific region independently, per frame, from intrinsic properties that don't depend on position — size range, bounding-box aspect ratio, and immediate bordering color(s) — never from one frame's absolute coordinates.
 
-### Bug 2 (v3): border-touching stops being a safe proxy for "background" once the foreground can graze the edge
+### 10.2 Bug 2 (v3): border-touching stops being a safe proxy for "background" once the foreground can graze the edge
 A natural definition of "background" is "whatever bg-colored region touches the canvas border" (flood-fill from the edges) — safe ONLY when the foreground design never itself reaches the canvas edge. Confirmed real failure: at the peak of the tumble, a genuine corner of the card touched row 639 of the 640px canvas, and border-touch flood-fill correctly identified that as "border-connected" and swept the ENTIRE connected white shape — 22,169px of real card content, not background — into "background," deleting it. This is a topology problem, not a color/edge-blend problem this skill already handles well: a large chunk of real content became graph-connected to the true background purely by touching the border at one point.
 
 **Fix:** for animated content where the foreground might reach the edge, define background as the SINGLE LARGEST connected bg-colored component per frame, not "any bg-colored region touching the border." Confirmed safe specifically because true background is overwhelmingly large relative to any other same-colored region — verified directly across all 124 frames of the motivating case, the largest bg-colored component was never less than ~3x the size of the second-largest, even in frames where a second genuinely large white region (the card's own visible interior, up to ~47,000px) coexisted with it. **This margin needs re-verifying on any new asset before trusting it** (print the top 2-3 component sizes per frame) — an asset whose true background is only a thin margin, comparable in size to its own foreground bg-colored regions, is the case where this heuristic is the wrong tool.
 
-### Bug 3 (v2, and again after v3's fix): single-frame outline enclosure can fail under self-overlapping/rotating geometry, past what §3's existing anomaly detector catches
+### 10.3 Bug 3 (v2, and again after v3's fix): single-frame outline enclosure can fail under self-overlapping/rotating geometry, past what §3's existing anomaly detector catches
 §3 above already documents real, hard-won infrastructure for one enclosure-failure mode: a DIFFERENT animated element briefly crossing and breaking a stable outline's closure (the "flashing" bug, with local-anomaly + whole-distribution-gap detection, and real history of two reverted approaches that produced "ghost" artifacts on rotating icons specifically — read that section in full before touching this area again, it already encodes hard lessons). **This case's failure was different enough to slip past that existing detector.** Rather than a stable shape being briefly crossed by something else, the asset's OWN geometry — a card tumbling through orientations, at times self-overlapping its second layer — made single-frame `binary_fill_holes` enclosure unreliable in a way that correlated smoothly with rotation progress rather than spiking as a sharp, isolated anomaly against nearby frames. It silently deleted real card content across a meaningful span of frames without ever reading as "flashing," and a 40-frame `--analyze` sample (`enclosure_ratio: 1.0`) did not catch it either, because the specific sampled frames happened to be fine even though frames in between weren't.
 
 **Fix:** for this failure signature specifically, don't lean on `--protect-outline-color` at all — bypass single-frame flood-fill enclosure as a concept in favor of bug 2's largest-component background definition, plus bug 4's mechanism below for anything needing selective removal. **This does NOT replace §3's existing anomaly detection** — that remains the right tool for its own documented failure mode (a distinct crossing element). Use this section's approach when the SHAPE ITSELF is what's moving/rotating/self-overlapping; keep using `--protect-outline-color` (with its existing anomaly correction) for a stable shape being briefly crossed by something else.
 
-### Bug 4 (v5, discovered fixing an unrelated fringe issue after bugs 1-3 were resolved): allowlist-style feathering protection misses solid near-background design colors
+### 10.4 Bug 4 (v5, discovered fixing an unrelated fringe issue after bugs 1-3 were resolved): allowlist-style feathering protection misses solid near-background design colors
 Not specific to animated content — would affect a perfectly static icon too — but found in the same investigation, one step later. The motivating icon has a flat, deliberate, pale blue-lavender "shadow" design shape (RGB ~209,220,251). That color's distance from pure white background (~46) happens to fall INSIDE the default feathering transition band (`tolerance x feather-band-multiplier` = 15 x 4 = 60) — purely by coincidence, not because it's an antialiasing blend. Because the protected mask in use at the time was allowlist-style (only the specific regions already verified as needing protection were marked protected — the page/gamepad interior), this shadow shape wasn't on the list, so it went through the normal distance-based alpha estimate and came out with unstable, partial alpha — a visibly speckled/noisy edge where the shape met the surrounding page.
 
 **Initially, wrongly, suspected to be a Bayer-dithering artifact** — ruled out by testing a hard 50% cutoff with dithering removed entirely; the noise persisted unchanged, which is what correctly redirected the investigation to the alpha estimate itself rather than the dithering step. Don't skip that isolation step next time a "noisy/glitchy" report comes in — assuming it's dithering because dithering is the obvious suspect cost a full round here.
 
 **Fix (v6/v7):** inverted the protected-mask default. Instead of allowlisting specific verified- safe regions (leaving every OTHER color subject to the raw distance-to-background check), protect EVERYTHING in the frame except the verified-removable core (background union any identified holes) and a thin ~4px ring immediately around it. This generically prevents ANY solid design color — not just this specific pale blue — from being mistaken for an antialiasing blend, with zero per-asset color tuning needed for the protection step itself. Confirmed: zero isolated speckles across all 124 frames after this change (down from a real, visible pattern before it), and the pale shadow shape stays fully solid in every frame.
 
-### Bug 5 (found in the same investigation, not its own delivery round): Bayer dithering reads as noise on flat backgrounds
+### 10.5 Bug 5 (found in the same investigation, not its own delivery round): Bayer dithering reads as noise on flat backgrounds
 Surfaced while ruling out dithering as bug 4's cause — not the cause there, but a real, separate, worth-keeping finding. This skill's default feathering resolves partial alpha to GIF's 1-bit alpha via a spatial Bayer dither pattern, meant to simulate a soft edge — reasonable for content composited over varied/textured backgrounds. **Confirmed directly: the exact same dithered edge, composited over a SOLID flat color, reads as visible glitchy noise, not smoothness** — a spatial dither pattern only looks smooth against content with its own texture to blend into. This matters beyond the literal green-screen check used here: a flat/solid color is also how the delivered asset may realistically be placed in the wild (a solid-color chat bubble, a flat app background), not just a debugging artifact of the verification method.
 
 **Fix:** added a hard-cutoff alternative (50% threshold on the already-defringed alpha) in place of the Bayer pattern — keeps the color-unmixing benefit from bug 4's fix, trades a very slightly harder edge silhouette for zero visible noise on any background. Worth defaulting to for small flat-vector icon/sticker content (this skill's primary target) whenever the final placement context isn't known to be textured/varied.
 
-### Generalizable takeaways
+### 10.6 Generalizable takeaways
 - A fixed pixel-space region derived from one frame is only valid for that frame — extends §2's existing circle/rect-shape-mismatch caution to a new axis (position, not just geometry).
 - Border-touching is a safe proxy for "background" only when the foreground provably never reaches the canvas edge — verify the size-margin assumption directly (across ALL frames) before relying on it, the same way `edge_hardness` gets checked before trusting antialiasing defaults.
 - §3's existing flicker-detection infrastructure is built for a DIFFERENT failure signature (a stable shape briefly crossed by another element) — it is not guaranteed to catch enclosure failure that correlates smoothly with the shape's OWN rotation. Don't assume it covers this case just because both produce "content that should be protected went transparent."
@@ -208,7 +246,7 @@ Surfaced while ruling out dithering as bug 4's cause — not the cause there, bu
 - Verify against ALL frames for this content type, not a spot-check sample. Every one of the four bugs above was localized to specific rotation phases or specific design colors; a first/middle/ last spot-check (this skill's normal verification habit, sufficient for most content) would not reliably have caught any of them.
 - Verify against a solid-color composite, not just checkerboard, at least once. Checkerboard (already flagged in the Verification section as camouflaging soft bleed) also camouflages dithering noise and unstable partial-alpha artifacts — both bugs 4 and 5 above were only clearly visible against a solid color.
 
-### What shipped
+### 10.7 What shipped
 `--tumble-safe` (largest-connected-component background detection, replacing `--protect-outline-color`/`--protect-region` for this content type), `--keep-bg-blob-if-near <hex,...>` (per-frame, color-bordering-based hole disambiguation, gated by `--hole-size-range`/ `--hole-max-aspect`), `--protect-band-only <px>` (invert-by-default protection), and `--dither-mode {bayer,none}`. All four are additive/opt-in — default behavior for non-tumbling content is unchanged, confirmed via a byte-identical `--analyze` diff against the pre-change script on the same test file. See SKILL.md's "Animated/rotating content" section for the lean actionable rule and decision summary.
 
 ## 11. Small removed regions get inflated by edge-cleanup erosion: a second animated-icon case, five rounds
@@ -216,31 +254,31 @@ SKILL.md's rule: any time a fix removes a small, isolated bg-colored region, rou
 
 **The real case:** a 640x640, 50-frame open-book-with-gear icon. An orange gear (rotating and bouncing vertically) sits above an open book whose pages are enclosed white, verified by `--protect-outline-color` across all 50 frames with zero enclosure failures (unlike §10's case, this asset's outline enclosure was completely reliable — a useful reminder that §10's failure mode is real but not universal, and checking is still worth doing even when it turns out fine). The gear's rotation/bounce means it transiently grazes the book's top-edge outline at certain frames, pinching off tiny gaps of true background between the gear's teeth and the book's curve — nothing to do with §10's tumble/rotation bugs, and this asset didn't need `--tumble-safe` at all.
 
-### Round 1 (v1, baseline `--protect-outline-color` delivery): visible white gaps at the gear/book boundary
+### 11.1 Round 1 (v1, baseline `--protect-outline-color` delivery): visible white gaps at the gear/book boundary
 User-reported (not internally discovered): two frames had a clearly visible white gap where the gear's teeth met the book's page-top curve — 69px and 137px respectively, large enough to read as an obvious defect. `--protect-outline-color` correctly (by its own logic) treated these as enclosed white and protected them, since they genuinely are bordered by navy on both the gear and book side. The defect is about design intent, not about the mechanism working incorrectly.
 
-### Round 2 (v2): blanket small-size removal broke unrelated content elsewhere in the frame
+### 11.2 Round 2 (v2): blanket small-size removal broke unrelated content elsewhere in the frame
 Fix: any enclosed white component under 800px (comfortably below the smallest legitimate protected region, the gear's ~2252px center circle, confirmed by scanning size across all 50 frames) was treated as removable. This over-generalized: the book's pages have wavy purple/blue decorative lines, and where two nearby line-strokes' antialiasing curves happen to nearly touch, they can pinch off their own tiny (1-5px) incidental background pocket — completely unrelated to the gear, just an artifact of the line art's own geometry. The blanket rule removed these too, producing scattered 1-5px transparent "particles" inside the book pages in frames far from the gear (measured y≈352-357, vs. the real gear-boundary notches at y≈228-317 — a clean ~35px separation once actually measured).
 
 **Fix:** added a position constraint (y-center < 340) so only small enclosed regions actually near the gear are eligible for removal. Verified: page-interior specks now stay opaque, real gear-notches still transparent.
 
-### Round 3 (v3, confirmed independently by the user re-testing the delivered file, not a self-caught bug): erosion inflated the smallest notches into visible "speckles"
+### 11.3 Round 3 (v3, confirmed independently by the user re-testing the delivered file, not a self-caught bug): erosion inflated the smallest notches into visible "speckles"
 This is the same content-independent mechanism documented as its own general lesson above/in SKILL.md's "Small removed regions can be inflated by edge-cleanup erosion" section — restated here briefly since it's the specific case that surfaced it. Several of the gear-boundary notches were themselves tiny (1-11px) before any cleanup, since the exact overlap between the gear's teeth and the book's curve varies continuously with the gear's rotation/bounce phase, and most frames only produce a marginal, barely-there gap. The standard 2px `--edge-cleanup-erosion` pass, applied uniformly with no regard for how small the removed region on the other side of a boundary is, inflated a confirmed real 1px removed pixel (frame 6) into a 49-70px hole — a 50-70x size increase, turning an imperceptible rendering quirk into a visibly distracting speckle. **The user caught this on their own re-check of the delivered file** (not something the standard verification checklist — full-frame structural checks, solid-color composite — flagged, because those checks confirm correctness of WHAT got removed, not whether an already-correct removal got inflated afterward by a later pipeline stage). Worth internalizing: passing every structural check doesn't rule out a bug introduced by a downstream step those checks don't specifically probe.
 
-### Round 4 (v4): raising the size floor traded one visible defect for its mirror image
+### 11.4 Round 4 (v4): raising the size floor traded one visible defect for its mirror image
 First attempt at a fix: require a candidate notch to be at least 30px (comfortably above the 1-11px noise range, comfortably below the two real 69px/137px gaps) before it's even considered removable. This stopped the erosion inflation (nothing under 30px was touched at all), but the sub-30px slivers now stayed fully opaque white instead — visible as small white specks at exactly the points (gear teeth nearly touching the book outline) a person looks most closely at. **The user caught this too, on the very next re-check**, correctly identifying it as a new, different artifact from round 3's (transparent specks vs. opaque specks) rather than assuming it was the same bug recurring.
 
-### Round 5 (v5): exclude tiny regions from erosion's INPUT, not just its size threshold
+### 11.5 Round 5 (v5): exclude tiny regions from erosion's INPUT, not just its size threshold
 The actual fix, and the one that shipped: rather than choosing between "remove and let it erode" and "don't remove at all," exclude any tiny (<30px) removable region from the erosion computation entirely — mark it as if it were fully opaque/protected for that computation only, so erosion produces exactly the result it would have if the tiny region had never been flagged as removable in the first place (identical to how the surrounding area is normally, correctly treated) — then punch each tiny region back to transparent at its own exact pre-erosion pixels afterward. An intermediate attempt (dilate each tiny region by the erosion radius and restore whatever erosion reclaimed there, provided it wasn't also near a legitimately large removed region) was tried first and was measurably incomplete — a 1px notch still came out ~40-50px post-restore — because erosion's real spillover pattern around a small feature isn't a clean, independent ring, especially with other nearby geometry (a second small feature close by, a corner, another edge) also contributing to the same local erosion result. Excluding the region from erosion's input is exact by construction; trying to undo erosion's output after the fact is not.
 
-### Generalizable takeaways
+### 11.6 Generalizable takeaways
 - A blanket size-based removal rule needs a second, independent constraint (position, color, whatever the asset actually offers) the moment there's more than one source of small same-colored enclosed regions in the frame — extends §10's bug-1 lesson (position-independent per-frame re-derivation) with a concrete case of getting the DISAMBIGUATION signal itself wrong on the first attempt, not just the removal mechanism.
 - Passing the standard verification checklist (full-frame structural checks, solid-color composite) does not rule out a bug introduced by a LATER pipeline stage (here, erosion) that those checks don't specifically probe. The checks confirm the removal decision was right; they don't by themselves confirm nothing downstream altered its size.
 - When a person reports "still broken" after a fix, don't assume it's the same bug persisting — round 4's opaque-speck complaint was a genuinely different defect from round 3's transparent-speck complaint, caused by the fix itself, not a failure of the fix to apply. Confirm which failure mode is actually present (in this case: check the actual pixel/component sizes) before re-diagnosing.
 - Undoing a global transformation's effect on a small region, after the fact, by trying to identify and reverse just its local spillover, is fragile the moment other nearby geometry is also contributing to the same local result. Excluding the region from the transformation's input entirely is exact; patching its output is not — worth defaulting to the former whenever the transformation (here, erosion) supports being scoped that way.
 - A file mismatch (someone re-testing an old delivered version, not the latest one) is a real, mundane possibility worth checking for directly (file hash, filename in what they show you) BEFORE assuming a fix didn't work — but confirmed here it isn't always the explanation: round 3 and 4's reports were both against the actual current file and were both real, distinct bugs. Check, don't assume either way.
 
-### What shipped
+### 11.7 What shipped
 `find_tiny_removed_regions` + `erode_alpha_edge_exempting_tiny_regions`, wired to a new `--erosion-exempt-max-size <px>` flag. Confirmed the fully-automated version (no manual pre- classification, just feeding it the complete removable-region alpha and letting it auto-detect anything at or below the given size) reproduces the same result as the manually-verified fix. Additive/opt-in, default off — confirmed the existing default codepath is unaffected.
 
 ---
@@ -362,12 +400,12 @@ The live session's real fix for this (§ their Bug 3/4, condensed): track the ho
 
 Real job, 2026-08-17: `love.gif`, 640×640, 124 frames, a gamepad-in-a-heart sticker with yellow pulses that expand outward from the heart's outline while fading out. The ask was to remove the white background while keeping the white controller buttons — and, because the requester had already worked out that GIF cannot express a fade against transparency, to deliver WebP instead. That prediction was correct, and provably so.
 
-### The fade was flat-opacity on one solid colour — so it is EXACTLY recoverable
+### 16.1 The fade was flat-opacity on one solid colour — so it is EXACTLY recoverable
 Measured before choosing any approach: each pulse frame carries ~30,000 pixels at a *single* blend fraction of pure `#fdcb50`, and across the animation those fractions are **1.0 → 0.8 → 0.6 → 0.4 → 0.2**. Not a gradient, not a blur — a global opacity ramp that the GIF export flattened against white. Since `px = a·C + (1−a)·W` with `C` and `W` both known, `a` is arithmetic, not estimation.
 
 **The falsifier that made this trustworthy:** frame 0 has no pulse. If the classifier were sloppy it would report phantom yellow there. It returned **zero** pixels. Any "detector" for this should be checked against a frame where the answer is known to be nothing — a detector that cannot fail has not been tested.
 
-### Why NO GIF setting can represent it
+### 16.2 Why NO GIF setting can represent it
 Yellow sits 182.6 (Euclidean RGB) from white. The feather band is `--tolerance`(15) → `× --feather-band-multiplier`(4) = 15…60.
 
 | Fade stage | Distance from white | What GIF did |
@@ -382,7 +420,7 @@ Yellow sits 182.6 (Euclidean RGB) from white. The feather band is `--tolerance`(
 
 A second, uglier symptom appeared at the faintest stage: dithering α 0.2 produced a sparse Bayer pattern, the 2px erosion then removed 99% of it, and the survivors were left stranded as isolated **speckle dots** scattered where the pulse should have faded to nothing. `--verify` flagged this as `small_region_inflation` (a 9px input region → 638px out, 70×).
 
-### The fix: unmix against the art's own palette, not against a distance threshold
+### 16.3 The fix: unmix against the art's own palette, not against a distance threshold
 `--recover-fade-alpha` asks a different question per pixel: *is this explained as the background blended with ONE known art colour?* That separates cleanly where a distance threshold cannot — measured on frame 36, yellow came back 99.2% partial-alpha while every other palette colour was ~99% fully opaque.
 
 **⚠️ The palette build order is load-bearing, and getting it wrong silently reproduces the bug.** A fading element's intermediate stages cover tens of thousands of pixels per frame, so they rank as *dominant colours* and get admitted as solid palette entries of their own (`#feeab9`, `#fee096`, `#fdd573` all appeared alongside the true `#fdcb50`). Every faded pixel then unmixes against its own stage at α≈1.0 and renders **fully opaque** — the exact GIF artifact, now inside a format that didn't need to have it. Fix: consider candidates **furthest from the background first** (a fade stage is always nearer the background than the colour it fades from), and reject any candidate already explained as a blend of the background and an accepted colour.
@@ -391,7 +429,7 @@ Two further guards, both from real failures during this build:
 - **Fade detection must scan every frame.** Sampling every 10th frame for speed silently stopped detecting the fade and produced a plausible-but-wrong file. That is §10's own "verify against every frame, not a spot-check sample" rule reasserting itself. Unmixing is ~50ms/frame; a full scan is affordable and a sample is not worth the failure mode.
 - **A palette-coverage guard is mandatory, because the failure is silent.** On gradient or photographic content every pixel becomes a residual case, gets forced opaque, and the run *reports success having recovered nothing*. The script now warns below 90% coverage (this asset: 98.7%).
 
-### Format findings (all measured on this asset, 640×640 / 124 frames unless noted)
+### 16.4 Format findings (all measured on this asset, 640×640 / 124 frames unless noted)
 
 | Format | Size | Encode | RGB error | Alpha error |
 |---|---|---|---|---|
@@ -410,22 +448,22 @@ Two further guards, both from real failures during this build:
 - **AVIF's alpha "error" is not where the max-delta suggests.** Despite ±31–50 maxima, every fade stage reproduced with median alpha exactly right (255/204/152/102/50); on the faintest stage the mean error was 0.81/255 (1.6% relative) at q85. The outliers sit on hard edges, not in the fade body. Worth measuring per-feature rather than trusting a global max.
 - **`-m 6` is never worth it, but `-m 0` is content-dependent.** Here `-m 6` cost 415s against `-m 4`'s 9.2s (**45×**) to save 2.3%; `-m 0` was 8.5× faster but **+134%** size. Dior's Builds measured the same knob on gradient-bed nameplate frames and got `-m 0` at only **+14%** (and `-m 6` *worse on both axes*). Same flag, opposite verdicts — **measure `-m` per asset class; only "avoid `-m 6`" transfers.**
 
-### Two footguns that make a wrong result look like a passing one
+### 16.5 Two footguns that make a wrong result look like a passing one
 - **Pillow returns duration 0 for every frame when READING an animated WebP.** A naive timing check therefore passes vacuously against a file whose timing is actually broken. Read the container instead (`webpmux -info`); `read_webp_durations()` does this and returns `None` rather than guessing when webpmux is absent. Same class as §9's Pillow-duration issue, different format. For the same reason `--verify` now **refuses** a non-GIF output rather than reporting a pass it cannot substantiate.
 - **Resizing destroyed the recovered alpha, and the result looked *better* for it.** `resize_rgba_ frames` re-binarized alpha (`a > 127`) and resized RGB without premultiplying. A 128px emoji came back with **14 distinct alpha levels, 99.4% fully binary** — the fade silently gone — and the file was a pleasingly small 97 KB *because* the pulses had been deleted. Caught only by testing end-to-end and counting alpha levels. 8-bit-alpha output now premultiplies before resampling, unpremultiplies after, and skips the post-resize erosion (which exists to trim 1-bit-cutoff fuzz that no longer occurs). **A smaller-than-expected file is a symptom to investigate, not a win.**
 
-### `--recommend` gave three suggestions on this asset and two were wrong
+### 16.6 `--recommend` gave three suggestions on this asset and two were wrong
 1. **`--pixel-art`** — `edge_hardness` 0.425 reads "hard-edged", but zooming 8× showed a real 1–2px antialiasing ramp. This is exactly §1's caveat (a clean vector export with a thin AA band scores low); `--pixel-art` would have disabled feathering and erosion on curve-heavy art.
 2. **`--erosion-exempt-max-size 487`** — the "1070 small removed regions" **were the controller buttons**, i.e. the very design the user asked to preserve. The ≤500px ceiling exists to keep protected regions out of this measurement but assumes design regions are *large*; four ~287px dots sailed under it. Applying the flag to real design skips normal edge cleanup and leaves a fringe — the v3.3.3 regression, recurring with a new signature.
    **Fix shipped:** classify by **persistence**, not size (per §14's logic — design is physically constant, incidental gaps are transient). A region present in ≥90% of frames is treated as design and excluded from the suggestion. ⚠️ Fixed-width bins were tried first and are *measurably wrong*: the buttons measure 286–306px and straddle a 25px bin edge, scoring 47.6% and 83.9% so that neither half cleared the threshold despite being present in every frame. Cluster by **relative tolerance** (±15%) instead.
 3. `--protect-outline-color 002864` — correct, verified across all 124 frames.
 
-### Check whether your input is already a degraded proxy
+### 16.7 Check whether your input is already a degraded proxy
 The requester also had `love.mp4`. It was tested rather than assumed, and it is the **worse** source: 512×512 (vs the GIF's 640×640) and, decisively, H.264 ringing plus 4:2:0 chroma subsampling scatter the fade off its flat levels (IQR 0.04–0.13, peak-bin fraction 0.23–0.80) where the GIF puts ~30,000 pixels at one exact value. A flat 256-colour GIF can be a *better* recovery source than a 24-bit video.
 
 But ask the question anyway, early: this whole pipeline is archaeology on a flattened artifact, and if an original with real alpha exists (After Effects / Lottie / Rive / SVG), exporting from it beats any recovery. Dior's Builds' nameplate work is the cautionary version — a session concluded an asset "genuinely has no alpha channel" when the alpha was there all along and ffmpeg's *default decoder choice* was discarding it (`-c:v libvpx-vp9` recovered 234 distinct alpha values). **A tool's default reading of an asset is not the asset.**
 
-### Validated across a 5-asset corpus, not just the motivating file
+### 16.8 Validated across a 5-asset corpus, not just the motivating file
 Run 2026-08-17 against four further real emoji (`heart`, `gift`, `explosion`, `crystal`) chosen to attack specific assumptions. **Two predicted failures did not occur**, which is worth recording as honestly as a failure would be:
 
 | Asset | Probe | Result |
@@ -455,20 +493,28 @@ Run 2026-08-17 against four further real emoji (`heart`, `gift`, `explosion`, `c
 - **AVIF q85 beat WebP lossless on every asset**, but by 28–72% — the *direction* generalises, the *magnitude* does not. Do not quote "37% smaller" as a rule.
 - **All five fit Discord's 256 KB emoji cap at 128×128 with every frame kept**, at q85 (heart, crystal) or q70 (love, gift, explosion). So "AVIF, all frames, try q85 then q70" is a sound default procedure — but it is a procedure that MEASURES, not a fixed quality number.
 
-### Known limits of `--recover-fade-alpha` (not yet hit, recorded before they are)
+### 16.9 Known limits of `--recover-fade-alpha` (not yet hit, recorded before they are)
 - **A fading element that OVERLAPS artwork** is a blend of glow+art, not background+one colour. It becomes a residual case and is forced opaque — the translucency over the art is lost. Degrades safely but silently; the coverage guard only catches it if the overlap is large.
 - **A fading element whose colour EQUALS a solid art colour** is the dangerous one: that colour stops being a flood-fill barrier, so the fill can leak through solid artwork and punch it transparent. This is precisely why `--fade-color` exists as a manual override.
 - **Strokes thinner than `2 × FADE_EDGE_DILATE` (6px)** let the edge rim reach through from both sides. The interior-protection warning is the designed detector and fires with a count (10 px on love, 349 on heart) — it is meant to be read, not ignored.
 
-### An observation bigger than the feature itself
+### 16.10 An observation bigger than the feature itself
 `--recover-fade-alpha` derives protection **topologically** — enclosed-and-unreached-by-the-flood means opaque — with no outline colour to verify and no region geometry to supply. On `love.gif` it protected the controller buttons perfectly with **zero user input**, where the normal path required `--protect-outline-color 002864` discovered through analysis. That is position-independent by construction, so it also sidesteps §10's whole fixed-region failure class, and with erosion off it sidesteps §11's inflation class too.
 
 If that holds generally, it is a better default protection strategy for flat vector art than either `--protect-outline-color` (§2) or `--protect-region`. It is currently gated behind a fade-oriented flag name and a webp/avif requirement — the latter is stricter than necessary, since binary alpha is enough when there is no fade to preserve. **Observed on 5 assets, not proven; recorded as the direction this skill should probably go next, not as a claim.**
 
-### Decision recorded: `img2webp -exact` was considered and NOT adopted
+### 16.11 Decision recorded: `img2webp -exact` was considered and NOT adopted
 libwebp can rewrite RGB under fully-transparent pixels to improve compression; `-exact` forbids it, and Dior's Builds passes it. Not adopted here because: this script sets transparent pixels to the background colour (the least harmful value for this content), its own resize path premultiplies and is therefore immune regardless, and adopting it means adding an external-binary dependency to the main output path with a Pillow fallback to maintain — for a benefit not demonstrable on any asset tested. **`-exact` is the lever if a halo is ever actually observed.** Recorded so this is not re-litigated from scratch.
 
-### A translucent element whose TRUE colour never appears at full strength
+**Re-examined 2026-08-17, same day, after Harkirat asked whether this predated WebP support and whether Dior's Builds uses `img2webp` for exactly this.** Both halves of that challenge were fair, and one of them found a real gap:
+
+- **Timing:** the decision was NOT made before WebP support — this section IS the WebP/AVIF section, written in the same commit that shipped the feature.
+- **Dior's Builds does use it**, for APNG → animated WebP, and its reason does not transfer: *"libwebp's own CLI set ships no APNG reader at all"*, so it needs a two-step (ffmpeg extracts frames, `img2webp` assembles them). Pillow reads APNG natively, so this script needs neither binary for the same job.
+- **The real gap:** this decision was argued entirely on DEPENDENCY grounds and never compared the encoders' OUTPUT. "Not demonstrable on any asset tested" referred to the `-exact` halo, not to size or quality.
+
+**So it was measured.** Identical 40 RGBA frames from a real processed asset, both encoders lossless: **Pillow 374.0 KB vs `img2webp` 379.1 KB** — Pillow is 1.3% SMALLER, and both preserve alpha identically. There is no output-quality case for the dependency, which is what the original decision assumed without checking. The rejection stands, now on evidence rather than on argument.
+
+### 16.12 A translucent element whose TRUE colour never appears at full strength
 Found on `gift.gif` after the user spotted the four-dot sparkle turning *whitish* as it faded.
 
 The sparkle is drawn at a roughly **constant ~27% opacity**, so pure `#6969f2` barely exists anywhere in the animation. It therefore never clears `build_art_palette`'s frequency floor, while its *blended* stage `#d1dcfb` (thousands of pixels every frame) sails over it. The blend is then admitted as a SOLID palette colour and rendered fully opaque — a pale lavender, which reads as white-ish. The fade information was not lost by the encoder here; it was lost by the palette builder picking the wrong endpoint of the ray.
@@ -484,7 +530,7 @@ The sparkle is drawn at a roughly **constant ~27% opacity**, so pure `#6969f2` b
 
 Root reason it cannot work from colour statistics alone: *"pale colour is a blend of a rarer saturated colour"* and *"pale colour is solid art that happens to be collinear with a saturated colour"* are **indistinguishable in a histogram**. Separating them needs evidence the palette builder does not have (per-region temporal behaviour). `--fade-color` is the working escape hatch, and the auto-detector should be expected to miss this class.
 
-### Is WebP/AVIF worth it when there is NO partial transparency?
+### 16.13 Is WebP/AVIF worth it when there is NO partial transparency?
 Yes — measured, including on `explosion`, which has no fading element at all:
 
 | Asset | Original GIF | plain GIF out | WebP lossless | AVIF q85 |
@@ -498,7 +544,7 @@ Yes — measured, including on `explosion`, which has no fading element at all:
 
 **Ship GIF only when the destination requires GIF.** Otherwise AVIF q85 is smaller and better, and WebP lossless is the bit-exact master.
 
-### A SOLID art colour inside the feather band is silently deleted from a GIF
+### 16.14 A SOLID art colour inside the feather band is silently deleted from a GIF
 Found when the user reviewed the corpus GIFs and reported colours missing from the *interior* of `explosion` and `crystal`, and a white strip missing from `gift` — regions that are not the background colour and should never have been touched.
 
 Cause: the feather band runs `--tolerance` (15) to `× --feather-band-multiplier` (4) = **15…60**. Any solid colour whose distance from the background lands in that window is given partial alpha and then dithered/eroded away. Measured on these assets:
@@ -520,7 +566,7 @@ That is why *half* of crystal's colours survived and half did not — the surviv
 
 ⚠️ **Process lesson, and the more important half.** These outputs were generated with NO flags as a naive size baseline, then placed in a review folder beside properly-processed WebP/AVIF files without being labelled as naive. The user reasonably read them as the skill's real GIF output. A baseline that is not labelled a baseline is a false claim about the tool. Label deliberately-naive artifacts, or do not ship them next to real ones.
 
-### Objective way to compare a GIF output against a WebP one
+### 16.15 Objective way to compare a GIF output against a WebP one
 Rather than arguing about which colours "look" missing: the WebP output is verified-correct, so **pixels opaque in the WebP but transparent in the GIF are exactly what the GIF lost.** Per-frame average across the corpus after proper flags:
 
 | Asset | opaque in WebP | lost in GIF | % lost | top lost colour |
@@ -533,7 +579,7 @@ Rather than arguing about which colours "look" missing: the WebP output is verif
 
 When the top lost colour is the OUTLINE colour and the loss is 2–3%, the GIF is correct and you are seeing the unavoidable cost of 1-bit alpha on antialiased edges. When the top lost colour is an interior fill (`#ffffff`, `#d2dcfd`) and the loss is >10%, something is genuinely misconfigured.
 
-### An opaque translucent element punches a hole through whatever it covers
+### 16.16 An opaque translucent element punches a hole through whatever it covers
 A fading colour is deliberately NOT a flood-fill barrier — background behind a translucent element has to stay reachable (love.gif's gap between heart outline and pulse ring depends on it). But at FULL opacity such an element occludes, and where it crosses solid artwork, exempting it opens a corridor the background flood pours through.
 
 Confirmed on `crystal.gif`: an opaque yellow sparkle lying across the crystal's navy outline **emptied the crystal's white interior in 59 of 130 frames — 24,520 px in one blob.** A leak map (barrier black / correctly-outside green / leaked red / translucent corridor yellow) showed the sparkle sitting exactly on the outline.
@@ -542,7 +588,7 @@ Confirmed on `crystal.gif`: an opaque yellow sparkle lying across the crystal's 
 
 **Shipped fix — an ART PRIOR.** Colour alone cannot separate "opaque sparkle over navy" from "opaque sparkle over background". Position over TIME can: the outline is art in most frames, background is not. A near-opaque fading pixel (`t ≥ FADE_OPAQUE_BLOCK` 0.90) now blocks only where solid art is present in ≥30% of frames (`FADE_ART_PRIOR`). Measured: crystal 59/130 → **0**, love's ramp identical, falsifier still passing, opaque-white within 0.17%.
 
-### `--verify`'s `looks_fringed` is unreliable — do not decide erosion with it
+### 16.17 `--verify`'s `looks_fringed` is unreliable — do not decide erosion with it
 `--edge-cleanup-erosion`'s 2px default is calibrated for the BAYER path. Under `--dither-mode none` there is no dither noise to trim and 2px bites thin strokes from both sides. Measured, non-background px wrongly deleted at erosion 2 vs 1:
 
 | asset | erosion 2 | erosion 1 |
@@ -563,7 +609,7 @@ So erosion was reduced — **to 0, which was wrong**, and Harkirat caught a visi
 
 **Resolved defaults: 0 for WebP/AVIF (8-bit alpha needs no fringe trim), 1 under `--dither-mode none`, 2 for the Bayer path.** ⚠️ `--edge-cleanup-erosion` now defaults to `None` and resolves explicitly — the previous version could not distinguish "user typed 2" from "default is 2" and silently overrode an explicit value, which also made a diagnostic probe return identical numbers for 0 and 2 and nearly produced a second wrong conclusion.
 
-### Bayer 8×8, and why error-diffusion dithers are wrong for ALPHA
+### 16.18 Bayer 8×8, and why error-diffusion dithers are wrong for ALPHA
 `--bayer-size` now defaults to **8** (64 threshold levels vs 4×4's 16), tracking the intended alpha **2.5× more closely** (mean local-density error 0.0051 vs 0.0128) at identical temporal stability. `--bayer-size 4` reproduces pre-v5.0.0 output byte-identical.
 
 **Floyd–Steinberg, Jarvis, Sierra, Stucki are disqualified for alpha**, and the test that shows it must be able to fail. A first attempt nudged one pixel by 2% and scored 0 for both methods — vacuous, because that pixel never crossed a threshold. Redone across two frames whose right half is **byte-identical**:
@@ -576,12 +622,12 @@ So erosion was reduced — **to 0, which was wrong**, and Harkirat caught a visi
 
 Error diffusion propagates each pixel's error to its neighbours, so the pattern depends on scan order and everything upstream: it crawls frame to frame even where the art is static, and that also defeats GIF inter-frame compression. Ordered dithers are position-indexed and therefore temporally stable by construction. (gifsicle still uses Floyd–Steinberg for COLOUR quantization in the tiers — a different problem; tracked in the development repo's backlog for the open question of whether even that is right.)
 
-### `--recommend`'s outline gate was too strict — a 22× worse result from being "safe"
+### 16.19 `--recommend`'s outline gate was too strict — a 22× worse result from being "safe"
 The gate refused `--protect-outline-color` whenever `anomalous_frame_count != 0`, treating "enclosure breaks on some frames" as "unusable". On `crystal.gif` the outline is verified with `enclosure_ratio` 1.0 but breaks on 75/130 frames (the sparkle crossing it), so `--recommend` fell through to `--protect-band-only` — **19.99% of the artwork lost against the outline's 0.91%.**
 
 A nonzero count means "the substitution path will engage", not "reject". Background LEAK remains a hard reject (it over-protects, with no safe fallback). ⚠️ **A conservative gate is not automatically the safe choice** — it has to be judged against what the fallback actually costs.
 
-### Borrowed masks: UNION with the frame's own, and CLAMP to its silhouette
+### 16.20 Borrowed masks: UNION with the frame's own, and CLAMP to its silhouette
 When enclosure is flagged anomalous, the per-frame mask substitution used to REPLACE that frame's mask with a borrowed one. Two separate defects came out of that, both on crystal:
 
 - **Replacement discards correct information.** The frame's own mask encloses whatever that frame does enclose. Pure replacement deleted ~500 px from inside the small left crystal in frames 0-19. Fix: `(own | borrowed)`.
@@ -591,7 +637,7 @@ Combined: `(own | borrowed) & silhouette`. Measured: hole 502 px → 10-17 px, w
 
 ⚠️ **Also tried and REVERTED:** suppressing the bimodal gap detector when the small mode is the MAJORITY, on the theory that occlusion is the exception. On crystal the small mode IS the majority (75/130) — and is the BROKEN state. Suppressing took art loss from 0.95% to 7.07% and left an 11,451 px hole. **A majority can be wrong.**
 
-### `--recommend` now recommends the FORMAT, ranked for compatibility not just bytes
+### 16.21 `--recommend` now recommends the FORMAT, ranked for compatibility not just bytes
 It previously suggested flags but never the container — the first decision, not a packaging afterthought. A `gradient_fade` region means GIF structurally cannot carry the asset. Ranking (Harkirat's, 2026-08-17):
 
 - **full resolution** → WebP lossless > AVIF q85 > GIF
@@ -990,63 +1036,28 @@ this corpus reaches **247.147** on one pixel-art asset, and blend puts genuinely
 
 ---
 
-## 24. Auditing the release entry: a cumulative list nobody reconciled
-
-**2026-08-17, immediately before tagging v5.0.0.** SKILL.md's version entry is written by appending a bullet each time something lands. Across 19 commits in one day, nothing ever went back and asked whether an EARLIER bullet was still true. Two were not.
-
-### 24.1 A flat self-contradiction, two bullets apart
-> "**`--verify` refuses a non-GIF output** instead of reporting a misleading pass."
->
-> "**`--verify` now accepts WebP/AVIF**, not just GIF."
-
-Both were true when written, of different commits. Together they are nonsense, and SKILL.md is the file a live claude.ai session actually reads — it has no repo, no git history, and no way to tell which bullet is current. Earlier the same day I had fixed the *same* stale claim in a different paragraph of this file and never checked whether it appeared anywhere else.
-
-**Takeaway: when correcting a stale claim, grep for the CLAIM, not the paragraph.** A claim that was worth repeating once is usually repeated more than once.
-
-### 24.2 A bullet advertising a regression as a fix
-The entry listed "`--pixel-art` gained the blend-ratio discriminator" among four `--recommend` outputs that "were wrong and are now right". §23 then measured that discriminator holding pixel-art detection down to **5 of 25**, because its founding premise was false and its AND-wiring let it VETO correct verdicts. The release notes were advertising, as a fix, a change that was partly a regression — and the corpus results that disproved it were added to the file's edge-hardness SECTION but never to its version ENTRY.
-
-Same root cause as 24.1: I edited where I was looking.
-
-### 24.3 The near-miss, which is the more useful half
-Auditing the same entry I nearly filed six more defects that do not exist.
-
-Commit `60945d6` changes `--edge-cleanup-erosion`'s argparse default from `2` to `None`. SKILL.md says "default 2px" in six places. That looks conclusive, and I was one edit away from "fixing" all six. But `None` is a sentinel, not a value: the code resolves it to **0** for WebP/AVIF, **1** for GIF under `--dither-mode none`, and **2** otherwise — and `--dither-mode` itself defaults to bayer for GIF. So on the plain GIF path the effective default is still 2 and all six statements are correct.
-
-**A signature change is not a behaviour change.** The diff showed the sentinel; only the resolution site showed what it means. One `sed` of the resolution logic was the difference between a correct audit and six confidently wrong "corrections" shipped into the file that IS the skill.
-
-This is the same shape as the `--auto` escalation bug earlier in the day (fixing the mechanism you were thinking about is not the same as fixing the behaviour) and as SS23's circular fixture. The recurring defect in this project is not bad reasoning — it is plausible reasoning that never got measured.
-
-### 24.4 What a release audit should actually check
-1. Does any bullet contradict a later one? (Grep the claim, not the paragraph.)
-2. Does any bullet describe as a FIX something later measurement reclassified?
-3. Is every user-visible change — new flag, changed default, changed verdict — represented?
-4. For each apparent defect, confirm the BEHAVIOUR, not the signature, before editing.
-
----
-
-## 25. Two defects that only exist in the deployment environment
+## 24. Two defects that only exist in the deployment environment
 
 **2026-08-17**, found by a sequential-thinking double-check run AFTER v5.0.0 was already merged, tagged and pushed. Both break the skill in the claude.ai sandbox — the environment it actually ships to — and neither was reachable by any test run in this repo.
 
-### 25.1 `--recommend` emitted a path that only works from the repo root
+### 24.1 `--recommend` emitted a path that only works from the repo root
 `suggested_command` was built as `f"python3 scripts/remove_gif_background.py {input} <output.gif>"`. That path is repo-relative. In a claude.ai sandbox the skill unpacks somewhere that is not a repo root, so an autonomous run pasting the suggested line verbatim gets `No such file or directory` — and `--recommend` exists precisely so a run can paste it verbatim.
 
 Every test of `--recommend` this project has ever run was executed FROM the repo root, where the wrong path is right by coincidence. **That is a test that cannot fail**, the exact defect §23 recorded about the synthetic pixel-art fixture, in a different costume. Now derived from `os.path.abspath(__file__)`.
 
-### 25.2 AVIF saved with no capability guard, while `--recommend` ranks it first
+### 24.2 AVIF saved with no capability guard, while `--recommend` ranks it first
 `ims[0].save(output_path, 'AVIF', ...)` ran bare. AVIF needs Pillow built with AVIF support or the `pillow-avif-plugin`; this Mac has Pillow 12.3.0 where `features.check('avif')` is True, so it has always worked here and the dependency was invisible.
 
 The compounding part: v5.0.0's own `--recommend` ranks **AVIF first** under a byte cap. So an autonomous run in an environment without AVIF is steered directly at the missing dependency, and the failure arrives as a bare Pillow error *after* every frame has been processed. Now checked before any work, with a message that names the fix and points at WebP as the equivalent-quality fallback.
 
-### 25.3 A finding I first reported backwards
+### 24.3 A finding I first reported backwards
 I reported that `--pixel-art --edge-cleanup-erosion 2` runs silently at erosion 2, destroying hard edges. Wrong direction. `apply_pixel_art_preset` did `args.edge_cleanup_erosion = 0` unconditionally, so the explicitly typed 2 was silently DISCARDED.
 
 The real defect was an inconsistency, not a destruction: `--auto` uses `typed_option_names()` so "explicit flags always win, and it prints what it skipped", while this preset silently overrode a typed flag. Two mechanisms in one script disagreeing about who wins, one of them saying nothing. Fixed to match `--auto`'s contract.
 
 **Worth recording that the first report was wrong**, because a postmortem is what a future session trusts instead of re-deriving. Had it shipped, it would have sent someone hunting a destruction bug that does not exist.
 
-### 25.4 The generalisable rule
+### 24.4 The generalisable rule
 **Test in the environment the thing ships to, not only the one you develop in.** Both 25.1 and 25.2 are invisible from the repo and obvious from the sandbox. The packaged skill is the product; this repo is the workshop.
 
 A cheap proxy, since a claude.ai sandbox is not available from here: for anything the skill emits for someone else to RUN, ask what it resolves to when the current working directory is not this one — and for any dependency, check whether it is guaranteed or merely present on this machine.

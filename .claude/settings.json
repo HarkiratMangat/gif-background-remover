@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "D=\"${CLAUDE_PROJECT_DIR:-/Applications/Claude Code/Gif-Background-Remover}\"; if [ -f \"$D/CLAUDE.md\" ]; then sed -n '/^## Repo conventions established 2026-08-17/,/^## Validation status/p' \"$D/CLAUDE.md\" | head -60; else echo \"\u26a0\ufe0f CLAUDE.md NOT FOUND at $D \u2014 repo conventions did NOT load. Tell Harkirat.\"; fi | jq -Rs '{hookSpecificOutput: {hookEventName: \"SessionStart\", additionalContext: .}}'",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-/Applications/Claude Code/Gif-Background-Remover}/.claude/hooks/release-gate.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-/Applications/Claude Code/Gif-Background-Remover}/.claude/hooks/md-softwrap-check.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

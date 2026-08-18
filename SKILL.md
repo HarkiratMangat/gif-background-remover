@@ -1,11 +1,17 @@
 ---
 name: gif-background-remover
-description: Remove the background color from an animated GIF while protecting a specific interior region of the design (e.g. a white highlight inside a badge) even when that region is the same color as the background. Handles both antialiased vector icon/sticker/emoji art (the default assumption) and hard-edged pixel art (via --pixel-art, which avoids destructively eroding non-antialiased content). Also handles shrinking an animated GIF to fit a platform's file-size limit (e.g. Discord sticker/emoji uploads, which cap at 256KB) via frame-rate reduction and gifsicle-based compression tiers, and batch-processing multiple GIFs at once from a manifest. Outputs GIF, or WebP/AVIF with true 8-bit partial transparency -- including recovering a fade/glow/sparkle whose translucency was already flattened against the background by a GIF export, which GIF itself cannot represent. Use when the user asks to remove/strip the background from a GIF, make a GIF transparent, cut out a GIF's background, convert a GIF to WebP or AVIF, keep a fading/glowing element translucent, turn a GIF into a sticker or emoji, shrink/compress an animated GIF's file size, or process several GIFs the same way in one go.
+description: Remove the background color from an animated image -- GIF, WebP or AVIF -- while protecting a specific interior region of the design (e.g. a white highlight inside a badge) even when that region is the same color as the background. Handles both antialiased vector icon/sticker/emoji art (the default assumption) and hard-edged pixel art (via --pixel-art, which avoids destructively eroding non-antialiased content). Also handles shrinking an animated GIF to fit a platform's file-size limit (e.g. Discord sticker/emoji uploads, which cap at 256KB) via frame-rate reduction and gifsicle-based compression tiers, and batch-processing multiple GIFs at once from a manifest. Outputs GIF, or WebP/AVIF with true 8-bit partial transparency -- including recovering a fade/glow/sparkle whose translucency was already flattened against the background by a GIF export, which GIF itself cannot represent. Use when the user asks for background removal on a GIF, WebP or AVIF, to remove/strip/delete the background from an animated image, make a GIF or WebP transparent, cut out an animated image's background, convert a GIF to WebP or AVIF, keep a fading/glowing element translucent, turn a GIF into a sticker or emoji, shrink/compress an animated GIF's file size, or process several GIFs the same way in one go, or ask the skill to just handle a GIF automatically end to end.
 ---
 
 # GIF Background Remover
 
-**Skill version: v5.1.1** (previous: v5.1.0, v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
+**Skill version: v5.2.0** (previous: v5.1.1, v5.1.0, v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
+
+**v5.2.0** is a *minor* bump: two confirmed crashes fixed on the INPUT path, plus the capability documentation that made them findable.
+- **A static source crashed** — `AttributeError: 'JpegImageFile' object has no attribute 'n_frames'`. That single attribute access was the only thing stopping the whole pipeline working on a one-frame image.
+- **An RGB-mode APNG crashed** — for a PALETTE image `transparency` is an index, but for RGB/RGBA Pillow stores a COLOUR TUPLE, and comparing an index array against a 3-tuple raises a broadcast error. A palette APNG worked, which is why this went unseen.
+- The workflow now leads with `--auto`, and six flags that existed only in the changelog are documented in the body — including `--auto` itself, the autonomy feature this skill is aimed at.
+- `references/lessons.md` gained a "how to read this file" block; it is ~32k tokens and must never be read whole.
 
 **v5.1.0** is a *minor* bump: two confirmed fixes that only bite in the claude.ai sandbox — the environment this skill actually ships to, and the one every test had missed because tests ran from the repo root where the bug is invisible.
 - **`--recommend` emitted a repo-relative script path** (`python3 scripts/remove_gif_background.py …`). An autonomous run pasting that verbatim in a sandbox gets "No such file or directory". It now derives the path from the script's own location.
@@ -13,14 +19,14 @@ description: Remove the background color from an animated GIF while protecting a
 - **`--pixel-art` silently discarded an explicitly typed `--edge-cleanup-erosion`.** Explicit flags now win and the override is reported, matching the contract `--auto` already implements.
 - Plus this restructure: SKILL.md went 928 → ~640 lines, with the deep detail moved into `references/` and this file kept to decisions and flags.
 
-**v5.1.1** is a *correction*: `references/lessons.md` pointed at a path on the development machine and three times at a backlog file, none of which are in this package. Each is now phrased as provenance rather than as a location you might try to open.
-
 **v5.0.0** was the major release: WebP and AVIF output with true 8-bit alpha, `--recover-fade-alpha` (reconstructs partial transparency a GIF export already flattened — a case §7 had recorded as impossible), `--auto`/`--auto-erosion`, a `--verify` overhaul, and a pixel-art detector rebuilt and scored against 37 labelled assets (17/37 → 30/37, zero false positives). Full entry in `references/version-history.md`.
 
 **If you are running as the standalone skill on claude.ai, you are in an isolated sandbox**: you can read this `SKILL.md`, `references/`, and `scripts/` — frozen at the uploaded version — and nothing else. Not the development repo, its `CLAUDE.md`, its git history, or any memory folder, and you cannot write to Harkirat's machine. So a finding does not travel on its own: state it in the chat and hand over the full text of anything you changed. Never call a finding "saved", "synced" or "logged" — the chat is the only persistence there is. Keep the skill `name` in the frontmatter unchanged.
 
 
-**This file is the lean, actionable core.** The full evidence trail behind its rules — bug postmortems, tool evaluations, measured numbers, reverted attempts — lives in `references/lessons.md`. Check that file's table of contents before re-diagnosing anything that smells like a past case (flicker/gap in a protected region, erosion eating detail, jagged edges, wrong duration, a tool/quantizer question) — this skill's history is long and specific, and several fixes were tried, looked right, and later regressed; re-deriving from scratch risks repeating that.
+**This file is the lean, actionable core.** The full evidence trail behind its rules — bug postmortems, tool evaluations, measured numbers, reverted attempts — lives in `references/lessons.md`.
+
+⚠️ **`references/lessons.md` is ~32,000 tokens. Never read it whole.** Its median section is ~900 tokens, so the right move is always to find one section and read only that. It opens with a "How to read this file" block giving three routes: a symptom→section table covering all 25 sections, a grep recipe (its prose is soft-wrapped so multi-word phrases match on one line), and a one-liner that extracts a single section by number. Spend one grep there before re-diagnosing anything that resembles a past case — a fringe, a flicker, erosion eating detail, a wrong duration, a check that disagrees with your eyes. Check that file's table of contents before re-diagnosing anything that smells like a past case (flicker/gap in a protected region, erosion eating detail, jagged edges, wrong duration, a tool/quantizer question) — this skill's history is long and specific, and several fixes were tried, looked right, and later regressed; re-deriving from scratch risks repeating that.
 
 ## When to use this
 The user has an animated GIF and wants its background color (usually white) removed / made transparent, while preserving some part of the interior design that happens to be the same or a similar color.
@@ -103,8 +109,38 @@ accept the 1-bit-alpha consequences and read the fade section above.
 
 ⚠️ **`--verify` skips EVERY pixel check when the output was cropped or resized** (it says so in a `note` field and reports only timing). A pass from a cropped output is therefore vacuous — re-render at the source canvas size and verify that, then crop. Confirmed 2026-08-17: the delivered `military-tag` output is 536x570 against a 640x640 source, so its clean `--verify` had substantiated nothing at all. §22
 
-## Workflow: infer first, then confirm — don't just ask the user upfront
-Don't open by asking the user to specify the background color and protected region from scratch.
+## Workflow: `--auto` first, manual only when it cannot decide
+Don't open by asking the user to specify the background color and protected region from scratch, and don't hand-assemble flags before trying the path that assembles them for you.
+
+**INPUT formats — verified end to end 2026-08-17, not assumed:**
+
+| source | status |
+|---|---|
+| animated GIF | ✅ the original path |
+| animated WebP | ✅ renders to WebP and to GIF; `--analyze` reads all frames |
+| animated AVIF | ✅ same reader |
+| **animated PNG (APNG)** | ✅ 24/46/50-frame files, palette and RGB modes |
+| **static PNG / JPEG** | ✅ treated as a one-frame animation; output to GIF, WebP or AVIF |
+
+The reader is `Image.open` — format-agnostic, so anything Pillow decodes works. ⚠️ **The skill's NAME is historical; this is not a GIF-only tool.** Two crashes on non-GIF sources were fixed the day this was written: a static JPEG had no `n_frames` attribute, and an RGB-mode APNG stores `transparency` as a colour TUPLE rather than a palette index, which raised a broadcast error.
+
+⚠️ **OUTPUT is GIF, WebP or AVIF only.** Pillow can also write APNG and the script does not expose it — a real gap, not a limitation of the format.
+
+⚠️ **A photograph is still out of scope.** This is chroma-key removal against a flat, keyable background — static-image support means a one-frame DESIGN, not general subject segmentation.
+
+**The INPUT may be an animated GIF, WebP or AVIF** — the reader is format-agnostic, and every mode (`--analyze`, `--recommend`, `--verify`, `--auto`, plain rendering) works on all three. The skill's name is historical; it is not a GIF-only tool. Verified end to end 2026-08-17: a WebP source renders to both WebP and GIF, and `--analyze` reads its 124 frames correctly.
+
+⚠️ **If the SOURCE is a WebP or AVIF rather than a GIF**, read `references/lessons.md` §17 before trusting any timing. Pillow populates `info['duration']` during `seek()` for GIF but only during `load()` for WebP/AVIF, so a seek-only read returns the PREVIOUS frame's value — a real 124-frame source came back one bogus frame prepended and the last dropped, 240 ms short, while the script reported "durations preserved exactly". Fixed in the script, but the failure mode is worth recognising if you see it anywhere else.
+
+### 0. Start with `--auto` unless a check below says otherwise
+```
+python scripts/remove_gif_background.py <input.gif> <output.gif> --auto
+```
+`--auto` runs `--recommend`, applies its flags **only where you left that option at its default** (anything you pass explicitly wins, and it prints what it skipped), renders, then RE-MEASURES the written file and re-renders once if the encoded result disagrees with the pre-encode calibration. It is **two passes, not a loop** — no iteration construct, no counter, worst case two renders and exactly one correction. Add `--auto-erosion` to have `--edge-cleanup-erosion` calibrated against the asset's own fringe curve rather than a global default.
+
+⚠️ **`--auto` does not replace the two checks above it.** Content type and animation style decide whether the defaults are safe *at all*, and `--auto` cannot tell you that a pinhole needs `--hole-size-range` (§14) or that a sub-region needs `--remove-region` (§15). Run those checks first; use `--auto` as the starting point for everything they do not flag, and go manual for what they do.
+
+### The manual path — when `--auto` is refused, overridden, or the checks above flagged something
 
 ### 1. Run analysis first
 ```
@@ -169,6 +205,8 @@ For several GIFs in one invocation, see "Batch processing" below — a JSON mani
 
 *(`--no-gifsicle-optimize` also exists in `--help` output but isn't listed above — it's a confirmed no-op, kept only for backward compatibility with old invocations now that gifsicle only ever runs as part of a `--compress` tier. Don't spend time trying to use it for anything.)*
 
+
+**Output quality/encoder knobs**: `--webp-quality` / `--webp-method` / `--webp-lossy` (WebP), `--avif-quality` (AVIF), `--quantizer pil|pngquant` (GIF palette), `--remove-region-feather` (softness of a `--remove-region` cut), and `--erosion-exempt-transient` (exempt small removed regions from erosion by IDENTITY rather than size — use it when design and incidental regions OVERLAP in size, which a size threshold structurally cannot separate). Defaults are tuned; reach for these only with a measured reason.
 
 **What the individual quality/output flags actually do** — edge feathering and `--feather-band-multiplier`, standalone `--crop`, the printed size report, and `--preview` contact sheets — **is in `references/flag-reference.md`.** Read it when a flag's name is not enough to know whether you want it.
 
