@@ -335,6 +335,15 @@ PLATEAU_CLIFF_STRONG_STEP = 40      # a colour step this big is an EDGE, not a r
 PLATEAU_CLIFF_MIN_PLATEAU = 2       # px of flat colour required on each side
 PLATEAU_CLIFF_THRESHOLD = 0.30      # at or above this, the art is hard-edged
 PLATEAU_CLIFF_MIN_SAMPLES = 500     # below this the ratio is not dispositive
+# For an alpha-only mask the hardness question becomes "does the ALPHA channel hold a ramp?", and
+# this is the line between a cutout and a ramp. It is not a fine margin: measured over 524 real
+# sprite-pack files (pixel art by provenance), EVERY ONE has 4 or fewer distinct alpha levels --
+# 32 at 1, 198 at 2, 293 at 3, 1 at 4, and none above. The 15 alpha-only antialiased icons in this
+# project's folders carry 186-256. So the two populations are separated by a factor of ~46, and 16
+# sits between them without being tuned to either edge. An earlier version of this cut at 2, which
+# would have called a 3-level sprite antialiased and handed it feathering plus 2px erosion -- the
+# destructive direction, on exactly the content --pixel-art exists to protect. SS28.10
+ALPHA_MASK_RAMP_LEVELS = 16
 
 
 def measure_plateau_cliff_ratio(rgb, strong=PLATEAU_CLIFF_STRONG_STEP,
@@ -1122,14 +1131,16 @@ def analyze(input_path, max_samples=40, tolerance=15):
         # (0 and 255), while the 15 measured alpha-only icons carry 186-256. No threshold is
         # being tuned here, and no colour-based rule gets a vote -- each of them would be
         # reporting on a uniform plane.
-        if _alpha_levels <= 2:
+        if _alpha_levels <= ALPHA_MASK_RAMP_LEVELS:
             _hard_reasons.append(
                 f"the source is an alpha-only mask (one flat RGB value) with {_alpha_levels} "
-                f"alpha levels -- a hard cutout, no ramp anywhere")
+                f"alpha levels, at or under the {ALPHA_MASK_RAMP_LEVELS} a hard cutout uses -- "
+                f"no ramp anywhere")
         else:
             _soft_notes.append(
                 f"the source is an alpha-only mask: one flat RGB value across the canvas, with "
-                f"{_alpha_levels} distinct ALPHA levels. Every colour-based hardness measure is "
+                f"{_alpha_levels} distinct ALPHA levels, well over the "
+                f"{ALPHA_MASK_RAMP_LEVELS} a hard cutout uses. Every colour-based hardness measure is "
                 f"reading a uniform plane and none of them gets a vote; the {_alpha_levels} alpha "
                 f"levels ARE the antialiasing ramp, so this is antialiased art "
                 f"(references/lessons.md SS28.9).")
@@ -1150,8 +1161,24 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # detection. Note the asymmetry that keeps it safe: the cliff ratio may only SUPPRESS the
     # density rule when it has the samples to contradict it -- with a thin sample the density rule
     # still stands alone, which is the one regime where it is the only measure available. SS28.6
+    # ...WITH ONE EXCEPTION, and it was a real false negative before it existed. A source whose
+    # alpha is strictly binary is a HARD CUTOUT: there is no antialiasing at its silhouette, by
+    # construction. So on such a file a low cliff ratio cannot be evidence of a ramp -- it just
+    # means the art is drawn 1:1, where a block boundary has no 2px plateau to sit between. Letting
+    # the cliff ratio suppress the density rule there reverses a CORRECT verdict on real pixel art.
+    #
+    # Measured on 524 files from real sprite packs: without this exception the suppression turned 4
+    # genuine pixel-art sprite sheets from detected to undetected (`Soldier.png`, `Orc.png` and
+    # their with-shadows variants -- density 0.271-0.309, cliff 0.130-0.211 over 7,109-11,342
+    # steps, and band/blend 0.093-0.160 / 0.236-0.671, i.e. no antialiasing evidence at all).
+    # Contrast `add.png`, which the suppression SHOULD catch: 255 alpha levels, band ratio 16.079
+    # and blend 2.960. The discriminator is not the blend ratio -- SS23.5 measured that pixel art
+    # and vector art overlap completely on it -- it is the alpha channel, which states the fact
+    # directly rather than inferring it. SS28.12
+    _hard_alpha_cutout = bool(_has_transparent_px and _alpha_levels <= 2)
     _cliff_contradicts = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
-                          and _cliff < PLATEAU_CLIFF_THRESHOLD)
+                          and _cliff < PLATEAU_CLIFF_THRESHOLD
+                          and not _hard_alpha_cutout)
     if _density < 0.5 and not _cliff_contradicts and not _alpha_only_source:
         _hard_reasons.append(
             f"change_line_density {_density:.3f}, below the 0.5 floor -- the image changes only "
@@ -1187,6 +1214,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'measured_on_alpha_composite': bool(_partial_alpha_seen),
         'alpha_only_source': _alpha_only_source,
         'source_alpha_levels': int(_alpha_levels),
+        'source_is_hard_alpha_cutout': _hard_alpha_cutout,
     })
 
     # detect_band_interior_regions runs BEFORE the candidate-region loop and so

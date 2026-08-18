@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~51,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~53,000 tokens across 28 sections. The median section is ~1,100 and the largest ~8,000. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
@@ -106,6 +106,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | The output file is EMPTY / fully transparent, but every check says it is clean | §28.9 (an empty output scores perfectly on all four quality measures) |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
+| An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
+| Pixel art with 1-px shading at its edges reads as antialiased | §28.11 (hand-antialiased art; no edge-local measure can separate it) |
+| A transparent-background PNG sprite is not detected as pixel art | §28.12 (HEAD detected 0 of 294; fixed) |
+| A sprite SHEET (mostly empty canvas) reads as antialiased | §28.12 (low density from empty space, not blocks) |
 | Considering a NEW pixel-art discriminator | §23.8 (score it against real antialiased icons, not only the labelled corpus) |
 | `protected_region_coverage` below 1.0 on an output you believe is correct | §22 (check `residual_nonopaque` before assuming a bug) |
 | A pale fringe at the edge of a deliberately punched hole | §14 addendum, §22 (`--erosion-exempt-max-size` too high) |
@@ -1267,7 +1271,11 @@ Every one of the four verdicts that flipped to TRUE is a labelled pixel-art asse
 
 ### 28.3 The three it still misses, and the obvious repair, measured and rejected
 
-`Pixel Saber` 0.001 · `pandapanda…` 0.103 · `DFB2A5D7` 0.135. All three are pixel art whose block structure has been **degraded by re-encoding**, and the raw pixels say so: inside one of panda's blocks, `184,159,159` sits next to `185,161,161` — a genuinely flat block that exact equality scores as no plateau at all. DFB2A5D7's blocks are separated by 1 px grey seams, which is literally a 1 px ramp however the art was drawn.
+`Pixel Saber` 0.001 · `pandapanda…` 0.103 · `DFB2A5D7` 0.135.
+
+⚠️ **CORRECTED the same day — "all three are blocks softened by re-encoding" was wrong, and §28.11 has the measurement that shows it.** They are not one mechanism. `Pixel Saber` has the *strongest* pixel grid of any asset tested (round-trip reconstruction error **0.44**, better than every confidently-detected control) with **97% of neighbouring pixels exactly equal** — nothing about it is softened. Its 1,450 strong steps simply have 1-px transition pixels at the high-contrast edges: **hand-placed antialiasing, a normal pixel-art shading style.** `DFB2A5D7` is the same story (grid error 0.97, 1-px grey seams between blocks). Only `pandapanda…` fits the original explanation: a weak grid (3.62) with 85% exact neighbours and a dither checkerboard.
+
+The original wording came from looking at two raw pixel dumps and generalising to the third. The measurement is in §28.11.
 
 So the obvious repair is a **tolerant** plateau: count near-equal as flat. It was implemented and scored, and it fails on both counts. It does not rescue the three (panda 0.103 → 0.144, DFB2A5D7 0.135 → 0.167, still far under any usable threshold) and it MANUFACTURES a false positive: `GIF Selections`, labelled antialiased, goes 0.078 → 0.497 at tolerance 4 and → 0.864 at tolerance 8, because loosening the plateau test lets a slow gradient count as flat. **Do not re-attempt tolerant plateaus.** Exact equality is not an oversight; it is what keeps the measure from reading a gradient as a block.
 
@@ -1330,3 +1338,62 @@ Three fixes, at three different layers:
 - **The render itself.** `_refuse_empty_render` runs at the top of all four renderers and refuses to write a file in which nothing is opaque on any frame. The invariant is deliberately whole-file rather than per-frame — a blank frame inside an animation that fades out is normal; "no opaque pixel anywhere" is not. Nothing is written, so a good file at the output path is never overwritten by an empty one. `verify()` also reports `output_opaque_px` and an explicit `output_is_empty`.
 
 **The transferable lesson is about where I was looking.** I had filed these 15 as a P1 blocked on acquiring labelled RGBA pixel art, and was about to build an alpha-ramp *veto* to out-vote the band rules. Asking instead **why** the band was empty — rather than how to overrule it — found the data-destruction bug and made the veto unnecessary: no new measure, no new threshold, and no new corpus needed. **When a measure gives an answer you believe is wrong, establish what it is actually reading before deciding it needs outvoting.** An empty transition band was not weak evidence of hard edges; it was the absence of any evidence at all, on an input where the colour channel is blank by construction.
+
+### 28.10 An AI upscale removes the very property `--pixel-art` keys on
+
+**2026-08-18.** Harkirat ran Upscayl's Digital Art model at 4x, 8x and 16x over eight assets to test §28.3's claim. The result settles a different question than the one asked, and it is worth keeping:
+
+| asset | original | 4x | 8x | 16x |
+|---|---|---|---|---|
+| `07761f30` (detected pixel art) | cliff **1.000** | 0.000 | 0.000 | 0.000 |
+| `cat` (detected) | cliff **1.000** | 0.000 | 0.000 | 0.000 |
+| `mario` (detected) | cliff **1.000** | 0.000 | 0.000 | 0.000 |
+| `_ (9)` (detected, dithered) | cliff **0.321** | 0.000 | 0.000 | 0.000 |
+| jar bunny (antialiased control) | cliff 0.029 | 0.000 | 0.000 | 0.000 |
+
+**Every asset comes back at cliff 0.000 and `change_line_density` 0.78–1.00**, including the three the detector is most confident about. The model reconstructs each block boundary as a gradient, so the file is no longer hard-edged in any measurable sense.
+
+Two things follow. **First, the detector is RIGHT to decline `--pixel-art` on an upscaled sprite** — the artwork was pixel art, the file no longer is, and feathering plus erosion is now the appropriate treatment for it. "I upscaled my sprite, now handle it" is a completely ordinary user path, and the answer it gets is correct. **Second, this treatment cannot test §28.3**, because it destroys the property under test on the known-positive controls as well. The negative control is what makes that conclusion safe rather than assumed: the antialiased asset went 0.029 → 0.000, so the upscaler only ever REMOVES blocks and never manufactures them, which rules out "the upscaler invented the smoothness".
+
+### 28.11 Hand-antialiased pixel art, and the one signal that survives
+
+Testing §28.3 needed a treatment that does not disturb what it measures, so: **does a real pixel GRID underlie the image?** Downsample by k, re-upscale by k with nearest, and measure the reconstruction error, solving for phase so a crop offset cannot hide a grid. A genuine k-times upscale reconstructs with small error however much re-encoding has since softened it; genuinely antialiased art loses real detail.
+
+| asset | grid error | reading |
+|---|---|---|
+| `Pixel Saber` (MISSED) | **0.44** | strongest grid of all eight |
+| `_ (9)` (detected) | 0.69 | strong |
+| `mario` (detected) | 0.75 | strong |
+| `07761f30` (detected) | 0.84 | strong |
+| `DFB2A5D7` (MISSED) | 0.97 | strong |
+| `cat` (detected) | 1.06 | strong |
+| `pandapanda…` (MISSED) | 3.62 | weak |
+| jar bunny (antialiased) | 3.91 | weak |
+
+**So two of the three misses have a pixel grid as good as or better than the assets the detector is most sure about.** What they lack is not blocks; it is *cliffs*. `Pixel Saber` has 97% of neighbouring pixels exactly equal and 1,450 strong colour steps, and **essentially none of those steps has a 2-px plateau on both sides** — the cliff ratio is 0.001 at every plateau tolerance from 0 to 4, so noise is not the cause. Its high-contrast edges carry a single transition pixel, placed by hand. That is **hand-antialiased pixel art**, an ordinary shading style.
+
+**And that is a hard limit on every edge-local measure, this one included.** At the edge, hand-placed antialiasing and machine antialiasing are the same thing: an intermediate pixel between two flat colours. No measurement taken at the boundary can separate them, because there is nothing there to separate. The only signal that distinguishes them is the GRID — a global property — and the round-trip reconstruction error above measures it with a **4x margin** on this sample (0.44–1.06 for the six grid-bearing assets against 3.62–3.91 for the two without).
+
+**Next action, and it is a better one than the entry it replaces:** score that round-trip grid error against BOTH populations — the 31 labelled assets and the 122 emoji, now joined by 524 real sprite-pack files — before believing it. Note what it is: §23.4's integer-lattice idea rebuilt as a *reconstruction error* rather than a congruence fit, which is why it may survive where that scored only 11 of 25. It is also the first measure in this whole line that is global rather than edge-local, which is the specific reason to expect something new from it. **It is NOT shipped: an 8-asset pilot is a lead, not evidence.**
+
+### 28.12 524 real sprites: the biggest gain of the session, and a regression in my own new rule
+
+**2026-08-18.** Harkirat supplied two populations this project had never had: **524 files from real itch.io sprite packs** (pixel art by provenance — 198 hard-alpha, 294 soft-alpha, 32 opaque) and 37 background-removed assets. Scored end to end through `analyze()`, HEAD against the branch:
+
+| population | n | HEAD detected | branch detected |
+|---|---|---|---|
+| sprite packs, hard-alpha | 198 | 52 (26.3%) | **143 (72.2%)** |
+| sprite packs, soft-alpha | 294 | 0 (0.0%) | **282 (95.9%)** |
+| sprite packs, opaque | 32 | 2 | 2 |
+| **sprite packs, total** | **524** | **54 (10.3%)** | **427 (81.5%)** |
+| background-removed assets | 37 | 24 | 26 |
+
+The soft-alpha row is the striking one: HEAD detected **none** of 294 real pixel-art sprites, because a PNG with a transparent background has no colour band for the band rules to read. This is the single largest correctness gain in the session, and none of it was visible from the labelled corpus, whose 31 assets are all fully opaque GIFs.
+
+**And the same population found a regression in a rule I had added hours earlier.** §28.6's density suppression turned **4 genuine pixel-art sprite sheets from detected to undetected** — `Soldier.png`, `Orc.png` and their with-shadows variants: density 0.271–0.309 (correctly reading as pixel art), cliff 0.130–0.211 over 7,109–11,342 steps (suppressing it). My entailment argument had a hole in both halves: a low density can come from **empty space** rather than blocks (a 900x700 sheet of 100x100 cells is mostly transparent), and a low cliff ratio can come from art drawn **1:1** rather than from a ramp, because a 1-px block has no 2-px plateau to sit between.
+
+**The exception, and why it is stated in terms of ALPHA rather than the blend ratio.** A source whose alpha is strictly binary is a hard cutout: there is no antialiasing at its silhouette, by construction. So on such a file the absence of cliffs cannot be evidence of a ramp, and the suppression is blocked. The tempting alternative was to require positive antialiasing evidence from the blend ratio — `add.png`, which the suppression *should* catch, reads band 16.079 and blend 2.960 against these sprites' 0.093–0.160 and 0.236–0.671. **But §23.5 measured pixel art and vector art overlapping completely on the blend ratio, so it cannot carry that weight.** The alpha channel states the fact directly instead of inferring it from colour.
+
+**Verified exhaustively rather than by sampling.** Across all 716 scored assets the density suppression was firing on exactly **five**: the four sprite sheets, which the exception now correctly detects, and `add.png` (173 alpha levels), which stays suppressed. Nothing else in any population can change, so the fix is bounded by enumeration, not by a spot check.
+
+**The standing lesson, for the third time today.** [[feedback_falsifier_population]] says to ask which population a measure's failure would live in and check that it is in the sample. Every rule added today was scored against 133 negatives and 25 positives and looked clean; two of them had defects that only a *new* population could show — the alpha-mask level cut (§28.10's sibling, caught by all 524 sprites having ≤4 alpha levels against my cut at 2) and this suppression. **A falsifier population is not a one-time gate you pass; it is only ever as good as the content types it happens to contain.**

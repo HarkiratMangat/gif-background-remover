@@ -110,9 +110,22 @@ Fixed at three layers: `alpha_only_source`/`source_alpha_levels` reported with e
 
 **First slice (S):** assemble a small RGBA-source corpus — the `interface emojis/` PNGs are ready-made (`exchange.png`, `add.png`, `delete.png`, `alert.png` all carry partial alpha) — and diff full `--analyze` reports composited vs not, per check, to find out which checks actually change their answer. Fix only those that do, with the diff as evidence. Until then the honest position is that hardness is right on RGBA input and the rest is unmeasured.
 
+### `[P1 · S · Sonnet5-High]` The labelled corpus is 31 fully-opaque GIFs, and the two populations that found today's defects are unlabelled
+
+**Added 2026-08-18 (v5.5.0), and this is now the single highest-value corpus job.** Every threshold in this skill was scored against `others/` — 31 assets, **all fully opaque GIFs, zero with an alpha channel**. On 2026-08-18 Harkirat supplied **524 files from real itch.io sprite packs** (`local/itch.io sprites/`) and 37 background-removed assets (`local/Diors-builds Emojis/others/alphas/`), and those two populations immediately found **two defects that the labelled corpus certified as clean**:
+
+1. The alpha-mask ramp cut was set at 2 levels; all 524 sprites have **4 or fewer** alpha levels, so a 3-level sprite would have been called antialiased and handed feathering plus 2px erosion (§28.12).
+2. The density suppression turned **4 genuine sprite sheets** from detected to undetected (§28.12).
+
+It also produced the largest correctness gain of the session: sprite-pack detection **54/524 → 427/524**, including 294 soft-alpha sprites of which HEAD detected **zero**.
+
+**Do:** promote both folders to labelled corpora with their own `LABELS.json`, recording provenance as the label source (a sprite pack is pixel art; that is stronger evidence than an eyeball). Then wire them into `local/pixelart-probe/` as standing populations, so the next threshold is scored against opaque GIFs, hard-alpha PNGs, soft-alpha PNGs and vector emoji rather than against one of those four. ⚠️ The 32 "opaque" files inside the sprite packs are probably tilesets or backgrounds rather than sprites and need looking at before they count as either label — detection there is 2/32 and that may well be correct.
+
 ### `[P3 · XS]` The 145-asset falsifier population is presumed antialiased, not labelled
 
 **Added 2026-08-18.** Two pixel-art discriminators were killed by scoring them against 145 vector emoji from this repo's own folders (§23.8, §23.9). Those 145 are presumed antialiased from their provenance — flat interface icons — not labelled by eye the way the 31 in `others/` were. The conclusion survives either way (a 25% and a 97% hit rate cannot be explained by a handful of mislabels, and the top scorers are visibly flat icons), but the set is now load-bearing for every future discriminator, so it deserves the same treatment as the labelled corpus. **Do:** spot-label a random 20 by eye from edge-dense crops (the method `others/LABELS.json` documents) and record the result; if all 20 are antialiased, promote the set to a labelled falsifier corpus with its own LABELS file.
+
+⚠️ **SUPERSEDED IN SCOPE 2026-08-18 by the item above** — the falsifier question is no longer just "are these 145 antialiased?" but "which four content types is a threshold being scored against?". Read that item first.
 
 ⚠️ **Partially ANSWERED 2026-08-18 (v5.5.0), and the answer changes what the set is for.** The population is not homogeneous: it contains this tool's OWN OUTPUTS (`love_transparent.gif`, `bulk add_transparent.gif`, `star_transparent*`, `*_transparent_experimental*`). Those have 1-bit alpha, so writing the GIF destroyed the antialiasing ramp — the FILE genuinely is hard-edged even though the ARTWORK is antialiased, and `appears_hard_edged: true` on them is correct rather than a false positive. **So the set must be stratified by provenance before it can be used as a clean falsifier**: raw antialiased sources are counterexamples, processed outputs are not. Two of them were also revealed as genuine PRE-EXISTING false positives for a different reason entirely (§28.5, the alpha-channel bug), which is a second reason the flat "presumed antialiased" label was hiding structure. `references/lessons.md` §28.5
 

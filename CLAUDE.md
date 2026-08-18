@@ -101,7 +101,7 @@ node "/Applications/Claude Code/Diors-Builds/scripts/reflow-prose.mjs" --check <
 ```
 **This applies to every `.md` in scope, including the memory folder** — those were hand-wrapped during the very session that ran the migration, which Harkirat caught.
 
-### `references/lessons.md` upkeep — it is ~51k tokens and must stay navigable
+### `references/lessons.md` upkeep — it is ~53k tokens and must stay navigable
 
 ⚠️ **The size claim in this heading, in SKILL.md and in the file's own "how to read this" block is a COUNTED CLAIM that nothing gates.** It read "~32k" in all three places while the file had grown to ~46k — a 44% understatement in exactly the number a session uses to decide whether it can afford to read the file. Re-derive it (`wc -c` / 4) whenever sections are added, or it silently rots again. Whenever a section is ADDED to it:
 1. Add a **ToC entry** and at least one **symptom-table row**. Measured: 6 of 25 sections had become unreachable from the symptom table, including that session's own work — a lesson nobody can find is a lesson nobody has.
