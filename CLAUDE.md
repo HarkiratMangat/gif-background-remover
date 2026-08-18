@@ -115,6 +115,7 @@ The v5.1.1 release exists only because these ran after the v5.1.0 tag instead of
 2. **Every `references/…` pointer in the packaged `SKILL.md` must resolve inside the zip.**
 3. **No private paths** (`/Users/…`, `local/…`, `.remember`) and no pointers to unpackaged repo files.
 4. **Reconcile the version entry against the commits** — check whether an earlier bullet contradicts a later one, and whether any bullet describes as a FIX something later measurement reclassified. When correcting a stale claim, grep for the CLAIM, not the paragraph.
+5. **A checklist that omits the primary case manufactures confidence.** Auditing the frontmatter description, the term list was built from the NEW capabilities — WebP, AVIF, `--auto`, pixel art — and never tested "remove the background", the skill's entire purpose. The tidy column of pass/fail marks implied the core had been checked when it had not been looked at once; Harkirat caught it. **Before trusting a checklist, ask what the single most important case is and confirm it is ON the list.** Same failure as §23's circular fixture and the repo-root-only path test — reproduced while auditing for that exact class of error.
 5. **Confirm behaviour, not signatures.** A changed argparse default nearly caused six correct statements to be "fixed"; the default was a sentinel that resolves to the old value.
 
 ### Merge discipline — the failure that motivated writing this down
