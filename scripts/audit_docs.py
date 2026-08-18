@@ -17,6 +17,12 @@ Checks (all falsifiable, all cheap):
   3. every `references/*.md` pointer resolves to a file that exists
   4. every section is reachable from BOTH the table of contents and the symptom table
   5. no flag is documented that does not exist in argparse
+  6. the frontmatter description states the primary function and every supported format
+  7. the tracker agrees with itself: nothing closed sits in gif-deferred-list.md's Open
+     section, nothing open sits in gif-resolved-list.md, every open item carries a
+     [Priority · Effort · Model-effort] tag
+  8. --diff <base> only: conservation -- an item removed from gif-deferred-list.md must be
+     traceable into gif-resolved-list.md. A sweep and a deletion look identical in a diff.
 """
 import re, os, sys, subprocess
 
@@ -134,10 +140,137 @@ def main():
     if secs - cov:
         fails.append(f'sections unreachable from the symptom table: {sorted(secs - cov)}')
 
+    fails += tracker_checks()
+    if BASE:
+        fails += conservation(BASE)
+
     for f in fails:
         print('FAIL:', f)
     print(f"\n{len(fails)} failure(s)" if fails else "\nall doc gates pass")
     return 1 if fails else 0
 
+# ------------------------------ tracker gates ------------------------------
+# gif-deferred-list.md is REPO-SIDE and never packaged, so these gates are about
+# process hygiene rather than about the product. They exist because the tracker
+# actively lied on 2026-08-18: three `###` headings read as open above bodies
+# that said `✅ CLOSED`, one open item carried no priority tag, and the summary
+# line on the AUTONOMY BACKLOG named an item as open directly above that item's
+# own closure marker. Every one of those was found by hand, twice, in two days.
+ACTIVE, ARCHIVE = 'gif-deferred-list.md', 'gif-resolved-list.md'
+# A standing section, not a work item -- it holds a numbered sub-list with its own
+# open/closed state and is deliberately exempt from the priority-tag rule.
+TAG_EXEMPT_HEADINGS = ('AUTONOMY BACKLOG',)
+# ⚠️ The vocabulary is the whole gate. Dior's Builds' equivalent check shipped
+# matching neither DONE nor DROPPED -- i.e. it missed the most common marker in
+# its own corpus. Counted here 2026-08-18 across both files: CLOSED x17, DONE x4,
+# SHIPPED x3, RESOLVED x2, FIXED x2, plus "CONFIRMED FIRING" as a one-off. A
+# negation must NOT read as closure: "NOT DONE" and "not yet done" describe
+# remaining scope, and the active list's own section heading contains one.
+CLOSED_MARK = re.compile(r'(?<!NOT )(?<!not )(?<!not yet )'
+                         r'(CLOSED|SHIPPED|RESOLVED|✅\s*\*{0,2}(DONE|FIXED|CONFIRMED))')
+
+
+def _items(text):
+    """[(heading, body)] for every ### block, in order."""
+    parts = re.split(r'(?m)^### ', text)[1:]
+    return [(p.split('\n')[0], p) for p in parts]
+
+
+def _sections(text):
+    """{'## heading': text} preserving order."""
+    out, cur = {}, None
+    for line in text.split('\n'):
+        if line.startswith('## '):
+            cur = line
+            out[cur] = []
+        elif cur:
+            out[cur].append(line)
+    return {k: '\n'.join(v) for k, v in out.items()}
+
+
+def tracker_checks():
+    fails = []
+    if not (os.path.exists(ACTIVE) and os.path.exists(ARCHIVE)):
+        return [f'{ACTIVE} or {ARCHIVE} is missing -- the split tracker needs both halves']
+    act, arc = open(ACTIVE).read(), open(ARCHIVE).read()
+    secs = _sections(act)
+    open_sec = next((v for k, v in secs.items() if 'Open' in k), None)
+    if open_sec is None:
+        fails.append(f'{ACTIVE} has no "Open" section heading')
+        open_sec = ''
+    for head, body in _items(open_sec):
+        if head.startswith('~~'):
+            fails.append(f'{ACTIVE}: "{head[:70]}" is struck through but still filed under Open -- '
+                         f'move it to {ARCHIVE}')
+            continue
+        m = CLOSED_MARK.search(body)
+        if m:
+            fails.append(f'{ACTIVE}: "{head[:60]}" reads as OPEN but its body says {m.group(0)!r} '
+                         f'-- heading/body drift, the exact defect this gate exists for')
+        if not re.search(r'\[P\d', head) and not any(x in head for x in TAG_EXEMPT_HEADINGS):
+            fails.append(f'{ACTIVE}: "{head[:70]}" carries no [Priority · Effort · Model-effort] tag')
+    # the inverse spelling: an OPEN item filed in the archive is silently lost work
+    for head, body in _items(arc):
+        if not head.startswith('~~') and not CLOSED_MARK.search(body):
+            fails.append(f'{ARCHIVE}: "{head[:70]}" is neither struck through nor marked closed -- '
+                         f'an open item in the archive is work nobody will find')
+    return fails
+
+
+# --------------------------- archive conservation --------------------------
+# Ported from Dior's Builds' docs-audit.mjs `archive-conservation`, keeping the
+# three corrections that check learned the hard way: a unified diff renders an
+# EDIT as a removal plus an addition, a markdown heading is structure and never
+# an item, and BOTH the fingerprint window and the haystack must be normalised
+# the same way or nothing can ever match.
+def _words(sx):
+    return [w for w in re.sub(r'[^a-z0-9]+', ' ', sx.lower()).split() if len(w) > 2]
+
+
+def _fp_in(line, haystack_words, n=6):
+    w = _words(line)
+    if len(w) < n:
+        return True                       # too short to fingerprint; do not guess
+    hay = ' '.join(haystack_words)
+    return any(' '.join(w[i:i + n]) in hay for i in range(len(w) - n + 1))
+
+
+def conservation(base):
+    def git(*a):
+        return subprocess.run(['git'] + list(a), capture_output=True, text=True).stdout
+    diff = git('diff', '--unified=0', f'{base}...HEAD', '--', ACTIVE)
+    if not diff:
+        return []
+    minus = [l[1:].strip() for l in diff.split('\n') if l.startswith('-') and not l.startswith('---')]
+    plus = [l[1:].strip() for l in diff.split('\n') if l.startswith('+') and not l.startswith('+++')]
+    plus_words = _words(' '.join(plus))
+    removed = [l for l in minus
+               if not re.match(r'^#{1,6}\s', l)      # a heading is structure, not an item
+               and len(l) > 40                        # ignore rewrap/whitespace churn
+               and not _fp_in(l, plus_words)]         # an in-place edit is not a removal
+    if not removed:
+        return []
+    arc_diff = git('diff', '--unified=0', f'{base}...HEAD', '--', ARCHIVE)
+    added = [l[1:] for l in arc_diff.split('\n') if l.startswith('+') and not l.startswith('+++')]
+    if not added:
+        return [f'this branch removes {len(removed)} substantive line(s) from {ACTIVE} and adds '
+                f'NOTHING to {ARCHIVE}. An item leaves the active list only by being resolved into '
+                f'the archive -- otherwise the tidy-up silently DELETED it. First: "{removed[0][:90]}…"']
+    arc_words = _words(' '.join(added))
+    orphans = [l for l in removed if not _fp_in(l, arc_words)]
+    if orphans and len(orphans) == len(removed):
+        return [f'this branch removes {len(removed)} item(s) from {ACTIVE} and DOES add to {ARCHIVE}, '
+                f'but none of the removed text can be traced into it. That is a deletion wearing a '
+                f'sweep\'s clothes. First untraceable: "{orphans[0][:90]}…"']
+    if orphans:
+        return [f'WARN: {len(orphans)} of {len(removed)} line(s) removed from {ACTIVE} could not be '
+                f'traced into {ARCHIVE}. Rewording during a sweep is normal, so confirm each landed. '
+                f'First: "{orphans[0][:90]}…"']
+    return []
+
+
+BASE = None
 if __name__ == '__main__':
+    if '--diff' in sys.argv:
+        BASE = sys.argv[sys.argv.index('--diff') + 1]
     sys.exit(main())
