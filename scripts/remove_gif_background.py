@@ -344,6 +344,16 @@ PLATEAU_CLIFF_MIN_SAMPLES = 500     # below this the ratio is not dispositive
 # would have called a 3-level sprite antialiased and handed it feathering plus 2px erosion -- the
 # destructive direction, on exactly the content --pixel-art exists to protect. SS28.10
 ALPHA_MASK_RAMP_LEVELS = 16
+# At or under this many distinct colours in the COMPOSITED frame, the art is drawn from a flat
+# palette rather than blended into one. 16 is not swept: it is the pixel-art convention itself --
+# EGA, PICO-8 and most sprite work are drawn on a 16-colour palette -- and the measured negative
+# frontier sits well above it. Over 146 labelled antialiased assets the LOWEST composited count is
+# 26 (a heavily quantized 93x96 sticker), the next 60, and the median 403; over 542 labelled pixel
+# art the median is 12 and the 25th percentile 9. So 16 sits 10 below the nearest negative with the
+# positives' bulk beneath it, the same shape of margin PLATEAU_CLIFF_THRESHOLD has. Sharing the
+# value of ALPHA_MASK_RAMP_LEVELS above is a coincidence of two different arguments, not one
+# threshold used twice. SS29
+FLAT_PALETTE_MAX_COLORS = 16
 
 
 def measure_plateau_cliff_ratio(rgb, strong=PLATEAU_CLIFF_STRONG_STEP,
@@ -409,6 +419,48 @@ def measure_plateau_cliff_ratio(rgb, strong=PLATEAU_CLIFF_STRONG_STEP,
         total += int(step.sum())
         good += int((step & flat).sum())
     return (good / max(total, 1)), total
+
+
+def measure_composited_color_count(rgb):
+    """How many distinct colours does this frame contain?
+
+    The SIXTH structural discriminator, and the first that does not ask about edges at all. Pixel
+    art is drawn from a deliberate, small palette; antialiasing manufactures a continuum of
+    intermediate colours, and cannot help doing so. The count therefore separates the two
+    populations by more than an order of magnitude without measuring block size anywhere -- which
+    is exactly what the plateau-cliff ratio cannot do, because a 1:1 sprite has no 2px plateau for
+    a cliff to sit between and scores like a ramp (SS28.6 already says so in its own docstring).
+
+    It must be read off the COMPOSITED frame, and that is not a detail. Counted over opaque pixels
+    only, a flat-fill vector icon whose entire antialiasing lives in its partial-alpha edge reads
+    as a 35-colour palette -- `previous.png`, a plain chevron, measures 35 opaque colours and 289
+    composited. That is the same rock the four discriminators before the cliff ratio died on
+    (SS23.4, SS23.8, SS23.9): a flat vector interior is locally as uniform as a pixel grid.
+    Compositing is what SS28.5 already requires of every hardness measure here, for this reason.
+
+    Measured over the five labelled populations, 688 scoreable assets:
+
+        pixel art (542)    p25 9    median 12    p75 17    p95 32
+        antialiased (146)  lowest 26    next 60    median 403    max 27,089
+
+    A LOW value is dispositive for pixel art; a high value proves nothing, exactly like the cliff
+    ratio -- dithered pixel art re-encoded through a lossy step can carry hundreds of colours. And
+    the failure direction is benign: art flat enough to come in under the floor without being
+    pixel art is art with no ramps to protect, which wants --pixel-art's treatment anyway.
+    """
+    px = rgb.reshape(-1, 3).astype(np.uint32)
+    packed = (px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2]
+    # A boolean sieve over the 24-bit colour space, not np.unique. Same answer, exactly -- verified
+    # frame by frame -- but np.unique SORTS, so its cost tracks the pixel count and not the colour
+    # count: 1,347ms on a 1667x1667 frame and 3,903ms on a 3840x2160 one, against 18ms here, for an
+    # identical answer (verified frame by frame on real assets). This bounds the WORST case; it is
+    # not a speedup to a normal run -- an A/B/A over five assets put no-measure, np.unique and this
+    # within 1.3s of each other over 57s, and the "tripled analyze()" I first claimed came from
+    # comparing a slow 25-asset prefix to a whole-corpus mean on a machine another job was
+    # saturating. SS29.8. The 16MB buffer is allocated per call (1ms, calloc), not at module scope.
+    seen = np.zeros(1 << 24, bool)
+    seen[packed] = True
+    return int(seen.sum())
 
 
 def measure_antialiasing_presence(rgb, bg_rgb, palette, tolerance=15, ring=3):
@@ -1244,6 +1296,33 @@ def analyze(input_path, max_samples=40, tolerance=15):
             _src_bg_transparent, _src_bg_why = source_transparency_is_the_background(
                 _st0, all_rgb_frames[0], bg_rgb, tolerance)
 
+    # Strictly binary alpha means a HARD CUTOUT: the silhouette carries no antialiasing, by
+    # construction. Computed here rather than beside its first old use because two rules below now
+    # need it before they may speak at all. SS28.12
+    _hard_alpha_cutout = bool(_has_transparent_px and _alpha_levels <= 2)
+
+    # WHEN THE TRANSITION-BAND MEASURES HAVE NOTHING TO MEASURE. Both band-based rules read the
+    # region between the background colour and the art. On a hard-alpha cutout whose transparency
+    # IS the background, that region does not exist: the pixels that held the antialiasing ramp
+    # were made fully transparent by whoever removed the background, and their RGB was replaced by
+    # a flat padding value. So `ratio max 0.000` there is a statement about the removal that
+    # already happened, not about the artwork -- it is guaranteed by the container whether the art
+    # is pixel art or not.
+    #
+    # Measured: FIVE of the seven false positives across all five populations were exactly this,
+    # and every one is antialiased art that had already been cut out -- `love_transparent.gif`
+    # (this tool's own output from antialiased `love.gif`), `clown_transparent-ezgif.com-crop.gif`,
+    # `NewDraws copy.gif` and two GIFs in the alphas set. Each was called hard-edged on the
+    # strength of an empty band, and --pixel-art on antialiased art is the destructive direction
+    # (SS18). Gating the two band rules on this predicate takes specificity from 0.966 to 0.993.
+    #
+    # This is SS28.9's lesson a second time: an empty measurement is not weak evidence, it is the
+    # absence of any evidence, and the fix is to establish WHY the plane is blank rather than to
+    # build something that out-votes it. Note the conjunction -- a SOFT-alpha source whose
+    # transparency is the background still gets a real band, because SS28.5 composites the ramp
+    # back before measuring. Only the binary cutout is unrecoverable. SS29
+    _band_measures_are_vacuous = bool(_src_bg_transparent and _hard_alpha_cutout)
+
     _eh0 = measure_edge_hardness(_hf(0), bg_rgb, tolerance)
     _eh_ratios = [measure_edge_hardness(_hf(i), bg_rgb, tolerance)['ratio']
                   for i in sample_idxs]
@@ -1293,6 +1372,13 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # count so a low-sample verdict is visible instead of silently confident (SS28.4).
     _cliff_says_hard = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
                         and _cliff >= PLATEAU_CLIFF_THRESHOLD)
+    # The palette-size measure reaches the art the cliff ratio structurally cannot: pixel art drawn
+    # 1:1, where no edge has a 2px plateau on either side. Median across sampled frames for the
+    # same reason the cliff ratio takes one -- a small count is dispositive, so a single atypical
+    # frame must not decide it. See the measure's docstring for the 688-asset separation.
+    _ncolors = int(np.median([measure_composited_color_count(_hf(i))
+                             for i in sample_idxs])) if sample_idxs else 0
+    _flat_palette = bool(_ncolors <= FLAT_PALETTE_MAX_COLORS and not _alpha_only_source)
     # Record WHICH disjunct fired, not just that one did. `appears_hard_edged` has been an OR of
     # several independent rules since v5.0.0, but --recommend's evidence line still described the
     # ORIGINAL pair ("two independent measures agree: the transition band is empty AND there are
@@ -1322,10 +1408,17 @@ def analyze(input_path, max_samples=40, tolerance=15):
                 f"reading a uniform plane and none of them gets a vote; the {_alpha_levels} alpha "
                 f"levels ARE the antialiasing ramp, so this is antialiased art "
                 f"(references/lessons.md SS28.9).")
-    elif _no_transition_band_at_all:
+    elif _no_transition_band_at_all and not _band_measures_are_vacuous:
         _hard_reasons.append(
             f"no transition band at all in any sampled frame (edge_hardness ratio max "
             f"{_eh_max:.3f})")
+    elif _no_transition_band_at_all:
+        _soft_notes.append(
+            f"the transition band is empty (ratio max {_eh_max:.3f}), but this source is a "
+            f"hard-alpha cutout whose own transparency is the background, so an empty band is "
+            f"guaranteed by the export and says nothing about the artwork: the ramp pixels were "
+            f"made transparent and their colour replaced by padding. Not counted as evidence "
+            f"(references/lessons.md SS29).")
     # A low density and a low cliff ratio CANNOT both be true of pixel art, and that contradiction
     # is the only thing standing between the density rule and a measured false positive. Density
     # below 0.5 means the image changes only every few scan lines -- blocks wider than one pixel --
@@ -1353,7 +1446,6 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # and blend 2.960. The discriminator is not the blend ratio -- SS23.5 measured that pixel art
     # and vector art overlap completely on it -- it is the alpha channel, which states the fact
     # directly rather than inferring it. SS28.12
-    _hard_alpha_cutout = bool(_has_transparent_px and _alpha_levels <= 2)
     _cliff_contradicts = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
                           and _cliff < PLATEAU_CLIFF_THRESHOLD
                           and not _hard_alpha_cutout)
@@ -1373,10 +1465,16 @@ def analyze(input_path, max_samples=40, tolerance=15):
             f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps, at or "
             f"above the {PLATEAU_CLIFF_THRESHOLD:.2f} floor -- its edges are block-to-block "
             f"cliffs, not antialiasing ramps")
-    if (_eh_max < 0.5) and (_blend_ratio < 0.15) and not _alpha_only_source:
+    if (_eh_max < 0.5) and (_blend_ratio < 0.15) and not _alpha_only_source \
+            and not _band_measures_are_vacuous:
         _hard_reasons.append(
             f"a thin transition band (ratio max {_eh_max:.3f}) together with essentially no "
             f"background-to-art blend pixels (antialiasing_blend_ratio {_blend_ratio:.3f})")
+    if _flat_palette:
+        _hard_reasons.append(
+            f"the composited frame holds only {_ncolors} distinct colours, at or under the "
+            f"{FLAT_PALETTE_MAX_COLORS} of a flat pixel-art palette -- antialiasing manufactures a "
+            f"continuum of intermediate colours and cannot come out this small")
     _hard = bool(_hard_reasons)
     edge_hardness = dict(_eh0)
     edge_hardness.update({
@@ -1386,6 +1484,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'change_line_density': round(_density, 3),
         'plateau_cliff_ratio': round(_cliff, 3),
         'plateau_cliff_samples': int(_cliff_n),
+        'composited_color_count': _ncolors,
+        'band_measures_are_vacuous': _band_measures_are_vacuous,
         'appears_hard_edged': bool(_hard),
         'hard_edged_reasons': _hard_reasons,
         'hard_edged_suppressed_notes': _soft_notes,
@@ -1459,20 +1559,41 @@ def recommend(input_path, tolerance=15):
         # The exact false positive SS18 documents: a thin-antialiasing vector
         # export whose band ratio reads as hard-edged. Reported as evidence
         # rather than silently dropped, so the run is auditable.
+        # WHY it is not hard-edged has to match the case, and one wording cannot cover three.
+        # This line used to assert "real background-to-art blends ARE present (blend_ratio X,
+        # above the 0.15 floor)" unconditionally -- so on a hard-alpha cutout, where the verdict
+        # is now decided by the vacuous-band gate, it printed "blends ARE present" beside a
+        # measured blend ratio of 0.000, i.e. a sentence contradicted by its own number, on a
+        # whole content class. Same defect family as SS28.7: evidence naming a rule that did not
+        # drive the decision. Found by READING the output on a real asset rather than by checking
+        # that the branch existed. SS29.1
+        _vac = bool(_eh.get('band_measures_are_vacuous'))
+        if _vac:
+            _why = (f"the band measures got no vote at all -- this source is a hard-alpha cutout "
+                    f"whose own transparency is its background, so a thin or empty band is "
+                    f"guaranteed by the export and says nothing about the art "
+                    f"(antialiasing_blend_ratio {_blend:.3f} is reading the same blank region). ")
+        elif _blend >= 0.15:
+            _why = (f"real background-to-art blends ARE present (antialiasing_blend_ratio "
+                    f"{_blend:.3f}, above the 0.15 floor), so this is antialiased vector art with "
+                    f"a thin band -- typical of shapes made mostly of straight edges -- not pixel "
+                    f"art. ")
+        else:
+            _why = (f"no rule reached its hard-edged floor; a low band ratio is not on its own "
+                    f"evidence of blocks (antialiasing_blend_ratio {_blend:.3f}). ")
         evidence.append(
             f"NOT recommending --pixel-art despite a low edge_hardness ratio "
             f"({_hardness:.3f}, max across frames {_hard_max:.3f}, under the 0.5 "
-            f"hard-edged threshold): real background-to-art blends ARE present "
-            f"(antialiasing_blend_ratio {_blend:.3f}, above the 0.15 floor), so this "
-            f"is antialiased vector art with a thin band -- typical of shapes made "
-            f"mostly of straight edges -- not pixel art. The two block-structure measures "
-            f"agree: change_line_density {float(_eh.get('change_line_density', 1.0)):.3f} "
-            f"(hard-edged below 0.5) and plateau_cliff_ratio "
-            f"{float(_eh.get('plateau_cliff_ratio', 0.0)):.3f} over "
+            f"hard-edged threshold): " + _why
+            + f"The three block-structure measures agree: change_line_density "
+            f"{float(_eh.get('change_line_density', 1.0)):.3f} (hard-edged below 0.5), "
+            f"plateau_cliff_ratio {float(_eh.get('plateau_cliff_ratio', 0.0)):.3f} over "
             f"{int(_eh.get('plateau_cliff_samples', 0))} strong colour steps (hard-edged at or "
-            f"above {PLATEAU_CLIFF_THRESHOLD:.2f}). --pixel-art here would "
+            f"above {PLATEAU_CLIFF_THRESHOLD:.2f}), and composited_color_count "
+            f"{int(_eh.get('composited_color_count', 0))} (hard-edged at or under "
+            f"{FLAT_PALETTE_MAX_COLORS}). --pixel-art here would "
             f"disable feathering and erosion and damage the ramp "
-            f"(references/lessons.md SS1, SS18, SS28).")
+            f"(references/lessons.md SS1, SS18, SS28, SS29).")
 
     for _note in (_eh.get('hard_edged_suppressed_notes') or []):
         evidence.append("Hard-edged evidence weighed and set aside: " + _note)
