@@ -494,10 +494,45 @@ def analyze(input_path, max_samples=40, tolerance=15):
             all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         per_frame_small_sizes.append(_frame_small)
         all_small_sizes.extend(_frame_small)
+    # --tumble-safe defines the background as the single LARGEST connected
+    # bg-coloured component per frame. That premise fails outright when the
+    # foreground divides the background into several large pieces: everything
+    # outside the biggest piece is then silently kept.
+    #
+    # Measured 2026-08-17 on a 35-frame pixel-art asset whose limbs span the
+    # canvas: the yellow background splits into 3-7 disconnected regions, and
+    # --tumble-safe removed 69,548 of 158,899 background pixels on frame 0 --
+    # leaving 56% of it behind. Without the flag: 0 background left, 0 art lost.
+    # --recommend had suggested the one flag that breaks the asset, because
+    # edge-grazing (which is what triggers tumble risk) is EXACTLY the condition
+    # that also fragments the background.
+    _split_frac = []
+    for _i in (fg_sample_idxs if 'fg_sample_idxs' in dir() else range(min(n_frames, 8))):
+        _m = color_mask(all_rgb_frames[_i], bg_rgb, tolerance)
+        if not _m.any():
+            continue
+        _lb, _n = ndimage.label(_m, structure=STRUCTURE)
+        if _n <= 1:
+            _split_frac.append(0.0)
+            continue
+        _sz = ndimage.sum(_m, _lb, range(1, _n + 1))
+        _split_frac.append(float((_sz.sum() - _sz.max()) / _sz.sum()))
+    _bg_outside_largest = round(float(np.mean(_split_frac)), 3) if _split_frac else 0.0
+
     tumble_risk = {
         'worst_margin_ratio': worst_margin,
         'worst_margin_frame_index': worst_margin_frame,
-        'likely_tumble_risk': worst_margin is not None and worst_margin < 3.0,
+        'background_outside_largest_component': _bg_outside_largest,
+        # 0.35 sits MID-GAP, not at a convenient round number. Measured across the
+        # corpus: explosion 0.0%, love 1.1%, military-tag 1.5%, gift 4.8%,
+        # crystal 6.2%, heart 23.6% -- against 57.7% on the asset --tumble-safe
+        # actually stranded. A first attempt used 0.05, which fell BETWEEN gift
+        # and crystal, two assets 1.4 points apart: a margin of degree, and the
+        # exact trap SS18 and SS23 document. Anything from ~0.30 to ~0.50
+        # separates the real failure from every asset here.
+        'tumble_safe_would_strand_background': _bg_outside_largest > 0.35,
+        'likely_tumble_risk': (worst_margin is not None and worst_margin < 3.0
+                               and _bg_outside_largest <= 0.35),
     }
 
     if n_frames <= max_samples:
@@ -974,6 +1009,14 @@ def recommend(input_path, tolerance=15):
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
+    if tumble.get('tumble_safe_would_strand_background'):
+        evidence.append(
+            f"NOT recommending --tumble-safe despite an edge-grazing margin: "
+            f"{tumble['background_outside_largest_component']:.1%} of the background sits "
+            f"OUTSIDE its largest connected component, so the foreground divides the "
+            f"background into pieces. --tumble-safe keeps only the largest piece and would "
+            f"strand the rest -- measured on a real asset, it left 56% of the background "
+            f"behind (references/lessons.md SS25).")
     if tumble_safe:
         flags.append('--tumble-safe')
         evidence.append(
