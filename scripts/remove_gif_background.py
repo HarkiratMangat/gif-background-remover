@@ -279,6 +279,21 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
     }
 
 
+def _avif_available():
+    """True if this Pillow can write AVIF -- via built-in support or the plugin."""
+    try:
+        from PIL import features
+        if features.check('avif'):
+            return True
+    except Exception:
+        pass
+    try:
+        import pillow_avif  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def measure_change_line_density(rgb):
     """Fraction of scan lines that differ from the previous line -- LOW means pixel art.
 
@@ -1192,7 +1207,14 @@ def recommend(input_path, tolerance=15):
             "GIF has a deliberately small removed region larger than that, "
             "--erosion-exempt-max-size may still be needed and should be measured manually.")
 
-    suggested = f"python3 scripts/remove_gif_background.py {shlex.quote(input_path)} <output.gif>"
+    # The script's OWN location, never a repo-relative guess. --recommend's whole
+    # purpose is to emit a line an autonomous run pastes verbatim, and the primary
+    # deployment target is a claude.ai sandbox where the skill unpacks somewhere
+    # that is not a repo root -- "scripts/remove_gif_background.py" resolves there
+    # only by luck. Every test of this was run FROM the repo root, where the wrong
+    # path happens to be right: a check that could not fail.
+    _self = os.path.abspath(__file__)
+    suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.gif>"
     if flags:
         suggested += " " + " ".join(flags)
 
@@ -3200,6 +3222,17 @@ def render_frames_to_avif(rgb_frames, alpha_frames, durations, loop, output_path
     (Diors-Builds settled the same question for WebP only by testing a real
     Discord client on desktop and mobile.)
     """
+    # Fail before doing the work, not after. AVIF needs Pillow built with AVIF
+    # support (or the pillow-avif-plugin); --recommend actively ranks AVIF FIRST
+    # under a byte cap, so an autonomous run is steered straight at this
+    # dependency. Without the check the failure surfaces as a bare Pillow
+    # KeyError/OSError after every frame has already been processed.
+    if not _avif_available():
+        raise SystemExit(
+            "AVIF output needs Pillow built with AVIF support, which this "
+            "environment does not have. Install it with `pip install "
+            "pillow-avif-plugin` (or upgrade Pillow), or write a .webp instead "
+            "-- WebP also carries true 8-bit alpha and is more widely supported.")
     ims = [Image.fromarray(np.dstack([r, a[:, :, None]]).astype(np.uint8), 'RGBA')
            for r, a in zip(rgb_frames, alpha_frames)]
     ims[0].save(output_path, 'AVIF', save_all=True, append_images=ims[1:],
@@ -4662,7 +4695,7 @@ def run_batch(args, arg_parser):
     print(f"{ok_count}/{len(results)} succeeded.", file=sys.stderr)
 
 
-def apply_pixel_art_preset(args):
+def apply_pixel_art_preset(args, argv=None):
     """
     If --pixel-art is set, force the settings it bundles (see --pixel-art's
     help text for why each one matters). Mutates `args` in place. Called
@@ -4673,8 +4706,22 @@ def apply_pixel_art_preset(args):
     key set, not the feather/erosion consequences that make it useful.
     """
     if getattr(args, 'pixel_art', False):
-        args.feather = False
-        args.edge_cleanup_erosion = 0
+        # Explicit flags win, and we SAY so -- the same contract --auto already
+        # implements via typed_option_names(). This preset used to overwrite an
+        # explicitly typed --edge-cleanup-erosion with 0 silently, so the script
+        # had two mechanisms that disagreed about who wins and one of them said
+        # nothing. Safe direction, wrong principle.
+        typed = typed_option_names(argv)
+        if 'feather' not in typed and 'no_feather' not in typed:
+            args.feather = False
+        if 'edge_cleanup_erosion' not in typed:
+            args.edge_cleanup_erosion = 0
+        elif args.edge_cleanup_erosion != 0:
+            print(f"--pixel-art would set --edge-cleanup-erosion 0, but you passed "
+                  f"{args.edge_cleanup_erosion} explicitly, so that wins. Erosion is "
+                  f"destructive on hard-edged art (measured: 0% survival on a 31px "
+                  f"shape, references/lessons.md SS4) -- drop the flag unless you "
+                  f"mean it.", file=sys.stderr)
 
 
 def typed_option_names(argv=None):
