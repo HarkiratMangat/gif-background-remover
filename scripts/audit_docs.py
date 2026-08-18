@@ -76,7 +76,15 @@ def main():
     if not desc:
         fails.append('SKILL.md has no frontmatter description -- the skill cannot trigger')
     else:
-        d = desc.group(1).lower()
+        # HARD PLATFORM LIMIT, learned the expensive way: claude.ai refuses the upload with
+        # "field 'description' in SKILL.md must be at most 1024 characters". Nothing local knew
+        # this, so the description grew to 1364 while every gate passed -- the failure surfaced
+        # only in Harkirat's browser, after a merge, a tag and a package build. Gate the
+        # CONSTRAINT, not just the content.
+        _raw = desc.group(1)
+        if len(_raw) > 1024:
+            fails.append(f'description is {len(_raw)} chars; claude.ai rejects anything over 1024')
+        d = _raw.lower()
         if not re.search(r'remove\b.{0,20}\bbackground|background removal', d):
             fails.append('description never states the PRIMARY function (removing a background)')
         for fmt in ('gif', 'webp', 'avif'):

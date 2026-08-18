@@ -66,6 +66,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Scattered speckle dots where a fading element disappears | §16 |
 | A WebP/AVIF whose partial alpha vanished after a resize | §16 |
 | Choosing between compression tools/quantizers | §6, §8 |
+| claude.ai refuses the skill upload | the description exceeds its 1024-char limit — run `scripts/audit_docs.py` |
 | "there's a white edge / outline / halo around it" | §16 (fringe), §19 (pick erosion by the asset's own curve) |
 | "it looks blurry / soft / smudged after resizing" | §5 (resize degradation), §1 (is it pixel art?) |
 | "the colours look wrong / washed out / banded" | §12 (dither mesh), §6 (quantizer choice) |
