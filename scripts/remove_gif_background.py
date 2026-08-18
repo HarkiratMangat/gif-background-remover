@@ -1097,12 +1097,24 @@ def recommend(input_path, tolerance=15):
 
     band_regions = report.get('band_interior_regions', [])
     if any(r['classification'] == 'gradient_fade' for r in band_regions):
-        flags.append('--dither-mode none')
+        # A fade means the FORMAT decision is already made: GIF structurally
+        # cannot carry it. So recommend the flag that RECONSTRUCTS the alpha,
+        # not the one that makes the loss look tidier.
+        #
+        # This used to always emit --dither-mode none -- the GIF-era workaround --
+        # and mention --recover-fade-alpha only in prose. `--auto` takes the flag
+        # list VERBATIM and never reads the prose, so on a real asset it produced
+        # ZERO translucent pixels where --recover-fade-alpha produced 249,774.
+        # CLAUDE.md's own rule: a warning in the evidence is not a fix, because an
+        # autonomous run cannot act on it.
+        flags.append('--recover-fade-alpha')
         evidence.append(
-            "NOTE: --dither-mode none is the best GIF can do for a fade. If the "
-            "deliverable can be WebP or AVIF, use --recover-fade-alpha with a "
-            ".webp/.avif output instead -- it reconstructs the original alpha "
-            "exactly rather than cutting the faintest stages (lessons SS16).")
+            "A translucent element was flattened against the background by the source "
+            "export -- recommending --recover-fade-alpha, which unmixes each pixel "
+            "against the art's own palette and reconstructs the original alpha "
+            "arithmetically. Requires a .webp/.avif output; GIF's 1-bit alpha cannot "
+            "carry the result. Measured on a real asset: 0 translucent pixels without "
+            "this flag, 249,774 with it (references/lessons.md SS16).")
         evidence.append(
             "Band-interior region(s) show a gradient-fade signature (color distance from "
             "background varies across the frames it appears in) -- recommending "
@@ -1267,7 +1279,11 @@ def recommend(input_path, tolerance=15):
     # only by luck. Every test of this was run FROM the repo root, where the wrong
     # path happens to be right: a check that could not fail.
     _self = os.path.abspath(__file__)
-    suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.gif>"
+    # The placeholder must name a container that can actually HOLD what the flags
+    # produce -- suggesting <output.gif> alongside --recover-fade-alpha emits a
+    # command line that exits with an error.
+    _ext = 'webp' if '--recover-fade-alpha' in flags else 'gif'
+    suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.{_ext}>"
     if flags:
         suggested += " " + " ".join(flags)
 

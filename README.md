@@ -58,7 +58,9 @@ Handed to `--auto` with no flags, the skill detected the background colour, reco
 
 What separates them is the dark stroke that encloses the shape: `--protect-outline-color 39215a` keeps **95% of that 593,583-pixel interior** while still clearing the background around it.
 
-⚠️ **`--auto` gets this one wrong today** — it reaches for `--protect-band-only`, which assumes the region sits *outside* the removable core, and destroys the interior entirely. Tracked as a P1; the flag that works is the one above.
+The lightning bolts and dots also **fade in and out**, and the GIF export flattened those fades into opaque pale pixels. `--recover-fade-alpha` reconstructs them — **249,774 genuinely translucent pixels** in the WebP, against zero if you write a GIF, because GIF has no way to hold them.
+
+⚠️ **`--auto` still gets one thing wrong here** — it reaches for `--protect-band-only`, which assumes the region sits *outside* the removable core, and damages the interior. Tracked as a P1. It does now recover the fades correctly.
 
 ### Knowing what kind of art it is
 
