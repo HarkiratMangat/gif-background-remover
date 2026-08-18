@@ -6,7 +6,17 @@ Registered in `.claude/settings.json`; built 2026-08-17 from mistakes actually m
 
 Project-level `.claude/settings.json` hooks did **not** activate in the session that created them. Proved rather than assumed: a filesystem tracer was added to `release-gate.sh`, a matching command (`git tag --list`) was run, and the trace file was never created — so the hook process never ran at all, as opposed to running and having its output discarded.
 
-They most likely load at session start. **Verify in a fresh session, and do not trust them until you have:**
+**The cause is NOT known, and one plausible-sounding explanation is already disproven.** "Project settings load at session start" is FALSE — Dior's Builds proved live that editing `settings.json` IS picked up mid-session (`reference_enforcement_hooks` memory: *"the 'settings watcher ignores mid-side edits' claim is false, disproven live"*). Do not repeat that theory.
+
+What IS established, by test rather than inference:
+- both hooks are silent — neither the PreToolUse(Bash) one on a matching `git tag` command, nor the PostToolUse one on a `Write` to a hard-wrapped `.md`;
+- the hook PROCESS never runs (a filesystem tracer never appears), so this is not the `hookEventName` discard bug — both scripts do emit it;
+- `settings.json` is valid JSON, the scripts are executable, and both produce correct output when piped input directly;
+- there is no competing `settings.local.json`.
+
+**The most likely remaining cause is that a newly-added project `.claude/settings.json` needs to be trusted/approved before its hooks are honoured** — but that is a hypothesis, NOT verified. Ask Harkirat whether he sees a trust prompt.
+
+**Verify before trusting them:**
 
 ```
 rm -f "${TMPDIR:-/tmp}/gif-repo-hook-trace.log"

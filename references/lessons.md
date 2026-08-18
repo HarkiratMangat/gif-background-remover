@@ -506,6 +506,14 @@ If that holds generally, it is a better default protection strategy for flat vec
 ### 16.11 Decision recorded: `img2webp -exact` was considered and NOT adopted
 libwebp can rewrite RGB under fully-transparent pixels to improve compression; `-exact` forbids it, and Dior's Builds passes it. Not adopted here because: this script sets transparent pixels to the background colour (the least harmful value for this content), its own resize path premultiplies and is therefore immune regardless, and adopting it means adding an external-binary dependency to the main output path with a Pillow fallback to maintain — for a benefit not demonstrable on any asset tested. **`-exact` is the lever if a halo is ever actually observed.** Recorded so this is not re-litigated from scratch.
 
+**Re-examined 2026-08-17, same day, after Harkirat asked whether this predated WebP support and whether Dior's Builds uses `img2webp` for exactly this.** Both halves of that challenge were fair, and one of them found a real gap:
+
+- **Timing:** the decision was NOT made before WebP support — this section IS the WebP/AVIF section, written in the same commit that shipped the feature.
+- **Dior's Builds does use it**, for APNG → animated WebP, and its reason does not transfer: *"libwebp's own CLI set ships no APNG reader at all"*, so it needs a two-step (ffmpeg extracts frames, `img2webp` assembles them). Pillow reads APNG natively, so this script needs neither binary for the same job.
+- **The real gap:** this decision was argued entirely on DEPENDENCY grounds and never compared the encoders' OUTPUT. "Not demonstrable on any asset tested" referred to the `-exact` halo, not to size or quality.
+
+**So it was measured.** Identical 40 RGBA frames from a real processed asset, both encoders lossless: **Pillow 374.0 KB vs `img2webp` 379.1 KB** — Pillow is 1.3% SMALLER, and both preserve alpha identically. There is no output-quality case for the dependency, which is what the original decision assumed without checking. The rejection stands, now on evidence rather than on argument.
+
 ### 16.12 A translucent element whose TRUE colour never appears at full strength
 Found on `gift.gif` after the user spotted the four-dot sparkle turning *whitish* as it faded.
 

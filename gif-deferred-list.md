@@ -166,4 +166,4 @@ It reads GIF, WebP, AVIF, APNG, PNG and JPEG. The name reinforces the GIF-only m
 
 ### `[P1 · S]` Project hooks are installed but NOT VERIFIED FIRING
 
-`.claude/hooks/` + `.claude/settings.json` were added 2026-08-17. A filesystem tracer proved the hook process **never ran** in the session that created them — project settings almost certainly load at session start. Verify in a fresh session per `.claude/hooks/README.md` before trusting them. ⚠️ Until verified, treat every gate they encode as manual.
+`.claude/hooks/` + `.claude/settings.json` were added 2026-08-17. A filesystem tracer proved the hook process **never ran** — neither hook fires, on either event. ⚠️ **The cause is UNKNOWN.** "Project settings load at session start" is NOT it: Dior's Builds disproved that live (`reference_enforcement_hooks` — editing settings.json IS picked up mid-session). Not the `hookEventName` discard bug either, since the process never starts. Most likely a new project settings file needs trusting/approving, but that is unverified. See `.claude/hooks/README.md`. Until confirmed, every gate they encode is MANUAL.
