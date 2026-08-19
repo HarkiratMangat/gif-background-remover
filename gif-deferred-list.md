@@ -177,6 +177,21 @@ i.e. it buys ~0.6% file size for the worst colour fidelity AND the most temporal
 
 ## 🔔 Reminders / watch-for
 
+### SUGGESTED BUNDLE — the small items worth doing in ONE session *(added 2026-08-18)*
+
+Not a new item; a routing note, because the dominant cost of any of these is the release gates, not the work. **Four were identified as bundleable, three were done on 2026-08-18, and this records the one that was NOT plus what to bundle it with.**
+
+**Done in that bundle:** the `audit_docs.py` marker gate (closed, archived) · the render harness's degenerate-asset exclusion (harness fixed; the item stays open on a NEW finding — two overlay plates lose 7–12% of alpha with no refusal) · APNG (halved — an independent decoder confirms 19 frames / 18 distinct; the browser half stays open).
+
+**Not started, and the natural next bundle:**
+1. **`--translucent-region` coverage** — pure test work, no code change expected. The `circle:` form, several `;`-joined specs, alpha at 0.0 and 1.0, and interaction with `--crop`/`--resize-max-dim`. One render plus one pixel assertion per case; `parse_protect_regions` and `apply_translucent_regions` both already exist.
+2. **APNG's remaining browser half** — one file, one real browser, one look. ⚠️ Read §29.14 first: the in-app preview pane animates NOTHING, so a "static" result there is vacuous and a control is mandatory.
+3. **The overlay-plate art loss** filed under the render-exclusion item — decide refuse / warn / accept, then size it with the full 31.
+
+**Do NOT put these in that bundle, and the reason is not effort:** `--source-alpha-band`'s batch plumbing is XS but sequenced behind "is the 2px band earned at all" — plumbing it first risks building something the answer deletes. The frame-0/all-frames predicate asymmetry is a 3-line edit that triggers a full corpus re-score plus a render pass, because `_src_bg_transparent` gates a hardness rule. The outline-leak-gate fix touches candidate selection, which has already caused one regression here.
+
+**The highest-leverage item is not code at all:** acquiring ~20 real 32–128px ANTIALIASED icons unblocks three of the four P2s at once, because every one of them fails for the same reason — this project owns essentially no antialiased art at sprite scale, so any measure that helps there scores perfectly and is untestable for false positives (§29.12).
+
 ### AUTONOMY BACKLOG — 11 of 13 CLOSED; items 5 and 13 remain *(opened 2026-08-17; counts corrected 2026-08-17, 2026-08-18, and again 2026-08-18 by enumeration)*
 **Counted by enumerating the numbered items below, 2026-08-18 — the third correction to this line, and the first one derived rather than remembered.** 13 items; 11 struck through and closed; **open: 5** (gift's sparkle colour — the one genuinely unsolved research item) **and 13** (the narrow numeric constants still calibrated on one art family, marked PARTIALLY ADDRESSED). Measurements behind each closure: `references/lessons.md` §18, §21. ⚠️ **The three things this line got wrong, because they are the shape of error to expect here.** It read "8 of 9 CLOSED; only item 5 remains" while (a) there were 13 items, not 9 — five were appended after the heading was written and nobody re-counted; (b) 11 were closed, not 8; and (c) it named **item 9 as open** directly above item 9's own `✅ CLOSED 2026-08-17` marker. A heading that summarises a list it sits above will drift every time the list grows. **Re-derive the count from the items; never edit one number in this sentence and trust the rest.**
 
