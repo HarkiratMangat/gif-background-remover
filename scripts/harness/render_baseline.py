@@ -14,6 +14,17 @@ planes of every output frame, the per-frame opaque-pixel counts, dimensions,
 frame count, output bytes, and the ART LOSS / survival lines --auto prints. The
 alpha checksum is the load-bearing field: alpha IS the product of this tool.
 
+EVERY ASSET IS RENDERED TWICE: once at native size, and once through
+--resize-max-dim at half the source's larger side, recorded under a second key
+suffixed ` [resize]`. The second pass is not padding. --auto with no other flag
+cannot express the single most destructive thing a wrong --pixel-art verdict
+does -- switch the resize filter from LANCZOS to nearest-neighbour -- so a
+verdict that only matters on resize had no baseline at all. Measured: the
+v5.5.0 hardness change moved 8 verdicts inside the 106-asset set and every
+output came back byte-identical, because all 8 were already-transparent sources
+whose removal is confined to their own alpha. "0 changed" partly meant "this
+set cannot express the change" (references/lessons.md SS29.10).
+
   python3 scripts/harness/render_baseline.py --out base.json --set standard
   python3 scripts/harness/render_baseline.py --compare base.json new.json
 """
@@ -55,6 +66,21 @@ def fingerprint(path):
     return {'alpha_sha256': h.hexdigest(), 'opaque_per_frame': counts,
             'opaque_total': sum(counts), 'size': size, 'frames': n,
             'bytes': os.path.getsize(path)}
+
+
+def resize_target(path):
+    """Half the source's larger side, or None when the source is too small to halve.
+
+    Half is not arbitrary: a nearest-neighbour downscale to an odd fraction drops
+    whole pixel rows and any filter looks bad; at exactly 1/2 nearest and LANCZOS
+    disagree only where the artwork actually has detail, which is the difference
+    this pass exists to see.
+    """
+    from PIL import Image
+    with Image.open(path) as im:
+        w, h = im.size
+    big = max(w, h)
+    return (big // 2) if big >= 64 else None
 
 
 def spread(items, k):
@@ -119,6 +145,35 @@ def run(a):
         except Exception as e:
             rec['error'] = f"{type(e).__name__}: {e}"
         out[key] = rec
+        # Second pass, same asset, through --resize-max-dim. Recorded under its own
+        # key rather than as extra fields on the first record so the schema stays
+        # uniform and `compare` needs no special case: against a pre-resize baseline
+        # these simply show up as "only in B", which is the truth.
+        if not a.no_resize_pass:
+            dim = resize_target(path)
+            rrec = {'pop': pop, 'label': lab, 'path': rec['path'], 'resize_max_dim': dim}
+            if dim is None:
+                rrec['skipped'] = 'source smaller than 64px'
+            else:
+                try:
+                    r = subprocess.run([sys.executable, a.script, path, dst, '--auto',
+                                        '--resize-max-dim', str(dim)],
+                                       capture_output=True, text=True, timeout=600)
+                    rrec['returncode'] = r.returncode
+                    rrec['signal_lines'] = [l for l in (r.stdout + r.stderr).splitlines()
+                                            if any(t in l for t in ('ART LOSS', 'survival',
+                                                                    'not applicable', 'output_is_empty',
+                                                                    'refus', 'Error', 'error'))][-6:]
+                    if os.path.exists(dst):
+                        rrec.update(fingerprint(dst))
+                        os.remove(dst)
+                    else:
+                        rrec['no_output'] = True
+                except subprocess.TimeoutExpired:
+                    rrec['error'] = 'timeout'
+                except Exception as e:
+                    rrec['error'] = f"{type(e).__name__}: {e}"
+            out[key + ' [resize]'] = rrec
         # Written EVERY asset, not every tenth: the partial file is the only
         # honest progress signal, and a cadence of 10 made a 24-asset run look
         # stalled at 1 record for two minutes.
@@ -169,6 +224,9 @@ if __name__ == '__main__':
     ap.add_argument('--out'); ap.add_argument('--set', default='standard', choices=list(SETS))
     ap.add_argument('--script', default=DEFAULT_SCRIPT,
                     help='the script under test; pass a pristine copy for a baseline')
+    ap.add_argument('--no-resize-pass', action='store_true',
+                    help='skip the --resize-max-dim second pass (halves runtime, and blinds '
+                         'the gate to the nearest-vs-LANCZOS filter switch)')
     ap.add_argument('--compare', nargs=2, metavar=('A', 'B'))
     a = ap.parse_args()
     if a.compare:

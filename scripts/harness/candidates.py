@@ -26,6 +26,25 @@ The four candidates and what each is a hypothesis ABOUT:
               excluding those pixels makes it look like a 35-colour palette.
               Compositing is what SS28.5 already requires of every hardness
               measure, for exactly this reason.
+  rare_frac   share of the palette that is RARE -- distinct composited colours
+              carrying under 0.2% of the art pixels, over the total distinct
+              count. Hypothesis: a hand-picked pixel-art palette has no rare
+              entries at all, because every colour in it is a FILL somewhere,
+              while machine antialiasing manufactures intermediates that exist
+              only along one edge and therefore carry almost no pixel mass. This
+              is the one question the colour COUNT cannot ask: at 21 colours a
+              1:1 sprite and a heavily quantized sticker are indistinguishable
+              by count, and differ completely by how that mass is distributed.
+  rare_mass   the pixel mass those rare colours carry, rather than their share
+              of the palette -- the same hypothesis measured on the other axis.
+  k99_frac    smallest number of colours covering 99% of art pixels, over the
+              total. The scale-free version of rare_frac.
+  min_share   the smallest share of art pixels any single composited colour
+              carries. rare_frac's threshold expressed as a sweepable quantity.
+  art_px      how many art pixels that share was computed over. Load-bearing,
+              not bookkeeping: below 1/share pixels the rarest colour clears any
+              share threshold with a single pixel, so min_share passes VACUOUSLY
+              on small art and must not be read without it.
 """
 import argparse, json, os, sys, time, warnings, collections
 import numpy as np
@@ -113,6 +132,29 @@ def ramp_frac(rgb, op, gap=30, tol=12):
     return float(hit.sum() / max(int(op.sum()), 1))
 
 
+def palette_mass(comp, art, rare_share=0.002):
+    """How is the palette's PIXEL MASS distributed across its entries?
+
+    `comp` is the composited frame, `art` a bool mask of pixels that are artwork
+    (alpha > 0). Returns (rare_frac, rare_mass, k99_frac, ncol).
+    """
+    P = ((comp[..., 0].astype(np.uint32) << 16) | (comp[..., 1].astype(np.uint32) << 8)
+         | comp[..., 2])
+    px = P[art]
+    if px.size == 0:
+        return None, None, None, None, None, None
+    _, cnt = np.unique(px, return_counts=True)
+    cnt = np.sort(cnt)[::-1]
+    tot = float(cnt.sum())
+    rare = cnt < rare_share * tot
+    k99 = int(np.searchsorted(np.cumsum(cnt) / tot, 0.99) + 1)
+    # min_share is the SWEEPABLE form of rare_frac: "no colour under share s" is
+    # exactly min_share >= s, so reporting the minimum lets the 0.2% cut be
+    # checked against the data instead of asserted.
+    return (float(rare.sum() / cnt.size), float(cnt[rare].sum() / tot),
+            float(k99 / cnt.size), int(cnt.size), float(cnt.min() / tot), int(tot))
+
+
 def bg_of(path):
     """Frame-0 corner-majority background, the same value analyze() keys on."""
     im = Image.open(path); im.seek(0)
@@ -157,9 +199,14 @@ def measure(path):
         p16, ncol = palette_share(rgb, op)
         comp = composite(rgb, al, bg)
         _, ncomp = palette_share(comp, np.ones(comp.shape[:2], bool))
+        art = al > 0
+        if not art.any():
+            art = np.ones(al.shape, bool)
+        rf, rm, kf, nart, mshare, npix = palette_mass(comp, art)
         rows.append(dict(cliff_raw=cr, cliff_raw_n=cn, cliff_op=orr, cliff_op_n=on,
                          pal16=p16, ncol=ncol, ncol_comp=ncomp, ramp=ramp_frac(rgb, op),
-                         opaque_frac=float(op.mean())))
+                         opaque_frac=float(op.mean()), rare_frac=rf, rare_mass=rm,
+                         k99_frac=kf, ncol_art=nart, min_share=mshare, art_px=npix))
     if not rows:
         return {}
     med = lambda k: float(np.median([r[k] for r in rows if r.get(k) is not None]))
