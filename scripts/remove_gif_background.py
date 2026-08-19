@@ -369,6 +369,7 @@ ALPHA_MASK_RAMP_LEVELS = 16
 # positives' bulk beneath it, the same shape of margin PLATEAU_CLIFF_THRESHOLD has. Sharing the
 # value of ALPHA_MASK_RAMP_LEVELS above is a coincidence of two different arguments, not one
 # threshold used twice. SS29
+VACUOUS_REAL_BAND_MAX = 0.20   # see the seventh-discriminator note in analyze()
 FLAT_PALETTE_MAX_COLORS = 16
 
 
@@ -1554,6 +1555,39 @@ def analyze(input_path, max_samples=40, tolerance=15):
         _hard_reasons.append(
             f"a thin transition band (ratio max {_eh_max:.3f}) together with essentially no "
             f"background-to-art blend pixels (antialiasing_blend_ratio {_blend_ratio:.3f})")
+    # THE SEVENTH DISCRIMINATOR, and the first one that is a REFINEMENT of an existing
+    # suppression rather than a new measure. `_band_measures_are_vacuous` silences both band
+    # rules on a hard-alpha cutout whose transparency is its background, because there an EMPTY
+    # band is guaranteed by the export and says nothing about the artwork (SS29). Correct -- and
+    # it was applied to every such source, including the ones whose band is not empty.
+    #
+    # A band that EXISTS on a cutout is real evidence, and its WIDTH separates the classes:
+    # native-resolution pixel art carries a thin one (the artist's own 1px shading against the
+    # silhouette), antialiased art carries a wide one. Measured over the labelled corpus, among
+    # the 378 assets the vacuity gate silences:
+    #     ratio_max  0.000        46 pixel art / 40 antialiased  (guaranteed empty -- stays silent)
+    #     0 < ratio < 0.20        49 pixel art /  9 antialiased
+    #     ratio >= 0.30          118 pixel art / 75 antialiased
+    # On the INDEPENDENT populations (excluding the derived `small_aa_quantized`, which shares
+    # every source with `small_aa`), adding this rule moves recall 0.8932 -> 0.9644 for a
+    # specificity of 0.9787 -> 0.9681: +24 detections against 3 false positives.
+    #
+    # ⚠️ The 0.20 threshold is chosen from that corpus, and the honest reason to trust it is that
+    # specificity is FLAT at 0.9681 across 0.10, 0.15 and 0.20 and only falls at 0.25 -- a
+    # plateau, not a knife-edge, with 0.20 the recall-maximising point on it.
+    #
+    # ⚠️ 22 of the 24 new detections are one pack (Tiny RPG Character Asset Pack, which sat at
+    # 23.5% recall), so this is pack-concentrated by construction -- that pack IS the population
+    # the rule was built for. What makes it a rule rather than a fit is that it names a mechanism
+    # (a real but narrow transition band) instead of a signature, and that it was scored on the
+    # independent populations before being kept. SS32.7
+    if (_band_measures_are_vacuous and 0.0 < _eh_max < VACUOUS_REAL_BAND_MAX
+            and not _alpha_only_source):
+        _hard_reasons.append(
+            f"the transition band is REAL but narrow (ratio max {_eh_max:.3f}, under the "
+            f"{VACUOUS_REAL_BAND_MAX:.2f} an antialiasing ramp needs) on a hard-alpha cutout -- "
+            f"an EMPTY band would say nothing here, but a band this thin is the artist's own "
+            f"1px shading, not a ramp")
     if _flat_palette:
         _hard_reasons.append(
             f"the composited frame holds only {_ncolors} distinct colours, at or under the "
