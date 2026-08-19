@@ -673,7 +673,7 @@ def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band, re
 
 def decide_source_alpha_policy(source_trans_masks, rgb_frames, bg_rgb, tolerance, band, reach):
     """
-    ONE policy for the whole animation. Returns (engaged, band_allowed, reason).
+    ONE policy for the whole animation. Returns (engaged, band_allowed, reason, per_frame_scopes).
 
     ⚠️ Deciding this per frame produces FLICKER, and it is not hypothetical: measured
     over 57 alpha-carrying assets, **17 of them flip the veto branch mid-animation**
@@ -690,7 +690,11 @@ def decide_source_alpha_policy(source_trans_masks, rgb_frames, bg_rgb, tolerance
         the whole animation.
     """
     engaged_frames, veto_frames, first_why, first_veto = 0, 0, None, None
-    for st, rgb in zip(source_trans_masks, rgb_frames):
+    # The scope each frame produced, kept rather than discarded: `_scope_for` used to
+    # recompute the identical binary_dilation per frame at render time, so an
+    # alpha-carrying animation paid two dilation passes per frame where one would do.
+    scopes = [None] * len(source_trans_masks)
+    for idx, (st, rgb) in enumerate(zip(source_trans_masks, rgb_frames)):
         ok, why = source_transparency_is_the_background(st, rgb, bg_rgb, tolerance)
         if not ok:
             continue
@@ -703,26 +707,26 @@ def decide_source_alpha_policy(source_trans_masks, rgb_frames, bg_rgb, tolerance
             # armed by prose: rewording that sentence -- an ordinary doc-pass edit in this
             # repo -- would have left `veto_frames` at 0 and silently re-enabled the ring on
             # exactly the sprites it was measured to destroy (survival 100.0% -> 68.1%).
-            _, band_applied, band_why = build_source_alpha_scope(
+            scopes[idx], band_applied, band_why = build_source_alpha_scope(
                 st, rgb, bg_rgb, tolerance, band, reach)
             if not band_applied:
                 veto_frames += 1
                 if first_veto is None:
                     first_veto = band_why
     if not engaged_frames:
-        return False, False, 'no frame\'s transparency reads as its background'
+        return False, False, 'no frame\'s transparency reads as its background', scopes
     n = len(source_trans_masks)
     reason = (f'{first_why} (holds on {engaged_frames} of {n} frame(s))')
     if band <= 0:
-        return True, False, reason + '. Removal confined to exactly the source\'s own transparency (--source-alpha-band 0)'
+        return True, False, reason + '. Removal confined to exactly the source\'s own transparency (--source-alpha-band 0)', scopes
     if veto_frames:
         return True, False, (reason + f'. The {band}px cleanup band is DROPPED for the whole '
                              f'animation because {veto_frames} of {engaged_frames} engaged frame(s) '
                              f'have that colour in the artwork away from the boundary -- one such '
                              f'frame makes the ring unsafe for all of them, and deciding per frame '
-                             f'would flicker')
+                             f'would flicker'), scopes
     return True, True, (reason + f'. A {band}px cleanup band is included: no engaged frame has that '
-                        f'colour in the artwork away from the transparent boundary')
+                        f'colour in the artwork away from the transparent boundary'), scopes
 
 
 def warn_if_source_has_transparency(im0, input_path):
@@ -5472,19 +5476,31 @@ def process(input_path, output_path, args, diagnostics=None):
     _sa_reach = (int(round(args.tolerance * getattr(args, 'feather_band_multiplier', 4.0)))
                  if getattr(args, 'feather', True) else args.tolerance)
     _sa_engaged = _sa_band_ok = False
+    _sa_scopes = []
     if not getattr(args, 'ignore_source_alpha', False) and any(
             m is not None and m.any() for m in source_trans_masks):
-        _sa_engaged, _sa_band_ok, _sa_reason = decide_source_alpha_policy(
+        _sa_engaged, _sa_band_ok, _sa_reason, _sa_scopes = decide_source_alpha_policy(
             source_trans_masks, rgb_frames_raw, hex_to_rgb(args.bg_color),
             args.tolerance, _sa_band, _sa_reach)
         if _sa_engaged:
             source_alpha_scope_reasons.append(_sa_reason)
 
-    def _scope_for(st):
+    def _scope_for(i, st):
+        """The removal scope for frame `i`, reusing what the policy already computed.
+
+        The policy dilates every engaged frame to answer the veto question and used to
+        throw the result away, so this recomputed the identical dilation per frame --
+        two passes where one does, on every alpha-carrying animation. Keyed by INDEX
+        rather than by mask identity because two frames can legitimately share an
+        equal mask, and by index the reuse is exact.
+        """
         if not _sa_engaged or st is None or not st.any():
             return None
         if not _sa_band_ok:
             return st
+        cached = _sa_scopes[i] if i < len(_sa_scopes) else None
+        if cached is not None:
+            return cached
         return ndimage.binary_dilation(st, structure=np.ones((3, 3), bool),
                                        iterations=_sa_band)
 
@@ -5528,7 +5544,7 @@ def process(input_path, output_path, args, diagnostics=None):
             # coloured", which on a padding-coloured source is the outline.
             if source_trans_mask is not None and source_trans_mask.any():
                 any_source_transparency = True
-                scope = _scope_for(source_trans_mask)
+                scope = _scope_for(i, source_trans_mask)
                 if scope is not None:
                     # Palette unmixing produces legitimate PARTIAL alpha for an
                     # interior fade, so forcing everything outside the scope fully
@@ -5554,7 +5570,7 @@ def process(input_path, output_path, args, diagnostics=None):
         # against artwork. Restricting rather than refusing is what keeps this
         # useful on a PARTIAL cut, and it degrades to "change nothing" when the
         # source's alpha is already complete.
-        removal_scope = _scope_for(source_trans_masks[i])
+        removal_scope = _scope_for(i, source_trans_masks[i])
         alpha, rgb_out = compute_alpha_mask(rgb, protected, args, removal_scope=removal_scope)
 
         source_trans_mask = source_trans_masks[i]

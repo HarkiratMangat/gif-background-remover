@@ -100,6 +100,16 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Do:** acquire or construct ~20 genuinely antialiased assets in the 16-60 composited-colour band and measure where the floor actually sits against them. Do NOT move the threshold before that measurement exists — the failure direction is destructive. Note the argued mitigation still stands and should be re-tested rather than assumed: "art flat enough to come in under 16 colours has no ramps to protect and wants `--pixel-art`'s treatment anyway." `references/lessons.md` §29.4, §29.12
 
+### `[P2 · M · Opus5-High]` `analyze()` keys on the COMPOSITE, `process()` still keys on the raw plane *(filed 2026-08-19 by the xhigh code review)*
+
+`analyze()` now composites every frame carrying partial alpha, so `--recommend` chooses flags from the image a viewer sees. `process()` still builds `rgb_frames_raw` with a bare `convert('RGB')`, so the removal those flags drive acts on full-strength art colour. **The recommendation and the removal read different images.**
+
+**Measured, so this is not a consistency argument in the abstract.** `color_mask` at the real removal reach (tolerance x4) over all 338 partial-alpha sources: **41 assets disagree**, 38,063 pixels total. Worst cases: `love_emoji_128.webp` differs on **18.41% of the frame** (raw masks 7,356 px, composite masks 10,373), then four `interface emojis` icons around 0.9%.
+
+⚠️ **The obvious fix is DESTRUCTIVE and must not be applied as stated.** The composite masks MORE, and the extra pixels are half-transparent ones whose blended colour reads as background — which on a faded asset is exactly the artwork `--recover-fade-alpha` exists to reconstruct. Compositing `rgb_frames_raw` would also bake the background into the OUTPUT colours, which is wrong independently.
+
+**Do:** thread a second plane through `compute_alpha_mask` — composite for the mask DECISION, raw for the output pixels — and measure over the 338 partial-alpha sources with the fade assets watched specifically, before believing it. `references/lessons.md` §28.5 is the argument for why the decision should read the composite; this item is the half that was left.
+
 ### `[P3 · S · Sonnet5-High]` Two predicates about one property are computed on different frame sets *(filed 2026-08-18)*
 
 `source_background_already_transparent` is computed from **frame 0 only**, while `source_alpha_levels` is a **max over sampled frames**, and `_band_measures_are_vacuous` is the conjunction of the two — so the vacuous-band gate mixes a frame-0 property with an all-frames one. `decide_source_alpha_policy` decides the same underlying property per ANIMATION, so the file now holds two answers to "is this source's transparency its background" derived from different evidence.
