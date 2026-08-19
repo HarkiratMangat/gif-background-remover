@@ -24,6 +24,89 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### `[P3 · S · Sonnet5-High]` Two predicates about one property are computed on different frame sets *(filed 2026-08-18)*
+
+`source_background_already_transparent` is computed from **frame 0 only**, while `source_alpha_levels` is a **max over sampled frames**, and `_band_measures_are_vacuous` is the conjunction of the two — so the vacuous-band gate mixes a frame-0 property with an all-frames one. `decide_source_alpha_policy` decides the same underlying property per ANIMATION, so the file now holds two answers to "is this source's transparency its background" derived from different evidence.
+
+**Left alone deliberately, and the reason is the only thing making it P3:** both directions of the asymmetry err toward abstention — fewer hard-edged verdicts, i.e. away from the destructive direction. **Do:** make the two agree on a frame set, or state in one place which one is authoritative and why. Cheap; the risk is that "harmless today" stops being true the next time a rule reads either predicate.
+
+✅ **CLOSED 2026-08-19 — `_src_bg_transparent` is now decided over the SAMPLED FRAMES**, matching `decide_source_alpha_policy`'s "engaged if ANY frame's transparency reads as its background" and the frame set `source_alpha_levels` already used. The reason string now carries the tally (`… (holds on 1 of 1 sampled frame(s))`), so the evidence says which frames spoke.
+
+⚠️ **Zero of 797 corpus assets move — and that is exactly why the change needed a constructed falsifier rather than a corpus run.** A no-op across the corpus is indistinguishable from an edit that never executed. So a two-frame fixture was built where the background colour is identical in both frames (white corners either way, so `detect_bg_color` cannot drift) and the ONLY difference is condition 1 of `source_transparency_is_the_background`: frame 0's transparency is an interior hole, frame 1's reaches the canvas border. Per-frame the predicate reads `[False, True]`; `analyze()` now returns **True**, where the old frame-0-only rule returned False. The change is live, behaviour-changing on the case it was written for, and harmless on everything real. The harness now captures `source_background_transparent_reason` so a future run can see this without a bespoke probe.
+
+---
+
+### `[P3 · M · Sonnet5-High]` Re-test gifsicle's colour dither on a GRADIENT-heavy corpus — **UNBLOCKED 2026-08-19** *(opened 2026-08-17, tagged 2026-08-18)*
+The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot- measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that matter for animation:
+
+✅ **The blocker is gone.** `local/corpus gradient beds/` holds 23 assets carrying a real smooth alpha ramp (1,990–12,413 partial-alpha px each), built with Dior's Builds' actual nameplate-bed curve and palette — Harkirat's suggestion, because gradient-heavy source material is genuinely hard to find in the wild. Registered as the `gradient_beds` population with `default_label='ambiguous'`, so it is excluded from every recall and specificity figure: its job is the encoder question, not classification. **Do:** run the dither comparison across it and record the result. `references/lessons.md` §6 has the original gifski/pngquant evaluation this extends.
+
+| dither | KiB | mean colour err | frame-to-frame instability in static regions |
+|---|---|---|---|
+| floyd-steinberg (current default) | 1649.3 | 0.039 | 1.32% |
+| atkinson | 1655.7 | 0.028 | 1.12% |
+| ordered / o8 | 1658.4 | **0.026** | **0.97%** |
+| none | 1654.1 | 0.026 | 1.01% |
+
+i.e. it buys ~0.6% file size for the worst colour fidelity AND the most temporal crawl — the same error-diffusion instability that disqualified it for ALPHA (measured separately: Floyd-Steinberg changed 8.1% of pixels in a region that was byte-identical between frames; both Bayer sizes changed 0). Crawl also fights GIF inter-frame compression, so the size win may not even survive on other content.
+
+**NOT acted on, deliberately.** `love.gif` is flat 6-colour vector art, so a 200-colour palette reproduces it almost exactly and dithering barely engages — all five options sit within 0.7% size and 0.013 colour error, too close to call. The tiers exist precisely for content where quantization DOES bite, and that content is what should decide this.
+
+**What a future session should do:** assemble a corpus with real gradients/soft shading (not the flat vector icons this skill is usually pointed at), run the same three measurements (bytes, colour error against the pre-quantization frames, and static-region frame-to-frame instability) across `floyd-steinberg` / `atkinson` / `o8` / `ordered` / none at both `medium` and `heavy`, and change the tier default only if a clear winner emerges on gradient content without regressing flat art.
+
+⚠️ **Jarvis, Sierra and Stucki are NOT options here** — verified by enumeration against the installed gifsicle 1.6.0: it implements only `floyd-steinberg` and `atkinson` as error-diffusion kernels (plus `ordered`/`o3`/`o4`/`o8`/`halftone`/`squarehalftone`/`diagonal`/`ro64`). Using them would mean doing colour reduction outside gifsicle entirely, which is a much larger change than a flag and should be scoped separately if the corpus test suggests error diffusion is worth improving at all.
+
+---
+
+✅ **CLOSED 2026-08-19 — Floyd-Steinberg REMOVED from both tiers.** Measured across the 23 `gradient_beds` assets and, as a falsifier, 5 flat animated vector sources, at `medium` and `heavy`:
+
+| axis | gradient corpus | flat vector art (falsifier) |
+|---|---|---|
+| file size vs no dither | **+11% to +24% larger** | **+4% to +10% larger** |
+| mean colour error | **+8% to +12% worse** | **+13% to +14% worse** |
+| static-region frame-to-frame instability | **2.80% / 3.56%** vs 1.08% / 0.66% | ~0.01% either way |
+| banding (plateau run) | **~6% better** — its one real win | — |
+
+The falsifier did not save the default: dropping the dither improves flat art too, so this is not a trade between content types. **The decisive axis is temporal instability, and the precedent was already in this repo** — error diffusion is refused for ALPHA here because it changed 8.1% of pixels in a region byte-identical between frames; the same crawl appears in COLOUR quantization at 2.6–5x the no-dither rate, and it is also where the size regression comes from (a dithered static region can no longer be coded as unchanged).
+
+⚠️ **The banding axis was measured, not assumed away, and the first attempt measured the ARTWORK.** Counting every luma change gave a mean "step height" of 129/765 — an icon boundary, not a quantization contour, and arithmetically impossible from a 128-colour palette. Restricted to steps ≤12/765 with both bounding steps small, the unquantized reference moved to 3.72 px / 5.22 and the comparison became real. `--auto` output is unchanged (`love.gif` still `2fd526b6fb3b191c`); no tier applies without `--compress`. Full write-up: `references/lessons.md` §30.
+
+---
+
+### `[P3 · S · Sonnet5-High]` The 2px cleanup band's BENEFIT is still unproven *(filed 2026-08-18)*
+
+The source-alpha scope fix vetoes the 2px cleanup ring whenever the background colour also occurs in the artwork away from the boundary, and that veto is measured and correct: across 76 alpha-carrying assets it fires on exactly the 25 that were losing art and takes all 25 to 100% survival. **What was never measured is the band's upside.** On those same 76 assets it removes nothing the unrestricted path would have left, so its fringe-cleanup value is entirely unexercised — only its RISK was measured and neutralised. **Do:** find or construct a source whose own alpha leaves a real fringe the band would clean, or delete the band and its `--source-alpha-band` flag as unearned complexity. Quote the veto, never the band. `references/lessons.md` §28.14
+
+✅ **CLOSED 2026-08-19 — KEPT, and its benefit is measured for the first time.** The probe this item prescribed overstated the candidate set six-fold by measuring at tolerance 60 while `build_source_alpha_scope` actually runs at 15: 289 apparent hits, **47 real ones**. All 47 were then rendered through the real CLI at `--source-alpha-band 0` and `2` and their alpha planes diffed. **20 of the 47 change the render at all. Band 2 removes 693 px that band 0 keeps, and every one of the 693 is background-coloured. Band 2 keeps 0 px that band 0 removed.** So the ring cleans a real matte fringe, costs no artwork in either direction, and "delete it as unearned" would have been the wrong call — the earlier "removes nothing" reading came from a 76-asset sample that happened to exclude the small antialiased icons where the fringe survives. Largest single case 143 px (`small_aa/emoji_8.png`); most are 4–64 px.
+
+---
+
+### `[P3 · XS · Sonnet5-Medium]` `--source-alpha-band` is not plumbed into batch manifests *(filed 2026-08-18)*
+
+The flag works on a single-file run and is absent from the batch manifest schema, so a batch job cannot tune the ring per asset. Small and mechanical; the same shape as any other per-asset flag already in the manifest. ⚠️ Sequenced behind the item above — if the band turns out to be unearned, this becomes moot rather than done.
+
+✅ **CLOSED 2026-08-19 — the claim was FALSE, and it was filed from reading rather than running.** There is no "batch manifest schema" for the flag to be absent from: `run_batch` applies any key for which `hasattr(job_args, key)` holds, so `"source_alpha_band": 0` has always worked per entry. Verified with a three-entry manifest against `small_aa/emoji_8.png` — the band-0 and band-2 outputs differ by exactly the 143 px measured on the same asset from the command line, and a deliberately bogus key produced `WARNING: unknown manifest key 'no_such_flag' ... ignoring` and still succeeded. **The lesson is the item, not the flag:** "absent from the schema" was inferred from a docstring example that lists three keys, on a code path that enumerates none.
+
+---
+
+### `[P3 · S · Sonnet5-Medium]` `--translucent-region` is verified on one asset, one shape kind, one alpha
+
+**Added 2026-08-18**, same audit. The flag shipped verified end to end on `2d4a092f…` with a single `rect:` spec at `--translucent-alpha 0.3`, checked over a dark composite. Untested: the `circle:` form, several `;`-joined specs, alpha at the extremes (0.0 and 1.0), and interaction with `--crop`/`--resize-max-dim` (the coordinates are source-relative and the flag is applied before both — now documented in `parse_protect_regions` and `references/flag-reference.md`, but documented is not tested). **Do:** one render per case with a pixel assertion. Small, and it closes the gap between "the mechanism works" and "the flag works".
+
+✅ **CLOSED 2026-08-19 — all six untested cases now assert on real pixels, and one real defect fell out.** On a 640x640 35-frame source, with the target colour chosen from the KEPT art so no case could pass vacuously: `circle:` takes 9,477 px, all inside the circle · two `;`-joined specs take 36,045 px = 26,568 (rect) + 9,477 (circle) with **none outside either region** · `--translucent-alpha 0.0` drives 26,568 px to alpha 0, all inside the rect · `--translucent-alpha 1.0` is byte-identical to a no-flag render · a `.gif` output is refused with the 1-bit-alpha message · `--translucent-alpha 1.5` is refused by the range guard. Under `--resize-max-dim 160`, **100.0% of the total alpha difference lands inside the scaled rectangle** — the source-relative coordinate rule was documented but never tested, and now it is. ⚠️ **The defect:** omitting `--translucent-color` defaults the target to the BACKGROUND colour, which by construction is absent from the kept art, so the whole feature silently no-ops on a successful-looking run. It now warns, naming both causes (source coordinates, and the colour default). Red-green verified: fires at 0 px, silent at 2,648 px, and stays silent at `--translucent-alpha 1.0` where a no-op is the defined behaviour.
+
+---
+
+### `[P3 · XS · Sonnet5-Medium]` APNG playback is unverified in a real browser — an independent DECODER now confirms the frames *(narrowed 2026-08-18)*
+
+**Added 2026-08-18.** v5.4.0's APNG output is confirmed for frame count, distinct alpha values, exact duration read-back, static-source handling and the byte-cap cascade — all through Pillow, the same library that wrote it. That is a round-trip, not an acceptance test. `references/lessons.md` §16 already records the general form of this for AVIF: **acceptance is not playback**. ✅ **Half of this is now closed, 2026-08-18.** `ffmpeg` — a decoder that did not write the file — reads the APNG as **19 frames, 18 distinct**, exactly matching the same source rendered to GIF and decoded the same way. So the round-trip objection is answered: the animation is really in the file, not just in Pillow's opinion of it.
+
+⚠️ **The browser half is NOT closed, and the attempt to close it produced a vacuous result that a control caught.** The in-app preview pane sampled the APNG over 1.2s and reported no frame advance — which looks like a damning defect and is not one: **the same test on a plain animated GIF also reported static**, so the pane renders snapshots and animates nothing. Without that control this session would have filed a false product defect. **Do:** open one in a REAL browser (or hand one to Harkirat), and keep WebP as the fallback until someone has actually watched it move. `references/lessons.md` §29.14
+
+✅ **CLOSED 2026-08-19 — a real browser engine animates it, and the control passed this time.** Chrome 151's own `ImageDecoder` (Blink, the shipping engine, driven headless) reports the rendered APNG as `supported: true`, `animated: true`, **12 frames, 12 pixel-distinct**, against a control GIF at **35 frames, 35 distinct** — so the harness demonstrably separates animated from static, which is exactly what the two failed attempts could not show. `ffmpeg`, a decoder that wrote neither file, independently counts 12 and 35 on the same pair. ⚠️ **Two more viewers reported "static" and both failed their control**: the in-app preview pane (which serves pages as `data:` snapshots) and headless Chrome's `--screenshot --virtual-time-budget`, which does not advance `<img>` animation. §29.14 reproduced twice in one session — **the control is what stood between this and a false P1 filed against a shipped output format, three times now.** Consequence for the docs: SKILL.md's "OUTPUT is GIF, WebP or AVIF only ... APNG is a real gap" line was stale since v5.4.0 and contradicted its own format table; fixed in the same pass.
+
+---
+
 ### ~~`[P3 · XS · Sonnet5-Medium]` `audit_docs.py`'s heading/body drift gate matches a bare keyword anywhere in a body~~ — **CLOSED 2026-08-18**
 
 Filed and fixed the same day, and the fix found a worse defect than the one filed. The gate now tests for a closure MARKER rather than the word: the keyword must sit at the start of a bold span or a line, separated from it by nothing but emoji, punctuation and ALL-CAPS qualifiers — which is how every one of the 28 real markers in these two files is written, and never how prose uses them.

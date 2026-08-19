@@ -18,7 +18,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 *Ordered by priority, P1 first. Every item here is genuinely open: if you find a `✅ CLOSED` marker in a body under this heading, that is the drift `audit_docs.py`'s tracker gate exists to catch — report it rather than trusting either half.*
 
 
-
 ### `[P2 · M · Opus5-High]` `edge_hardness` misclassifies pixel art — 3 of 25 still missed *(was `[P1 · L]`; 18/25 → 22/25 with 0 false positives in v5.5.0, 2026-08-18)*
 
 **Added 2026-08-17.** Harkirat supplied `local/Diors-builds Emojis/others/` — 9 real assets, 8 of them genuine pixel art on COLOURED backgrounds. The tool calls 6 of the 8 antialiased. Full ground- truth table, both failure mechanisms, and the measured numbers: `references/lessons.md` §23.
@@ -93,7 +92,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 📏 **2026-08-18 — the class is also measured on 118 assets from the opposite direction, and the item stays OPEN because measuring it is not fixing it.** Real antialiased emoji downscaled to 64px and quantized to a small palette — which is what any lossy small-icon export IS — reach pixel art's numbers: at 32 colours 11.0% clear a palette-mass threshold the Orc sprites sit inside, at 16 colours 30.5%. **That reaches the 16-colour floor already in the released code too, not just the cliff ratio**, so this is a general property of quantization rather than a quirk of one measure (§29.12). **Do:** build a small corpus of the tool's own outputs at each `--compress` tier and score them, so the size of the class is known rather than guessed (3 assets is not a population). Then decide between a real discriminator for quantization-induced cliffs — a dither signature is the obvious candidate, since gifsicle's colour reduction leaves one and hand-drawn pixel art does not — and accepting it as documented. `references/lessons.md` §29.9
 
 
-
 ### `[P2 · S · Opus5-High]` The 16-colour flat-palette floor rests on a sample of ONE, and this session made that worse *(filed 2026-08-18)*
 
 `FLAT_PALETTE_MAX_COLORS = 16` is argued from the pixel-art convention (EGA/PICO-8) rather than swept, and its safety rests on the measured negative frontier: over 146 labelled antialiased assets the LOWEST composited count is 26. **That is a margin resting on one asset**, and the class that could land under the floor — a lossily-quantized antialiased image — is now measured and it is not rare. Real antialiased emoji downscaled to 64px and quantized to 16 colours put **36 of 118 (30.5%)** into palette territory the floor cannot distinguish, and re-analysing this tool's own GIF output already flips 8.3% of antialiased assets by a different rule.
@@ -114,27 +112,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Do:** thread a second plane through `compute_alpha_mask` — composite for the mask DECISION, raw for the output pixels — and measure over the 338 partial-alpha sources with the fade assets watched specifically, before believing it. `references/lessons.md` §28.5 is the argument for why the decision should read the composite; this item is the half that was left.
 
-### `[P3 · S · Sonnet5-High]` Two predicates about one property are computed on different frame sets *(filed 2026-08-18)*
-
-`source_background_already_transparent` is computed from **frame 0 only**, while `source_alpha_levels` is a **max over sampled frames**, and `_band_measures_are_vacuous` is the conjunction of the two — so the vacuous-band gate mixes a frame-0 property with an all-frames one. `decide_source_alpha_policy` decides the same underlying property per ANIMATION, so the file now holds two answers to "is this source's transparency its background" derived from different evidence.
-
-**Left alone deliberately, and the reason is the only thing making it P3:** both directions of the asymmetry err toward abstention — fewer hard-edged verdicts, i.e. away from the destructive direction. **Do:** make the two agree on a frame set, or state in one place which one is authoritative and why. Cheap; the risk is that "harmless today" stops being true the next time a rule reads either predicate.
-
-### `[P3 · S · Sonnet5-High]` The 2px cleanup band's BENEFIT is still unproven *(filed 2026-08-18)*
-
-The source-alpha scope fix vetoes the 2px cleanup ring whenever the background colour also occurs in the artwork away from the boundary, and that veto is measured and correct: across 76 alpha-carrying assets it fires on exactly the 25 that were losing art and takes all 25 to 100% survival. **What was never measured is the band's upside.** On those same 76 assets it removes nothing the unrestricted path would have left, so its fringe-cleanup value is entirely unexercised — only its RISK was measured and neutralised. **Do:** find or construct a source whose own alpha leaves a real fringe the band would clean, or delete the band and its `--source-alpha-band` flag as unearned complexity. Quote the veto, never the band. `references/lessons.md` §28.14
-
-### `[P3 · XS · Sonnet5-Medium]` `--source-alpha-band` is not plumbed into batch manifests *(filed 2026-08-18)*
-
-The flag works on a single-file run and is absent from the batch manifest schema, so a batch job cannot tune the ring per asset. Small and mechanical; the same shape as any other per-asset flag already in the manifest. ⚠️ Sequenced behind the item above — if the band turns out to be unearned, this becomes moot rather than done.
-
-### `[P3 · S · Sonnet5-High]` The 31 `unsuitable_no_edges` sprites are excluded from RENDER baselines too, and `_refuse_empty_render` is untested *(filed 2026-08-18)*
-
-`EXCLUDED_LABELS` exists so 31 flat overlay plates do not hand a hard-edge rule 31 free true negatives that test nothing. `render_baseline.py` inherits that exclusion by reusing `iter_assets`'s scoring default — which is an accident, not a decision: those files are exactly the degenerate inputs a RENDER gate wants. The flat 1-colour tile is a natural `_refuse_empty_render` test and has never been run through one. ✅ **Both halves measured 2026-08-18, and `include_excluded=True` is now passed in the render harness.** The refusal WORKS: the flat 64x64 1-colour tile hits `_refuse_empty_render`, exits 1, writes nothing, and names both usual causes plus the two `--analyze` fields to read. That is the guard's first run against the input it exists for.
-
-⚠️ **What the same test found is why this item stays open at P3 rather than closing.** Two 1800x1200 overlay plates from the same excluded set render at **88% and 93% of their source alpha** — 240,218 and 139,720 opaque pixels gone — with no refusal, no warning, and `--auto` reporting success. They are labelled `unsuitable_no_edges` for SCORING purposes, but the tool does not refuse them, so a user pointing it at one gets quiet art loss. **Do:** decide whether that class should refuse, warn, or is acceptable, then run the full 31 through the render harness to size it. ⚠️ A sweep was started and ABANDONED at 12 of 31 — those plates are up to 3840x2160 and cost minutes each in `analyze()`, so budget for it rather than assuming it is quick; the three-asset probe above is what the numbers here rest on.
-
-
 ### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
 **Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
 
@@ -150,42 +127,21 @@ The flag works on a single-file run and is absent from the batch manifest schema
 
 **Added 2026-08-18**, from the sequential-thinking audit of v5.4.0. Both the degenerate-candidate reject and the new partial-enclosure search decide "does this colour swallow real background?" by intersecting its filled shape with `largest_bg_component_mask`. Background that is genuinely removable but is NOT the largest component — a pocket enclosed between two limbs, a region the foreground has cut off — passes the gate and gets protected. The limitation is inherited from `detect_outline_background_leak` and predates this release, but v5.4.0 invokes it far more often: up to six recommended outline colours on one asset where there was one. **Do:** test against the union of ALL border-touching background components, not just the largest — the same border-label technique `analyze()` already uses to build `enclosed_by_frame`, so the machinery exists. Measure against the 31-asset corpus before believing it; the reason the largest-component version exists is that it is cheap. `references/lessons.md` §26.6.
 
-### `[P3 · S · Sonnet5-Medium]` `--translucent-region` is verified on one asset, one shape kind, one alpha
-
-**Added 2026-08-18**, same audit. The flag shipped verified end to end on `2d4a092f…` with a single `rect:` spec at `--translucent-alpha 0.3`, checked over a dark composite. Untested: the `circle:` form, several `;`-joined specs, alpha at the extremes (0.0 and 1.0), and interaction with `--crop`/`--resize-max-dim` (the coordinates are source-relative and the flag is applied before both — now documented in `parse_protect_regions` and `references/flag-reference.md`, but documented is not tested). **Do:** one render per case with a pixel assertion. Small, and it closes the gap between "the mechanism works" and "the flag works".
-
-### `[P3 · XS · Sonnet5-Medium]` APNG playback is unverified in a real browser — an independent DECODER now confirms the frames *(narrowed 2026-08-18)*
-
-**Added 2026-08-18.** v5.4.0's APNG output is confirmed for frame count, distinct alpha values, exact duration read-back, static-source handling and the byte-cap cascade — all through Pillow, the same library that wrote it. That is a round-trip, not an acceptance test. `references/lessons.md` §16 already records the general form of this for AVIF: **acceptance is not playback**. ✅ **Half of this is now closed, 2026-08-18.** `ffmpeg` — a decoder that did not write the file — reads the APNG as **19 frames, 18 distinct**, exactly matching the same source rendered to GIF and decoded the same way. So the round-trip objection is answered: the animation is really in the file, not just in Pillow's opinion of it.
-
-⚠️ **The browser half is NOT closed, and the attempt to close it produced a vacuous result that a control caught.** The in-app preview pane sampled the APNG over 1.2s and reported no frame advance — which looks like a damning defect and is not one: **the same test on a plain animated GIF also reported static**, so the pane renders snapshots and animates nothing. Without that control this session would have filed a false product defect. **Do:** open one in a REAL browser (or hand one to Harkirat), and keep WebP as the fallback until someone has actually watched it move. `references/lessons.md` §29.14
-
-
-### `[P3 · M · Sonnet5-High]` Re-test gifsicle's colour dither on a GRADIENT-heavy corpus — **UNBLOCKED 2026-08-19** *(opened 2026-08-17, tagged 2026-08-18)*
-The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot- measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that matter for animation:
-
-✅ **The blocker is gone.** `local/corpus gradient beds/` holds 23 assets carrying a real smooth alpha ramp (1,990–12,413 partial-alpha px each), built with Dior's Builds' actual nameplate-bed curve and palette — Harkirat's suggestion, because gradient-heavy source material is genuinely hard to find in the wild. Registered as the `gradient_beds` population with `default_label='ambiguous'`, so it is excluded from every recall and specificity figure: its job is the encoder question, not classification. **Do:** run the dither comparison across it and record the result. `references/lessons.md` §6 has the original gifski/pngquant evaluation this extends.
-
-| dither | KiB | mean colour err | frame-to-frame instability in static regions |
-|---|---|---|---|
-| floyd-steinberg (current default) | 1649.3 | 0.039 | 1.32% |
-| atkinson | 1655.7 | 0.028 | 1.12% |
-| ordered / o8 | 1658.4 | **0.026** | **0.97%** |
-| none | 1654.1 | 0.026 | 1.01% |
-
-i.e. it buys ~0.6% file size for the worst colour fidelity AND the most temporal crawl — the same error-diffusion instability that disqualified it for ALPHA (measured separately: Floyd-Steinberg changed 8.1% of pixels in a region that was byte-identical between frames; both Bayer sizes changed 0). Crawl also fights GIF inter-frame compression, so the size win may not even survive on other content.
-
-**NOT acted on, deliberately.** `love.gif` is flat 6-colour vector art, so a 200-colour palette reproduces it almost exactly and dithering barely engages — all five options sit within 0.7% size and 0.013 colour error, too close to call. The tiers exist precisely for content where quantization DOES bite, and that content is what should decide this.
-
-**What a future session should do:** assemble a corpus with real gradients/soft shading (not the flat vector icons this skill is usually pointed at), run the same three measurements (bytes, colour error against the pre-quantization frames, and static-region frame-to-frame instability) across `floyd-steinberg` / `atkinson` / `o8` / `ordered` / none at both `medium` and `heavy`, and change the tier default only if a clear winner emerges on gradient content without regressing flat art.
-
-⚠️ **Jarvis, Sierra and Stucki are NOT options here** — verified by enumeration against the installed gifsicle 1.6.0: it implements only `floyd-steinberg` and `atkinson` as error-diffusion kernels (plus `ordered`/`o3`/`o4`/`o8`/`halftone`/`squarehalftone`/`diagonal`/`ro64`). Using them would mean doing colour reduction outside gifsicle entirely, which is a much larger change than a flag and should be scoped separately if the corpus test suggests error diffusion is worth improving at all.
-
----
-
 ## ✅ Considered and NOT fixed — a real decision, not an oversight
 
 *Findings that were surfaced, genuinely weighed, and deliberately left alone — listed here so they don't get re-flagged as forgotten work by a future review. These deliberately do NOT move to the archive: a decided-no that gets filed away is a decided-no somebody re-opens.*
+
+- **The 31 `unsuitable_no_edges` overlay plates lose 5–34% of their pixels to `--auto`, and it is NOT art loss** *(filed 2026-08-18 as a possible quiet-data-loss defect, resolved 2026-08-19)*. **Decision: accept, no guard.** The item rested on two plates rendering at "88% and 93% of source alpha — 240,218 and 139,720 opaque pixels gone". All 54 degenerate/ambiguous assets were then run through `--auto` (1 refusal, 53 outputs; median survival 94.5%, worst 26.4%) and the removed pixels inspected on the eight worst. **On every overlay plate, 100.0% of the removed pixels are background-coloured AND 100.0% are in the border-connected background component; interior artwork removed: 0 px.** The plates carry no source alpha at all (`1800x1200 = 2,160,000` fully opaque px), so "survival" there is not a loss ratio — it is simply the share of the canvas that was not background, and these are dark overlay effects on a large flat field. **The falsifier settles it:** a `survival < X%` warning would fire on **8–10 of 59 ordinary assets at every threshold from 70% to 99%** — real emoji and sprites at 16.5%, 18.2%, 26.4%, 31.5% — so survival cannot discriminate a defect from a background. `_refuse_empty_render` does work and is exercised: the flat 1-colour tile is the single refusal, exiting 1 and writing nothing. ⚠️ **One residual, recorded rather than guarded:** on `gradient_beds/diorie__bed-forest.png`, 449 of 2,737 removed px (16.4%) are NOT border-connected — a smooth alpha ramp reaching background-coloured values in an interior pocket. Small, confined to constructed gradient fixtures, and the wrong thing to build a threshold on. Revisit only with a real asset that loses visible interior art, not with a percentage.
+
+<details><summary>Original item, kept verbatim</summary>
+
+### `[P3 · S · Sonnet5-High]` The 31 `unsuitable_no_edges` sprites are excluded from RENDER baselines too, and `_refuse_empty_render` is untested *(filed 2026-08-18)*
+
+`EXCLUDED_LABELS` exists so 31 flat overlay plates do not hand a hard-edge rule 31 free true negatives that test nothing. `render_baseline.py` inherits that exclusion by reusing `iter_assets`'s scoring default — which is an accident, not a decision: those files are exactly the degenerate inputs a RENDER gate wants. The flat 1-colour tile is a natural `_refuse_empty_render` test and has never been run through one. ✅ **Both halves measured 2026-08-18, and `include_excluded=True` is now passed in the render harness.** The refusal WORKS: the flat 64x64 1-colour tile hits `_refuse_empty_render`, exits 1, writes nothing, and names both usual causes plus the two `--analyze` fields to read. That is the guard's first run against the input it exists for.
+
+⚠️ **What the same test found is why this item stays open at P3 rather than closing.** Two 1800x1200 overlay plates from the same excluded set render at **88% and 93% of their source alpha** — 240,218 and 139,720 opaque pixels gone — with no refusal, no warning, and `--auto` reporting success. They are labelled `unsuitable_no_edges` for SCORING purposes, but the tool does not refuse them, so a user pointing it at one gets quiet art loss. **Do:** decide whether that class should refuse, warn, or is acceptable, then run the full 31 through the render harness to size it. ⚠️ A sweep was started and ABANDONED at 12 of 31 — those plates are up to 3840x2160 and cost minutes each in `analyze()`, so budget for it rather than assuming it is quick; the three-asset probe above is what the numbers here rest on.
+
+</details>
 
 - **`--verify` on a missing/unreadable file surfaces a raw `FileNotFoundError`/ `PIL.UnidentifiedImageError` traceback**, found in the same 2026-08-07 whole-branch review. **Decision: not a defect, don't fix.** Confirmed every other file-reading path in `scripts/remove_gif_background.py` already behaves the same way (no defensive validation anywhere in the file) — adding it only to `--verify` would be a new inconsistency, not a fix, per this codebase's own established convention (trust internal/framework guarantees, validate only at a real system boundary the rest of the file already treats as one). Revisit only if this convention itself changes project-wide, not in isolation for this one flag.
 

@@ -25,7 +25,7 @@ FIELDS = ('appears_hard_edged', 'plateau_cliff_ratio', 'plateau_cliff_samples', 
           'composited_color_count', 'band_measures_are_vacuous',
           'source_background_already_transparent',
           'ratio_max_across_frames', 'antialiasing_blend_ratio', 'hard_edged_reasons',
-          'hard_edged_suppressed_notes', 'measured_on_alpha_composite', 'alpha_only_source',
+          'hard_edged_suppressed_notes', 'measured_on_alpha_composite', 'alpha_only_source', 'source_background_transparent_reason',
           'source_alpha_levels', 'source_is_hard_alpha_cutout')
 
 

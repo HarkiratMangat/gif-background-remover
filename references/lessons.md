@@ -63,6 +63,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 27. [Three roles for one colour: the structural route measured and ruled out](#27-three-roles-for-one-colour-the-structural-route-measured-and-ruled-out)
 28. [The fifth pixel-art discriminator, and what the first four never tested](#28-the-fifth-pixel-art-discriminator-and-what-the-first-four-never-tested)
 29. [A sixth discriminator, and a measure that had been reading a plane blank by construction](#29-a-sixth-discriminator-and-a-measure-that-had-been-reading-a-plane-blank-by-construction)
+30. [Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background](#30-two-defaults-judged-by-the-wrong-measurement-the-gifsicle-dither-and-the-leak-gates-background)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -111,6 +112,11 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--recommend`'s `--pixel-art` evidence cites numbers that do not match the verdict | §28.7 (fixed — it now names the rule that fired) |
 | `--analyze` / `--recommend` / `--verify` crashes on a static JPEG | §28.8 (`n_frames` on a bare attribute) |
 | The output file is EMPTY / fully transparent, but every check says it is clean | §28.9 (an empty output scores perfectly on all four quality measures) |
+| `--compress medium`/`heavy` output shimmers or crawls between frames | §30.1 (the Floyd-Steinberg dither, removed 2026-08-19) |
+| A GIF got BIGGER after `--compress heavy` than you expected | §30.1 (error diffusion fights inter-frame compression) |
+| An outline colour is rejected as a background leak and you cannot see the leak | §30.3 (the gate tested the largest bg component, which can be INTERIOR) |
+| An outline colour passes the leak gate but visibly swallows background | §30.3 (background that is not the biggest piece was invisible to it) |
+| A default was chosen on a measurement that cannot see what the feature is for | §30.2 (measure the thing the feature exists to do, then price it) |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
 | An already-background-removed file reads as hard-edged / pixel art | §29.1 (its empty transition band is guaranteed by the cutout, not by the art) |
@@ -1862,3 +1868,47 @@ A verification item was run and its FIRST result was wrong in the direction that
 What DID advance the item is an independent DECODER rather than a player: `ffmpeg`, which did not write the file, reads the APNG as **19 frames, 18 distinct**, exactly matching the same source rendered to GIF and decoded identically. That answers the round-trip objection — the animation is really in the bytes — while leaving the browser half honestly open.
 
 **The transferable part:** when a check returns the answer that implies work, ask what result the check would give on a case you already know. A pane that animates nothing returns a confident-looking value, and so does a pattern that matches nothing. A check that was proven once is a memory; only a check that proves itself on every run is a control.
+
+
+## 30. Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background
+**Also searched as:** shimmer · sparkle between frames · contouring · posterisation · colour steps · palette reduction · encoder default · false leak · flood fill rejected · protection lost for no reason · wrong control region · jitter · boiling
+
+Two unrelated defaults, one shape of error: in both cases the MECHANISM was fine and the MEASUREMENT that justified it was looking at the wrong thing. Both were found on 2026-08-19 by measuring the thing the feature actually exists to do, on a population that could contradict it.
+
+### 30.1 Floyd-Steinberg was chosen on flat art, where dithering barely engages
+`--compress medium` and `heavy` passed `--dither=floyd-steinberg` to gifsicle. The reasoning in the docstring was sound in the abstract — error diffusion spreads quantization error instead of banding it, which is the right idea for smoothly-shaded art. It was never tested on smoothly-shaded art. The only measurement behind it was a spot check on `love.gif`, a flat 6-colour vector asset where a 200-colour palette reproduces the source almost exactly, and where all five dither options landed within 0.7% file size and 0.013 colour error. That is not a close call; it is a measurement with no dynamic range.
+
+Re-measured across **23 purpose-built gradient assets** (the `gradient_beds` population — a smooth alpha ramp built with Dior's Builds' actual nameplate-bed curve, because gradient-heavy source material is genuinely hard to find in the wild) and, as a falsifier, **5 flat animated vector sources**, at both tiers:
+
+| axis | gradient corpus | flat vector art |
+|---|---|---|
+| file size vs no dither | **+11% to +24% larger** | **+4% to +10% larger** |
+| mean colour error | **+8% to +12% worse** | **+13% to +14% worse** |
+| static-region frame-to-frame instability | **2.80% / 3.56%** vs 1.08% / 0.66% | ~0.01% either way |
+| banding: plateau run, step height | **~6% better** | — |
+
+Removed from both tiers. The flat-art column is the falsifier and it did not save the default — dropping the dither improves flat art too, so this is not a trade between content types.
+
+**The decisive axis is temporal instability, and the precedent was already in this repo.** Error-diffusion dithering is explicitly refused for ALPHA here because it changed 8.1% of pixels in a region that was byte-identical between frames, where both Bayer sizes changed 0. The identical crawl shows up in COLOUR quantization at 2.6x to 5x the no-dither rate, on content that is mostly static between frames. It also fights GIF inter-frame compression, which is where the size regression comes from — a dithered "static" region is no longer static, so it cannot be coded as unchanged.
+
+⚠️ `--auto` output does not change: no tier is applied unless `--compress` is passed, and `love.gif --auto` is still `2fd526b6fb3b191c`.
+
+### 30.2 The banding axis had to be measured, not assumed away — and the first attempt measured the artwork
+Colour error and file size both favour "no dither" almost by construction: dithering deliberately adds per-pixel noise. Deciding on those two alone would have been judging the feature by metrics blind to its purpose. So banding was measured directly, along the gradient axis: mean plateau run length between quantization contours, and mean step height at a contour.
+
+**The first version of that measure was wrong, and its output looked perfectly reasonable.** It counted every luma change in a row — and these assets have an icon composited on top of the bed, so the mean "step height" came back as **129/765**, which is an icon boundary, not a quantization contour. Restricting to steps of 12/765 or less, and counting a plateau only when BOTH its bounding steps are small, moved the reference from 6.08 px / 129.5 to **3.72 px / 5.22** — and only then did the numbers describe banding at all.
+
+With the corrected measure, Floyd-Steinberg does win the banding axis: plateau runs of **3.32 px** against **3.52 px** with no dither, on an unquantized reference of 3.72 px. Real, in the expected direction, and roughly an order of magnitude smaller than the costs. **A number that comes out plausible is not a number that measured the right thing**; the tell was the magnitude — a 129/765 "quantization step" from a 128-colour palette is arithmetically impossible.
+
+### 30.3 The leak gate tested the LARGEST background component, which is not the same as the background
+`detect_outline_background_leak` decides "does this outline colour's filled shape swallow real background?" by intersecting the filled shape with `largest_bg_component_mask`. Measured over **117 outline-colour tests, 3 differ and 2 flip the verdict — and the two flip in opposite directions**, each fixing a real error:
+
+- **`DMZRecon_Gamemode_Icon_CoDM (1).webp`** — the largest bg-coloured component (6,834 px of 143) **does not touch the canvas border at all**. It is an interior black region of the artwork. The gate scored a 6,834 px "leak" into it and rejected a good outline colour, costing protection over an area that is not background. Testing the border-touching union scores **0**.
+- **`gaming.jpeg`** — 5 border-touching components total 71,390 px while the largest is 23,999. The gate saw **14 px** and passed the colour; the union sees **207** and rejects it. That is the blind spot the finding was filed for: removable background that simply is not the biggest piece.
+
+Now tested against the union of every bg-coloured component that touches the canvas border, using the same border-label technique `analyze()` already uses for `enclosed_by_frame`.
+
+⚠️ **`largest_bg_component_mask` stays correct where it is used for REMOVAL.** It exists because border-touch is unsafe for deciding what to DELETE: a tumbling design that grazes the canvas edge gets flood-filled away. Here the question is the opposite one — "what is genuinely outside the design?" — and border contact answers it. The residual cost, stated rather than hidden: artwork that touches the border and matches the background colour is counted as background by this gate.
+
+### 30.4 The transferable rule
+Before trusting a default, ask two questions in order. **What is this feature FOR, and does my measurement move when that thing changes?** A dither judged on flat art, and a leak gate judged on whichever component happens to be biggest, both produce confident numbers that are about something else. And when the corrected measurement arrives, **check its magnitude against what the mechanism could physically produce** — a 128-colour palette cannot make a 129/765 step, and noticing that is what separated the artwork from the banding.

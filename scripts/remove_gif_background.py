@@ -148,23 +148,39 @@ def gifsicle_optimize(path, level='lossless', timeout=60):
     chosen/validated):
       - 'lossless': -O3 only. Zero visual cost, pure encoding efficiency.
         This is the gifsicle component of the 'optimize' tier.
-      - 'medium': -O3 --lossy=30 -k 200 --dither=floyd-steinberg. The
-        200-color cap exists specifically so --dither has something to do:
-        confirmed directly that gifsicle's --dither is a no-op unless the
-        palette is actually being reduced (byte-identical output with/
-        without it when only --lossy was set, no -k). 200 is a light touch
-        deliberately -- most source art here uses well under 200 colors
-        even before any reduction, so this mainly dithers the antialiased/
-        feathered edge transition pixels (which DO commonly exceed 200
-        distinct shades) rather than visibly flattening the interior.
-      - 'heavy': -O3 --lossy=80 -k 128 --dither=floyd-steinberg. Cuts to a
-        128-color palette using Floyd-Steinberg error-diffusion dithering
-        -- the right choice for smoothly-shaded/antialiased source art
-        (this skill's feathered edges in particular): it distributes
-        quantization error into neighboring pixels instead of banding,
-        unlike gifsicle's other dither modes (`ordered`/`halftone`/`o8x8`),
-        which are better suited to flat poster-style art and show an
-        obvious repeating pattern on gradients or feathered edges.
+      - 'medium': -O3 --lossy=30 -k 200. 200 is a light touch deliberately --
+        most source art here uses well under 200 colors even before any
+        reduction, so the cap mainly bites on the antialiased/feathered edge
+        transition pixels, which DO commonly exceed 200 distinct shades.
+      - 'heavy': -O3 --lossy=80 -k 128.
+
+    ⚠️ NO --dither, on either tier, and that is a REVERSAL of what this docstring
+    used to argue. Floyd-Steinberg was chosen on the reasoning that error diffusion
+    beats banding on smoothly-shaded art. Measured 2026-08-19 on 23 purpose-built
+    gradient assets and 5 flat animated vector sources, four axes each, it lost on
+    every one that matters:
+
+      axis                          gradient corpus        flat vector art
+      file size                     +11% to +24% larger    +4% to +10% larger
+      mean colour error             +8% to +12% worse      +13% to +14% worse
+      static-region instability     2.8-3.6% vs 0.7-1.1%   ~0.01% either way
+      banding (plateau run, step)   ~6% better  <-- its ONE real win
+
+    The banding axis is the one dithering exists for, and it was measured separately
+    rather than assumed away: contour plateau runs are 3.32 px with Floyd-Steinberg
+    against 3.52 px without, on an unquantized reference of 3.72. Real, and an order
+    of magnitude smaller than the costs. **Temporal instability is the decisive one**
+    -- this project already refuses error-diffusion dithering for ALPHA on exactly
+    that ground (it changed 8.1% of pixels in a region byte-identical between frames,
+    where both Bayer sizes changed 0), and the same crawl appears here at 2.6x to 5x
+    the no-dither rate, on content that is mostly static between frames. It also
+    fights GIF inter-frame compression, which is where the size regression comes from.
+
+    The earlier spot-check on `love.gif` alone called this "too close to call" (all
+    options within 0.7% size, 0.013 colour error). That was one flat 6-colour asset,
+    where a 200-colour palette reproduces the source almost exactly and dithering
+    barely engages. `--auto` output is unaffected: no tier is applied unless
+    --compress is passed, and `love.gif --auto` is still 2fd526b6fb3b191c.
     Returns True on success (file replaced in place), False if gifsicle
     isn't available or the call failed (original file is left untouched
     either way).
@@ -173,8 +189,8 @@ def gifsicle_optimize(path, level='lossless', timeout=60):
         return False
     args = {
         'lossless': ['-O3'],
-        'medium': ['-O3', '--lossy=30', '-k', '200', '--dither=floyd-steinberg'],
-        'heavy': ['-O3', '--lossy=80', '-k', '128', '--dither=floyd-steinberg'],
+        'medium': ['-O3', '--lossy=30', '-k', '200'],
+        'heavy': ['-O3', '--lossy=80', '-k', '128'],
     }.get(level)
     if args is None:
         raise ValueError(f"Unknown gifsicle level: {level}")
@@ -1335,13 +1351,34 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # --recommend, not just the renderer: an autonomous run pastes suggested_command
     # verbatim, and a command that reads as "remove the background" while being a no-op is
     # the kind of confidently-wrong output this whole project is aimed at.
-    _src_bg_transparent, _src_bg_why = False, None
+    #
+    # ⚠️ Decided over the SAMPLED FRAMES, not frame 0. `decide_source_alpha_policy` decides this
+    # same underlying property per ANIMATION -- "engaged if ANY frame's transparency reads as its
+    # background" -- while this read frame 0 alone, and `source_alpha_levels`, the other half of
+    # `_band_measures_are_vacuous`, was already a max over these same sampled frames. One property,
+    # three answers, from three different frame sets. Frame 0 is also the frame most likely to
+    # disagree: condition 1 of `source_transparency_is_the_background` is "the transparent region
+    # touches the border", so a character that happens to cover the canvas border on its first
+    # frame and not on its later ones fails it purely by animation phase.
+    _src_bg_transparent, _src_bg_why, _src_bg_frames = False, None, 0
     if _has_transparent_px and not _alpha_only_source:
+        for _sbi in sample_idxs:
+            im.seek(int(_sbi))
+            _st_i = get_source_transparency_mask(im)
+            if _st_i is None or not _st_i.any():
+                continue
+            _ok_i, _why_i = source_transparency_is_the_background(
+                _st_i, all_rgb_frames[int(_sbi)], bg_rgb, tolerance)
+            if _ok_i:
+                _src_bg_frames += 1
+                if _src_bg_why is None:
+                    _src_bg_transparent, _src_bg_why = True, _why_i
         im.seek(0)
-        _st0 = get_source_transparency_mask(im)
-        if _st0 is not None and _st0.any():
-            _src_bg_transparent, _src_bg_why = source_transparency_is_the_background(
-                _st0, all_rgb_frames[0], bg_rgb, tolerance)
+        if _src_bg_transparent:
+            _src_bg_why = (f'{_src_bg_why} (holds on {_src_bg_frames} of '
+                           f'{len(sample_idxs)} sampled frame(s))')
+        else:
+            _src_bg_why = "no sampled frame's transparency reads as its background"
 
     # Strictly binary alpha means a HARD CUTOUT: the silhouette carries no antialiasing, by
     # construction. Computed here rather than beside its first old use because two rules below now
@@ -2334,9 +2371,35 @@ def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_he
     happens when the outline isn't fully closed in some frame and
     binary_fill_holes fills straight through the gap into the actual
     background rather than stopping at the intended boundary. Flags any
-    frame where the filled shape overlaps the frame's own largest
-    background-colored component (the actual background, per
-    largest_bg_component_mask).
+    frame where the filled shape overlaps background-colored area that
+    TOUCHES THE CANVAS BORDER -- the union of every such component, not
+    just the biggest one.
+
+    ⚠️ This used to test `largest_bg_component_mask`, and that was wrong in BOTH
+    directions -- measured 2026-08-19 over 117 outline-colour tests, 3 of which
+    differ and 2 of which flip the verdict, each in the direction that fixes a
+    real error:
+
+      * `DMZRecon_Gamemode_Icon_CoDM (1).webp`: the largest bg-coloured component
+        (6,834 px) does NOT touch the border -- it is an interior black region of
+        the ARTWORK. The old gate scored a 6,834 px "leak" into it and rejected a
+        perfectly good outline colour, costing protection over a region that is
+        not background at all. Border-union scores 0.
+      * `gaming.jpeg`: 5 border-touching components total 71,390 px while the
+        largest is 23,999. The old gate saw 14 px of leak and passed the colour;
+        the union sees 207 and correctly rejects it. That is the blind spot this
+        gate was filed for -- removable background that is not the biggest piece.
+
+    `largest_bg_component_mask` stays correct where it is used for REMOVAL: there,
+    taking only the biggest component is what stops a tumbling design that grazes
+    the canvas edge from being flood-filled away. Here the question is the opposite
+    one -- "what is genuinely background?" -- and border contact answers it, at the
+    residual cost that art which touches the border and matches the background
+    colour is counted as background by this gate.
+
+    `core_bg_masks` is still accepted so existing call sites keep working, but it is
+    deliberately NOT used: it caches largest-component masks, which is the very
+    thing this gate must not test against.
     """
     outline_rgb = hex_to_rgb(outline_hex)
     max_leak = 0
@@ -2346,8 +2409,7 @@ def detect_outline_background_leak(all_rgb_frames, bg_rgb, tolerance, outline_he
         if not omask.any():
             continue
         filled = ndimage.binary_fill_holes(omask, structure=STRUCTURE)
-        core_bg = (core_bg_masks[i] if core_bg_masks is not None
-                   else largest_bg_component_mask(rgb, bg_rgb, tolerance))
+        core_bg = border_bg_component_mask(rgb, bg_rgb, tolerance)
         leaked = int((filled & core_bg).sum())
         if leaked > max_leak:
             max_leak = leaked
@@ -2671,6 +2733,26 @@ def detect_band_interior_regions(rgb, bg_rgb, tolerance, band_multiplier=4.0, mi
             'mean_distance_from_bg': round(float(comp_dist.mean()), 1),
         })
     return regions
+
+
+def border_bg_component_mask(rgb, bg_rgb, tolerance):
+    """Union of every bg-colored connected component that touches the canvas border.
+
+    The same border-label technique analyze() already uses to build
+    `enclosed_by_frame`. This is "what is outside the design", which is the right
+    question for a LEAK test -- see detect_outline_background_leak for why the
+    largest-component version was wrong in both directions.
+    """
+    bg_mask = color_mask(rgb, bg_rgb, tolerance)
+    labeled, n = ndimage.label(bg_mask, structure=STRUCTURE)
+    if n == 0:
+        return np.zeros_like(bg_mask)
+    border_labels = (set(labeled[0, :]) | set(labeled[-1, :])
+                     | set(labeled[:, 0]) | set(labeled[:, -1]))
+    border_labels.discard(0)
+    if not border_labels:
+        return np.zeros_like(bg_mask)
+    return bg_mask & np.isin(labeled, list(border_labels))
 
 
 def largest_bg_component_mask(rgb, bg_rgb, tolerance):
@@ -5733,9 +5815,28 @@ def process(input_path, output_path, args, diagnostics=None):
             rgb_frames, alpha_frames, _tmask, args.translucent_alpha,
             _tcol, args.tolerance)
         _after = sum(int((a >= 250).sum()) for a in alpha_frames)
-        print(f"--translucent-region: {_before - _after} pixels taken to "
-              f"{args.translucent_alpha:.0%} alpha across {len(alpha_frames)} frame(s).",
-              file=sys.stderr)
+        _taken = _before - _after
+        if _taken or args.translucent_alpha >= 1.0:
+            # alpha 1.0 is a legitimate no-op (the level equals full opacity), so it is
+            # reported plainly rather than warned about.
+            print(f"--translucent-region: {_taken} pixels taken to "
+                  f"{args.translucent_alpha:.0%} alpha across {len(alpha_frames)} frame(s).",
+                  file=sys.stderr)
+        else:
+            # An explicitly requested region that changes NOTHING is the confidently-wrong
+            # shape this project exists to remove: the run succeeds, the output looks
+            # plausible, and the flag the user reached for did nothing. Measured on a real
+            # fixture -- omitting --translucent-color makes the target default to the
+            # BACKGROUND colour, which by construction is absent from the kept art, so the
+            # whole feature silently no-ops.
+            print(f"  WARNING: --translucent-region touched ZERO pixels, so this run is "
+                  f"identical to one without it. Two things to check: the region is given in "
+                  f"SOURCE coordinates (it is applied BEFORE --crop/--resize-max-dim, so "
+                  f"measure it on the INPUT file), and only pixels within --tolerance "
+                  f"{args.tolerance} of "
+                  f"{'--translucent-color' if args.translucent_color else 'the background colour'}"
+                  f" #{rgb_to_hex(_tcol)} are affected -- pass --translucent-color if the "
+                  f"see-through material is not the background colour.", file=sys.stderr)
 
     # Force-remove regions (inverse of --protect-region), applied last so it
     # overrides whatever --protect-outline-color / --protect-region decided
