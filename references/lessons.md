@@ -1965,7 +1965,7 @@ Nothing above half opacity is touched, and two thirds of it is under 2% — pixe
 
 
 ## 32. A blanket label is a measurement of nothing, and the quantized twin is not the artwork
-**Also searched as:** ground truth wrong · mislabelled corpus · label noise · provisional labels · derived population · re-exported · palette reduced twin · specificity collapse · montage · thumbnail grid · hand-checked · visual audit · sanity-check the labels
+**Also searched as:** ground truth wrong · mislabelled corpus · label noise · provisional labels · derived population · palette reduced twin · specificity collapse · montage · thumbnail grid · hand-checked · visual audit · sanity-check the labels
 
 267 assets arrived as a new corpus and every one was labelled `antialiased` in a single pass, with 8 inspected. Scoring the code against that produced **62 disagreements**, a `small_aa` specificity of 0.887 and a `small_aa_quantized` specificity of **0.615** — a number that looks exactly like a detector falling over, and was not.
 
@@ -2000,6 +2000,44 @@ With the labels honest, `small_aa` leaves seven errors, and each names a specifi
 | `star2.webp` (cc **1502**, pcr 0.0) | miss | **lossy WebP filled the plateaus in.** Its two siblings are the same artwork at 239 and 253 colours. |
 
 `star2.webp` is the cleanest demonstration this corpus offers of the re-encoding hazard: one artwork, three files, and the lossy one is the only one that hides.
+
+### 32.5 The 16-colour floor tested against real negatives at last — and the answer is DO NOT MOVE IT
+The floor ("the composited frame holds N distinct colours, at or under the 16 of a flat pixel-art palette") had rested on a sample of one. With the labels honest it finally has a real negative class, and the obvious read of the corpus is that it should come down:
+
+| floor | recall | specificity | tp/fn/fp/tn |
+|---|---|---|---|
+| **cc ≤ 16 (current)** | 0.8912 | 0.8763 | 303/37/49/347 |
+| cc ≤ 14 | 0.8824 | 0.9015 | 300/40/39/357 |
+| cc ≤ 12 | 0.8794 | **0.9268** | 299/41/29/367 |
+
+Four true positives for twenty false positives, in a project whose stated asymmetry is that `--pixel-art` on antialiased art is the destructive direction. It looks like an easy call.
+
+**⚠️ It is an artefact, and one line of falsifier says so: all 20 of the removed false positives are in `small_aa_quantized`.** Every one is a DERIVED asset — an antialiased original re-exported at 16–64 colours — so "lowering the floor improves specificity" means "lowering the floor stops detecting the quantization I applied myself". Scored on the independent populations alone:
+
+| floor | recall | specificity |
+|---|---|---|
+| cc ≤ 16 | 0.8932 | **0.9787** |
+| cc ≤ 14 | 0.8872 | **0.9787** |
+| cc ≤ 12 | 0.8843 | **0.9787** |
+| cc ≤ 10 | 0.8427 | **0.9787** |
+
+**Specificity does not move at all.** No threshold between 10 and 16 removes a single independent false positive; the floor's total independent cost is 6, and every candidate change is pure recall loss. The three real detections it would have cost are named — `Free City Enemies Pixel Art` 1/Hurt, 3/Hurt, 3/Hurt2, at cc 13–15.
+
+The floor stays at 16. **The measurement that would have justified moving it was run, and it came out the other way** — which is the only kind of evidence that settles a threshold. And the check that saved it was one `Counter` over the populations of the assets that changed: [[feedback_falsifier_population]], applied to a win rather than to a loss.
+
+### 32.6 The star family: one artwork, six files, and the encode decides the verdict
+`star1.gif`, `star2.webp` and `star3.gif` are the same isometric pixel-art star. All three are MISSED. Their quantized twins are CAUGHT:
+
+| file | colours | plateau_cliff_ratio | detected |
+|---|---|---|---|
+| star1.gif | 239 | 0.011 | ✗ |
+| star2.webp | **1502** | 0.000 | ✗ |
+| star3.gif | 253 | 0.020 | ✗ |
+| star1__q64.gif | 30 | 0.038 | ✗ |
+| star2__q16.gif | **12** | 0.109 | ✓ |
+| star3__q24.gif | **16** | 0.099 | ✓ |
+
+The originals carry gradient bevel shading, so they have hundreds of colours and almost no flat plateaus — pixel art that looks, to every current measure, exactly like antialiased art. **Re-encoding runs in both directions**: a lossy WebP hides pixel art by filling its plateaus in (§29.9 records the same hazard pointing the other way, where a GIF export manufactures plateaus on antialiased art). Neither direction is fixable by a threshold on either measure, because the artwork moves across the boundary while the label does not.
 
 ### 32.4 The transferable rule
 **A label applied to a whole population in one pass is a measurement of the labeller, not of the code** — and it fails in the direction that flatters, because "everything is a negative" makes specificity the only computable number and recall undefined. Two questions before quoting any figure from a new corpus: *how many of these did someone actually look at?*, and *is this population DERIVED from another one in the same run?* A derivative shares its errors with its source and cannot serve as an independent check on it.
