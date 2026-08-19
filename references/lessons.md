@@ -123,6 +123,8 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Tempted by a palette statistic to reach 1:1 sprites the cliff ratio misses | §29.12 (three tried; the best one is a size proxy — falsified, do not re-derive) |
 | A new measure scores perfectly and you cannot find its failure population | §29.12 (build it; the corpus had ONE antialiased asset at sprite scale) |
 | An output has fewer opaque pixels than its source and no flag explains it | §29.13 (count the FRAMES — a duplicate frame coalesced away is not art loss) |
+| A rendered image looks static and you are about to file an animation defect | §29.14 (test a known-animating file first — the preview pane animates nothing) |
+| `audit_docs.py` fails an open item whose body only MENTIONS a closure word | §29.14 (fixed — it tests for a marker position now, and `ENCLOSED` contained `CLOSED`) |
 | An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
 | Pixel art with 1-px shading at its edges reads as antialiased | §28.11 (hand-antialiased art; no edge-local measure can separate it) |
 | A transparent-background PNG sprite is not detected as pixel art | §28.12 (HEAD detected 0 of 294; fixed) |
@@ -1735,3 +1737,15 @@ Both P3 items the render baseline flagged and nobody had explained are closed, a
 * **`f2ea31a625….gif` at 87.3% of its source figure.** The suspicion that the comparison was invalid turns out to be wrong in a useful way — `load_animation_rgba_frames` and a per-`seek` count agree exactly at 912,486, so the numbers did describe the same pixels. The real answer is the frame count: the source's frames 0 and 1 are **identical duplicates** at 116,007 opaque each, the output coalesces them, and 912,486 − 116,007 = **796,479**, the output total to the pixel. Zero art loss.
 
 **The transferable part:** an unexplained residual is worth chasing even when both directions are harmless, and the answer twice was in the denominator rather than in the pipeline. Establish what the source figure actually counts before treating a ratio as loss.
+
+### 29.14 A control turned a damning result into a vacuous one, twice in one bundle
+
+Two small verification items were run back to back, and in both the FIRST result was wrong in the direction that would have generated work.
+
+**APNG playback.** §16 records "acceptance is not playback" — the format was verified only by Pillow reading back what Pillow wrote. Rendering one into a page and sampling its pixels over 1.2 seconds reported **no frame advance**, which reads as a serious defect in a shipped output format. It is not one. **The same test on a plain animated GIF also reported static**: the preview surface renders snapshots and animates nothing, so the measurement was about the pane, not the file. Without the control this session would have filed a false defect against APNG and probably "fixed" something that was never broken.
+
+What DID advance the item is an independent DECODER rather than a player: `ffmpeg`, which did not write the file, reads the APNG as **19 frames, 18 distinct**, exactly matching the same source rendered to GIF and decoded identically. That answers the round-trip objection — the animation is really in the bytes — while leaving the browser half honestly open.
+
+**The closure-marker gate.** The filed defect was that `audit_docs.py` matched a closure keyword in ordinary prose. Fixing it surfaced a worse one nobody had looked for: **no word boundary, so `ENCLOSED` matched `CLOSED`** — in a repo whose main feature is outline ENCLOSURE and whose house style emphasises in caps. Then the fix itself had a defect the falsifier suite caught in under a minute: `\b` in front of the `✅` branch never matches, because `✅` is not a word character, so every real tick-marked closure silently stopped being detected. **A gate rewritten without a test suite would have shipped looking stricter and being blinder.**
+
+**The transferable part, and it is the same shape both times:** when a check returns the answer that implies work, ask what result the check would give on a case you already know. A pane that animates nothing, and a pattern that matches nothing, both return a confident-looking value. The suite for the gate now runs on every invocation rather than once, because a check that was proven once is a memory and only a check that proves itself is a control.

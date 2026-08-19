@@ -24,6 +24,22 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### ~~`[P3 · XS · Sonnet5-Medium]` `audit_docs.py`'s heading/body drift gate matches a bare keyword anywhere in a body~~ — **CLOSED 2026-08-18**
+
+Filed and fixed the same day, and the fix found a worse defect than the one filed. The gate now tests for a closure MARKER rather than the word: the keyword must sit at the start of a bold span or a line, separated from it by nothing but emoji, punctuation and ALL-CAPS qualifiers — which is how every one of the 28 real markers in these two files is written, and never how prose uses them.
+
+**The worse defect: there was no word boundary, so `ENCLOSED` matched `CLOSED`.** In a repo whose main feature is outline ENCLOSURE and whose house style emphasises in caps, that is a spurious failure waiting on the next open item that mentions it. ⚠️ And the `\b` had to be applied to the bare keywords ONLY — `✅` is not a word character, so a boundary in front of the tick branch never matches after a space or newline, i.e. every real occurrence. The falsifier suite caught that within a minute of writing it.
+
+**The suite now runs on EVERY invocation of `audit_docs.py`, not once.** Eleven cases, each one that actually happened or actually would have, including the two prose patterns that tripped the old gate while this very item was being written. Proven non-vacuous end to end: injecting a real closure marker into an open item still exits 1. A check that proves itself every run is a control; a check that was proven once is a memory.
+
+**Original item, verbatim:**
+
+#### `[P3 · XS · Sonnet5-Medium]` `audit_docs.py`'s heading/body drift gate matches a bare keyword anywhere in a body *(filed 2026-08-18)*
+
+The gate fails an OPEN item whose body contains any of its three closure keywords anywhere at all, which is right for a closure marker and wrong for ordinary prose — it fired on this very file for a sentence that used the past-tense-release keyword as an ADJECTIVE. ⚠️ **Writing this item TRIPPED the gate**, on the sentence above that quoted the keywords — a defect that reproduces itself in its own bug report. **Do NOT loosen it casually**: it has caught real drift, and a gate that stops catching drift is worse than a gate that occasionally makes you reword. **Do:** require the keyword to appear as a MARKER — bolded, or at the start of a line — which is how every genuine closure in both files is written, and re-run the gate against the known drift case to prove it still fails.
+
+---
+
 ### ~~`[P2 · S · Sonnet5-High]` The render gate never RESIZES, so `--pixel-art`'s main destructive lever is untested end to end~~ — **CLOSED 2026-08-18 (v5.5.0)**
 
 `render_baseline.py` now renders every asset a SECOND time through `--resize-max-dim` at half its larger side and fingerprints that alpha plane too, under a key suffixed ` [resize]`; sources under 64px are skipped and say so. `--no-resize-pass` turns it off and documents what that blinds.

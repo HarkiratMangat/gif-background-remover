@@ -36,6 +36,7 @@ def flagset(t):
 def main():
     sk, le, sc = open(SK).read(), open(LE).read(), open(SC).read()
     fails = []
+    fails += _self_test()
 
     # Ground truth is the REAL CLI, not the source text. Reading add_argument() calls checks a
     # SIGNATURE; running --help checks BEHAVIOUR, which is gate 5's own rule turned on this gate.
@@ -172,8 +173,86 @@ TAG_EXEMPT_HEADINGS = ('AUTONOMY BACKLOG',)
 # SHIPPED x3, RESOLVED x2, FIXED x2, plus "CONFIRMED FIRING" as a one-off. A
 # negation must NOT read as closure: "NOT DONE" and "not yet done" describe
 # remaining scope, and the active list's own section heading contains one.
-CLOSED_MARK = re.compile(r'(?<!NOT )(?<!not )(?<!not yet )'
-                         r'(CLOSED|SHIPPED|RESOLVED|✅\s*\*{0,2}(DONE|FIXED|CONFIRMED))')
+# ⚠️ The word boundary applies to the BARE keywords only. `✅` is not a word
+# character, so a `\b` in front of the tick branch never matches after a space or
+# a newline -- which is every real occurrence of it. Caught by the falsifier suite.
+_CLOSED_WORD = re.compile(r'(?<!NOT )(?<!not )(?<!not yet )'
+                          r'(?:\b(?:CLOSED|SHIPPED|RESOLVED)\b'
+                          r'|✅\s*\*{0,2}(?:DONE|FIXED|CONFIRMED)\b)')
+# ⚠️ TWO defects this vocabulary had, both found 2026-08-18 and both the same
+# shape -- the gate matched the WORD rather than the MARKER:
+#   * no word boundary, so `ENCLOSED` matched `CLOSED`. In a repo whose main
+#     feature is outline ENCLOSURE and whose house style emphasises in caps,
+#     that is a spurious failure waiting on the next open item that mentions it.
+#   * no position test, so ordinary bolded prose tripped it. Writing the tracker
+#     item ABOUT this defect failed the gate twice: once on a sentence using a
+#     keyword as an adjective, and again on the sentence that quoted the keyword
+#     list. A gate whose own bug report cannot be written is over-broad.
+# The fix is NOT to shorten the vocabulary -- that is the failure Dior's Builds'
+# equivalent shipped, missing the most common marker in its own corpus. Counted
+# here across both files: CLOSED x17, DONE x4, SHIPPED x3, RESOLVED x2, FIXED x2,
+# plus "CONFIRMED FIRING" once. Every real one of them sits at the START of a
+# bold span or a line, separated from it by nothing but emoji, punctuation and
+# ALL-CAPS qualifiers ("**CLOSED 2026-08-18", "✅ **FIXED,", "⚠️ **PARTIALLY
+# FIXED"). Prose never does: "the SHIPPED 16-colour floor" has lowercase words
+# between the emphasis and the keyword. That is the discriminator below, and it
+# is a margin of KIND rather than a tuned distance -- an earlier draft used "the
+# keyword must fall within N characters of the bold open", which separates the
+# real cases from the false one at N=12 and is exactly the kind of number this
+# project keeps having to un-tune.
+_MARKERISH = re.compile(r'^[\s*~\-—→#•\d.)\]]*(?:[A-Z]{2,}[\s\-]+)*$')
+
+
+def _at_marker_position(body, idx):
+    """Is the match at `idx` a closure MARKER, or just the word used in prose?"""
+    line_start = body.rfind('\n', 0, idx) + 1
+    line = body[line_start:idx]
+    # everything after the last bold-open on this line, or the whole line so far
+    lead = line.rsplit('**', 1)[-1] if '**' in line else line
+    lead = ''.join(c for c in lead if c.isascii() or c.isspace())   # drop emoji
+    return bool(_MARKERISH.match(lead))
+
+
+class CLOSED_MARK:
+    """Drop-in for the old compiled pattern: `.search(body)` -> match or None."""
+
+    @staticmethod
+    def search(body):
+        for m in _CLOSED_WORD.finditer(body):
+            if _at_marker_position(body, m.start()):
+                return m
+        return None
+
+
+# The gate's own falsifier suite, run on EVERY invocation rather than kept in a
+# scratch file. Both defects above were introduced by someone (me) reasoning about
+# what the pattern ought to do; each case below is one that actually happened or
+# actually would have. Eleven string matches cost nothing, and a check that proves
+# itself every run is a control -- a check that was proven once is a memory.
+_MARK_CASES = [
+    ("**CLOSED 2026-08-18 (v5.5.0)**", True, 'bold closure marker'),
+    ("\u2705 **FIXED, and the option needed correcting**", True, 'tick + bold FIXED'),
+    ("\u2014 **RESOLVED 2026-08-17.** blah", True, 'dash + bold RESOLVED'),
+    ("**\u2705 CLOSED 2026-08-18**", True, 'bold wrapping the tick'),
+    ("\u2705 **DONE 2026-08-18**", True, 'tick + DONE'),
+    ("\u26a0\ufe0f **PARTIALLY FIXED 2026-08-18**", False,
+     'partially fixed is still OPEN, and the pre-2026-08-18 gate agreed'),
+    ("**That reaches the SHIPPED 16-colour floor too**", False,
+     'keyword used as an adjective inside bolded prose'),
+    ("The gate fails a body containing `CLOSED|SHIPPED|RESOLVED` anywhere", False,
+     'the keyword list quoted in prose -- writing this gate\'s own bug report'),
+    ("no colour ENCLOSED this design region on a single frame", False,
+     'ENCLOSED contains CLOSED, and this repo is about enclosure'),
+    ("**NOT DONE yet**, and here is why", False, 'negation must not read as closure'),
+    ("We have not yet RESOLVED the question", False, 'negated prose'),
+]
+
+
+def _self_test():
+    bad = [why for body, want, why in _MARK_CASES
+           if (CLOSED_MARK.search('x\n\n' + body + '\n') is not None) != want]
+    return [f'audit_docs.py: the closure-marker gate FAILS ITS OWN falsifier suite '
+            f'({len(bad)} of {len(_MARK_CASES)}): {bad}'] if bad else []
 
 
 def _items(text):
