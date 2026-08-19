@@ -24,6 +24,28 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### `[P2 · M · Opus5-High]` `analyze()` keys on the COMPOSITE, `process()` still keys on the raw plane *(filed 2026-08-19 by the xhigh code review)*
+
+⚠️ **PARTIALLY ADDRESSED 2026-08-19 — the alpha half is fixed, the KEYING half is not.** Investigating this item found a second, larger consequence of the same discarded plane: `process()`'s bare `convert('RGB')` meant the source's partial alpha never reached the OUTPUT either, so **218 of 249 corpus sources carrying partial alpha came out with under 10% of it left** (`love_emoji_128.webp`: 913 partial-alpha px in, 0 out, 5,509 opaque becoming 6,422). Fixed with `alpha = np.minimum(alpha, source_alpha_plane)` — a minimum, never an assignment, so the colour path may still remove but may not invent opacity. 207 of 249 now keep 90%+ of their partial alpha, and the survivors are dominated by `--pixel-art`/`--no-feather`, which is binary by design. Fallout fixed in the same pass: the erosion auto-calibrator read the restored ramp as fringe and picked erosion 3 over 1, shaving 6,844 px, so its skip-guard now keys on `_sa_engaged or _src_has_partial_alpha`. `references/lessons.md` §31.
+
+**What REMAINS, and it is this item's original subject:** the removal decision is still made from `rgb_frames_raw`, so the flags are chosen from one image and `color_mask` acts on another — measured at 41 of 338 partial-alpha sources disagreeing, worst 18.41% of a frame. The fix shape is unchanged: `compute_alpha_mask(..., rgb_key=None)` defaulting to `rgb_out`, with a composited keying plane built beside `rgb_frames_raw`. ⚠️ Do NOT composite `rgb_frames_raw` itself — the output must carry original art colours, and the composite masks MORE (3,017 extra pixels on `love_emoji_128.webp`, exactly the half-transparent artwork `--recover-fade-alpha` exists to reconstruct).
+
+`analyze()` now composites every frame carrying partial alpha, so `--recommend` chooses flags from the image a viewer sees. `process()` still builds `rgb_frames_raw` with a bare `convert('RGB')`, so the removal those flags drive acts on full-strength art colour. **The recommendation and the removal read different images.**
+
+**Measured, so this is not a consistency argument in the abstract.** `color_mask` at the real removal reach (tolerance x4) over all 338 partial-alpha sources: **41 assets disagree**, 38,063 pixels total. Worst cases: `love_emoji_128.webp` differs on **18.41% of the frame** (raw masks 7,356 px, composite masks 10,373), then four `interface emojis` icons around 0.9%.
+
+⚠️ **The obvious fix is DESTRUCTIVE and must not be applied as stated.** The composite masks MORE, and the extra pixels are half-transparent ones whose blended colour reads as background — which on a faded asset is exactly the artwork `--recover-fade-alpha` exists to reconstruct. Compositing `rgb_frames_raw` would also bake the background into the OUTPUT colours, which is wrong independently.
+
+**Do:** thread a second plane through `compute_alpha_mask` — composite for the mask DECISION, raw for the output pixels — and measure over the 338 partial-alpha sources with the fade assets watched specifically, before believing it. `references/lessons.md` §28.5 is the argument for why the decision should read the composite; this item is the half that was left.
+
+✅ **CLOSED 2026-08-19 — both halves now landed.** `compute_alpha_mask` and `estimate_alpha_and_defringe` take `rgb_key`, defaulting to `rgb` so every existing caller is unchanged, and `process()` builds `rgb_frames_key` beside `rgb_frames_raw` — composited only for frames that actually carry partial alpha, so an opaque or 1-bit source shares the raw array and pays nothing. **Every colour COMPARISON reads the key plane; every pixel returned still comes from the raw plane**, which is what keeps the background out of the output.
+
+**Measured over the 249-asset reachable population: 47 assets change, and the opaque pixel count is IDENTICAL on every one of them.** What moves is partial alpha — 5,166 pixels removed. That number alone is not a verdict in either direction, so the source alpha of every removed pixel was read: **65.0% are under 2% opaque, 84% under 9%, 99.3% under 25%, and 0.0% are above half opacity.** The corrected key plane removes near-invisible pixels whose composited appearance genuinely is the background, and touches no artwork.
+
+⚠️ **The 107-asset `standard` render set reports 214 vs 214 records, 0 changed — and that is a REGRESSION control, not evidence about this change.** That set is overwhelmingly opaque sources, which `_src_has_partial_alpha` makes this a literal no-op on; the acceptance measurement is the reachable-population run above. Release gate 8's own warning, applied deliberately rather than tripped over. `references/lessons.md` §31.2.
+
+---
+
 ### `[P3 · S · Sonnet5-High]` The outline leak gate only tests the LARGEST background component *(downgraded P2→P3 2026-08-18: measured, not exercised)*
 
 **Measured before building anything, per the standing rule.** For each of the 7 assets whose recommendation changed, over the first 12 frames: how much border-touching background is NOT in the largest component (i.e. invisible to the gate), and how much of THAT do the recommended outline colours actually protect? Two assets have substantial blind-spot area — `ezgif` 2,604,400 px and `pandapanda` 286,128 px — and the other five have none. **In every case the outline colours protect 0 px of it.** The falsifier could have failed and did not, so the exposure is real in principle and unexercised in practice. Left open with the fix shape recorded below, but not worth building speculatively.

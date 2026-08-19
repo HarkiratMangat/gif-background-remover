@@ -102,20 +102,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Do:** inspect the 62 disputed assets individually and fix the labels first — that is the load-bearing set, not all 267. THEN measure where the floor sits. Do NOT move the threshold before that measurement exists — the failure direction is destructive. Note the argued mitigation still stands and should be re-tested rather than assumed: "art flat enough to come in under 16 colours has no ramps to protect and wants `--pixel-art`'s treatment anyway." `references/lessons.md` §29.4, §29.12
 
-### `[P2 · M · Opus5-High]` `analyze()` keys on the COMPOSITE, `process()` still keys on the raw plane *(filed 2026-08-19 by the xhigh code review)*
-
-⚠️ **PARTIALLY ADDRESSED 2026-08-19 — the alpha half is fixed, the KEYING half is not.** Investigating this item found a second, larger consequence of the same discarded plane: `process()`'s bare `convert('RGB')` meant the source's partial alpha never reached the OUTPUT either, so **218 of 249 corpus sources carrying partial alpha came out with under 10% of it left** (`love_emoji_128.webp`: 913 partial-alpha px in, 0 out, 5,509 opaque becoming 6,422). Fixed with `alpha = np.minimum(alpha, source_alpha_plane)` — a minimum, never an assignment, so the colour path may still remove but may not invent opacity. 207 of 249 now keep 90%+ of their partial alpha, and the survivors are dominated by `--pixel-art`/`--no-feather`, which is binary by design. Fallout fixed in the same pass: the erosion auto-calibrator read the restored ramp as fringe and picked erosion 3 over 1, shaving 6,844 px, so its skip-guard now keys on `_sa_engaged or _src_has_partial_alpha`. `references/lessons.md` §31.
-
-**What REMAINS, and it is this item's original subject:** the removal decision is still made from `rgb_frames_raw`, so the flags are chosen from one image and `color_mask` acts on another — measured at 41 of 338 partial-alpha sources disagreeing, worst 18.41% of a frame. The fix shape is unchanged: `compute_alpha_mask(..., rgb_key=None)` defaulting to `rgb_out`, with a composited keying plane built beside `rgb_frames_raw`. ⚠️ Do NOT composite `rgb_frames_raw` itself — the output must carry original art colours, and the composite masks MORE (3,017 extra pixels on `love_emoji_128.webp`, exactly the half-transparent artwork `--recover-fade-alpha` exists to reconstruct).
-
-`analyze()` now composites every frame carrying partial alpha, so `--recommend` chooses flags from the image a viewer sees. `process()` still builds `rgb_frames_raw` with a bare `convert('RGB')`, so the removal those flags drive acts on full-strength art colour. **The recommendation and the removal read different images.**
-
-**Measured, so this is not a consistency argument in the abstract.** `color_mask` at the real removal reach (tolerance x4) over all 338 partial-alpha sources: **41 assets disagree**, 38,063 pixels total. Worst cases: `love_emoji_128.webp` differs on **18.41% of the frame** (raw masks 7,356 px, composite masks 10,373), then four `interface emojis` icons around 0.9%.
-
-⚠️ **The obvious fix is DESTRUCTIVE and must not be applied as stated.** The composite masks MORE, and the extra pixels are half-transparent ones whose blended colour reads as background — which on a faded asset is exactly the artwork `--recover-fade-alpha` exists to reconstruct. Compositing `rgb_frames_raw` would also bake the background into the OUTPUT colours, which is wrong independently.
-
-**Do:** thread a second plane through `compute_alpha_mask` — composite for the mask DECISION, raw for the output pixels — and measure over the 338 partial-alpha sources with the fade assets watched specifically, before believing it. `references/lessons.md` §28.5 is the argument for why the decision should read the composite; this item is the half that was left.
-
 ### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
 **Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
 

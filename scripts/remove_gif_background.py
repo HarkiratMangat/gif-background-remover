@@ -2643,7 +2643,8 @@ def ordered_dither_mask(alpha, tile=BAYER4):
     return (alpha > thresh)
 
 
-def estimate_alpha_and_defringe(rgb, bg_rgb, protected, tolerance, band_multiplier=4.0):
+def estimate_alpha_and_defringe(rgb, bg_rgb, protected, tolerance, band_multiplier=4.0,
+                                rgb_key=None):
     """
     Estimate a continuous alpha (0..1) for every pixel based on color
     distance from the background color, and de-fringe (remove background
@@ -2655,10 +2656,20 @@ def estimate_alpha_and_defringe(rgb, bg_rgb, protected, tolerance, band_multipli
     - band_mask: boolean, True for pixels in the transition band (used by
       the caller to decide which pixels go through dithering vs. a
       straight opaque/transparent assignment).
+
+    `rgb_key`, when given, is the plane the background DISTANCE is measured
+    against; `rgb` still supplies every pixel that comes back. They differ on a
+    source carrying partial alpha, where `rgb` is a bare convert('RGB') -- the
+    stored colour under a 35%-opaque pixel, which is whatever the encoder left
+    there, not what the pixel looks like. `analyze()` has composited before
+    measuring since SS28.5; this is the same correction on the removal side.
+    The split matters: recolouring from the COMPOSITE would bake the background
+    into the output, which is the one thing the output must not carry.
     """
     H, W, _ = rgb.shape
     bg = np.array(bg_rgb, dtype=float)
-    dist_to_bg = np.linalg.norm(rgb.astype(float) - bg, axis=-1)
+    key = rgb if rgb_key is None else rgb_key
+    dist_to_bg = np.linalg.norm(key.astype(float) - bg, axis=-1)
 
     band_lo = float(tolerance)
     band_hi = float(tolerance) * band_multiplier
@@ -2991,7 +3002,7 @@ def build_band_only_removal_mask(removable_core, band_px):
     return ~removable_core & ~ring
 
 
-def compute_alpha_mask(rgb, protected, args, removal_scope=None):
+def compute_alpha_mask(rgb, protected, args, removal_scope=None, rgb_key=None):
     """
     Full alpha decision for one frame, combining the hard background mask
     with (optionally) feathered/dithered edges. Returns (alpha_uint8, rgb_out).
@@ -3005,9 +3016,12 @@ def compute_alpha_mask(rgb, protected, args, removal_scope=None):
     source_transparency_is_the_background.
     """
     bg_rgb = hex_to_rgb(args.bg_color)
+    # Every colour COMPARISON below reads `key`; every pixel returned still comes from
+    # `rgb`. Defaults to `rgb`, so a caller that does not pass it is unchanged.
+    key = rgb if rgb_key is None else rgb_key
 
     if not args.feather:
-        bg_mask = color_mask(rgb, bg_rgb, args.tolerance)
+        bg_mask = color_mask(key, bg_rgb, args.tolerance)
         transparent_mask = bg_mask & ~protected
         if removal_scope is not None:
             transparent_mask &= removal_scope
@@ -3015,7 +3029,7 @@ def compute_alpha_mask(rgb, protected, args, removal_scope=None):
         return alpha, rgb
 
     alpha_f, recolored, band_mask = estimate_alpha_and_defringe(
-        rgb, bg_rgb, protected, args.tolerance, args.feather_band_multiplier
+        rgb, bg_rgb, protected, args.tolerance, args.feather_band_multiplier, rgb_key=key
     )
     dither_mode = getattr(args, 'dither_mode', 'bayer')
     if dither_mode == 'continuous':
@@ -5535,11 +5549,30 @@ def process(input_path, output_path, args, diagnostics=None):
         rgb_frames_raw.append(rgb)
         source_trans_masks.append(source_trans_mask)
 
+    # The KEYING plane: what the pixels LOOK like, composited over the background where
+    # the source is partially transparent. `rgb_frames_raw` is what gets written; this is
+    # what gets compared. ⚠️ Never composite rgb_frames_raw itself -- the output must carry
+    # original art colours, and the composite also masks MORE (3,017 extra pixels on
+    # love_emoji_128.webp, exactly the half-transparent artwork --recover-fade-alpha exists
+    # to reconstruct). Built only where a frame actually carries partial alpha, so an
+    # ordinary opaque or 1-bit source shares the raw array and pays nothing.
+    #
     # Does ANY frame carry real partial alpha? A 1-bit source (GIF, or a hard cutout) has
     # only 0 and 255, where the clamp below is a no-op; computing this once keeps it that
     # way instead of paying a per-frame minimum on every ordinary asset.
     _src_has_partial_alpha = any(
         bool(((a > 0) & (a < 255)).any()) for a in source_alpha_planes)
+    rgb_frames_key = rgb_frames_raw
+    if _src_has_partial_alpha:
+        _bg_arr = np.asarray(hex_to_rgb(args.bg_color), dtype=np.float32)
+        rgb_frames_key = []
+        for _r, _a in zip(rgb_frames_raw, source_alpha_planes):
+            if not ((_a > 0) & (_a < 255)).any():
+                rgb_frames_key.append(_r)
+                continue
+            _f = (_a[..., None].astype(np.float32) / 255.0)
+            rgb_frames_key.append((_r.astype(np.float32) * _f + _bg_arr * (1.0 - _f)
+                                   ).round().clip(0, 255).astype(np.uint8))
 
     if getattr(args, 'tumble_safe', False):
         bg_rgb = hex_to_rgb(args.bg_color)
@@ -5681,7 +5714,8 @@ def process(input_path, output_path, args, diagnostics=None):
         # useful on a PARTIAL cut, and it degrades to "change nothing" when the
         # source's alpha is already complete.
         removal_scope = _scope_for(i, source_trans_masks[i])
-        alpha, rgb_out = compute_alpha_mask(rgb, protected, args, removal_scope=removal_scope)
+        alpha, rgb_out = compute_alpha_mask(rgb, protected, args, removal_scope=removal_scope,
+                                            rgb_key=rgb_frames_key[i])
 
         source_trans_mask = source_trans_masks[i]
         if source_trans_mask is not None and source_trans_mask.any():

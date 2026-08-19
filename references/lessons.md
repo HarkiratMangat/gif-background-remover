@@ -1937,6 +1937,23 @@ A skip-guard for exactly this already existed, and it did not fire: it was keyed
 
 ⚠️ **This is release gate 8's own lesson recurring:** a correctness fix reached one code path while a *calibrator* downstream read the changed values and made a worse decision. `analyze()`-level numbers all said the fix had landed. Only rendering found it.
 
+### 31.2 The other half: the flags were chosen from one image and the removal acted on another
+`analyze()` has composited partial-alpha frames before measuring since §28.5. `process()` did not: it built `rgb_frames_raw` with a bare `convert('RGB')`, so `color_mask` and `estimate_alpha_and_defringe` compared against **the colour stored underneath a translucent pixel** — whatever the encoder happened to leave there — rather than against what the pixel looks like. Measured at 41 of 338 partial-alpha sources disagreeing at the real removal reach, worst 18.41% of a frame.
+
+`compute_alpha_mask` and `estimate_alpha_and_defringe` now take `rgb_key`, defaulting to `rgb` so every existing caller is unchanged. **Every colour COMPARISON reads the key plane; every pixel returned still comes from the raw plane.** That split is the whole design: recolouring from the composite would bake the background into the output, which is the one thing the output must not carry, and `rgb_frames_key` is built only for frames that actually have partial alpha, so an opaque or 1-bit source shares the raw array and pays nothing.
+
+**The measured effect, and the question that had to be answered before keeping it.** Over the 249-asset reachable population: 47 assets change, **opaque pixel counts are identical on every one of them**, and what moves is partial alpha — 5,166 pixels removed in total. Removing partial alpha is exactly what a corrected key plane should do *if* those pixels were near-invisible, and artwork destruction *if* they were not, so the source alpha of every removed pixel was read:
+
+| source alpha of removed pixels | share |
+|---|---|
+| 0–7 (under 2% opaque) | **65.0%** |
+| 8–25 (3–9%) | 18.7% |
+| 26–63 (10–24%) | 15.6% |
+| 64–127 (25–49%) | 0.7% |
+| **128–255 (50%+)** | **0.0%** |
+
+Nothing above half opacity is touched, and two thirds of it is under 2% — pixels whose composited appearance genuinely is the background. **"Partial alpha went down" is not by itself a verdict; the distribution is.**
+
 ⚠️ **Deliberately NOT applied to the `--recover-fade-alpha` branch.** That feature exists to RECONSTRUCT a fade the source already flattened, so there the source alpha is 255 by definition — clamping to it would be a no-op at best and would delete the feature at worst.
 
 **The transferable part:** this is `--pixel-art`'s inverse-spelling failure one level down. `get_source_transparency_mask` was carefully written to run BEFORE `convert('RGB')` because flattening destroys information — and then the very next line threw away the rest of the same channel. **A guard that protects one value of a field is not a guard on the field.** `alpha == 0` was handled with a docstring's worth of care; `alpha == 137` was not handled at all.
