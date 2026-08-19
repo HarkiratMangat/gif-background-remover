@@ -1,0 +1,70 @@
+{
+ "_method": "Labelled by eye 2026-08-18 from the SAME method as others/LABELS.json -- edge-dense crops upscaled NEAREST, never a centre crop. Every asset was seen in a 28px edge-dense crop at 7x; the eight genuinely ambiguous ones were re-inspected as THREE non-overlapping 24px crops at 13x before a label was written. Labels describe the file's own EDGE STRUCTURE, which is the only thing a discriminator can see -- not the asset's artistic lineage (see the PixelSaber note). NO measure from the script was consulted while labelling; using one would make any later score circular (references/lessons.md SS23).",
+ "_what_this_population_is": "37 background-removed assets: 35 hard-alpha cutouts (<=2 alpha levels) and 2 true soft-alpha PNGs (255 levels). This is the ALREADY-TRANSPARENT population -- the labelled others/ set is 31 fully opaque GIFs and contains nothing of this kind. 4 of these files are the background-removed counterparts of assets already labelled in others/LABELS.json, giving direct before/after pairs.",
+ "_counts": {
+  "pixel_art": 22,
+  "antialiased": 15
+ },
+ "_paired_with_others": [
+  "07761f30caa2d3601cb83c9a22995fae-ezgif.com-crop.gif",
+  "5bf1a3da90ad03bfd0a59710e186f804-ezgif.com-gif-maker.gif",
+  "6CFF9959-74C8-425B-B202-CC0DAB153280-ezgif.com-gif-maker.gif",
+  "9a4177e82f1a333ef64066f7a7529eb2-ezgif.com-gif-maker.gif"
+ ],
+ "_notes": {
+  "PixelSaber-ezgif.com-gif-maker (2).gif": "pixel-art LINEAGE (others/Pixel Saber.gif is labelled pixel_art) but this file's own pixels are ramped -- it is an upscaled/re-encoded copy. Labelled by what the pixels ARE, not by artistic origin, because that is all a discriminator can see.",
+  "4x-ezgif.com-webp-to-gif-converter.gif": "a 4x upscale with real 2-3 step ramps on every dark outline.",
+  "c33ec49692d7285166ba98dc89fbb010.gif": "chunky vector art -- flat blocks WITH isolated intermediate pixels at the transitions. Lower confidence than the rest of this list.",
+  "RetroHeartWave.gif": "gradient-looking wave art, but the colour bands meet at hard staircase boundaries with no intermediate tone. Lower confidence.",
+  "PandaBobba.png": "255 alpha levels -- a true soft-alpha source, not a cutout.",
+  "PandaLove.png": "255 alpha levels -- a true soft-alpha source, not a cutout.",
+  "1249012905131642982.gif": "CONFIRMED antialiased at 12x on 2026-08-18 (smooth-edged eyes, gradient body). This file is the binding negative for FLAT_PALETTE_MAX_COLORS: at 26 composited colours it is the lowest-colour antialiased asset in all five populations, and it is why that floor sits at 16 rather than the 24 a sweep would have picked."
+ },
+ "labels": {
+  "0732868bc9bc543cb3479037f345dacd.gif": "pixel_art",
+  "07761f30caa2d3601cb83c9a22995fae-ezgif.com-crop.gif": "pixel_art",
+  "1249012905131642982.gif": "antialiased",
+  "1277e83806a57d51f4b6088c86adc1a1.gif": "pixel_art",
+  "35a917ad28981d1e4c86b1606c1d1c95.gif": "antialiased",
+  "4x-ezgif.com-webp-to-gif-converter.gif": "antialiased",
+  "552543662971a35d0e76322945f81fb5.gif": "antialiased",
+  "5873471edf104bcbaa49b6b1c18a5b8d.gif": "pixel_art",
+  "5991da42769d1826ea219fb3baa827df.gif": "pixel_art",
+  "5bf1a3da90ad03bfd0a59710e186f804-ezgif.com-gif-maker.gif": "pixel_art",
+  "63ad70fc03cc63e31f741b6ad8968609.gif": "pixel_art",
+  "6CFF9959-74C8-425B-B202-CC0DAB153280-ezgif.com-gif-maker.gif": "pixel_art",
+  "701428696032083978.gif": "antialiased",
+  "864ed21f-673e-4050-963c-993a79cfef0f.gif": "pixel_art",
+  "92db434e93c79ddfe6166ef248bd8a42.gif": "pixel_art",
+  "9a4177e82f1a333ef64066f7a7529eb2-ezgif.com-gif-maker.gif": "pixel_art",
+  "PandaBobba.png": "antialiased",
+  "PandaLove.png": "antialiased",
+  "PixelSaber-ezgif.com-gif-maker (2).gif": "antialiased",
+  "RetroHeartWave.gif": "pixel_art",
+  "_.gif": "antialiased",
+  "_3.gif": "pixel_art",
+  "a13957832e8ca32e8ec29fddfee4f72d.gif": "pixel_art",
+  "b66f430cbbf6aaf68f415fd092ad95f0.gif": "antialiased",
+  "c33ec49692d7285166ba98dc89fbb010.gif": "antialiased",
+  "c96f35a75d677e83198a323420f5cc28.gif": "antialiased",
+  "c98896ec9be95e3b186483b092b2848d.gif": "pixel_art",
+  "cinnamonexcited.gif": "pixel_art",
+  "d88e3ddf19e5608a5a6101653232fa12.gif": "pixel_art",
+  "df3ea18e7186b1b6ff6872ebf67724de.gif": "pixel_art",
+  "diorbear.gif": "pixel_art",
+  "diorpop.gif": "antialiased",
+  "e3dd0aa80e7878b01be2c801d3220c4b.gif": "pixel_art",
+  "ed079167acb22c9e0deec875a820e61d.gif": "antialiased",
+  "ezgif.com-gif-maker (1).gif": "pixel_art",
+  "ezgif.com-gif-maker.gif": "pixel_art",
+  "f2ea31a625d600958daa38f4a42ac26b.gif": "antialiased"
+ },
+ "_reexamined_2026_08_18": {
+  "_what_happened": "A new measure (composited colour count) disagreed with these two labels, so both were re-inspected at 12x NEAREST. c33ec49 shows flat blocks with stepped diagonals; the 4x upscale shows block staircases on its outlines. Both readings pull toward pixel_art and AWAY from what is recorded here.",
+  "_decision": "NEITHER LABEL WAS CHANGED. Both already carried a written lower-confidence reason from the 13x pass -- 'isolated intermediate pixels at the transitions' and 'real 2-3 step ramps on every dark outline' -- and a coarser second look is not grounds to overturn a documented one. Overturning them would also have moved the score of the very measure that raised the question, which is the definition of label-fitting. They are the two lowest-confidence labels in this corpus; the sensitivity is reported instead: flipping both would take the post-fix specificity from 0.986 to 0.993 and recall from 0.939 to 0.937.",
+  "_files": [
+   "c33ec49692d7285166ba98dc89fbb010.gif",
+   "4x-ezgif.com-webp-to-gif-converter.gif"
+  ]
+ }
+}

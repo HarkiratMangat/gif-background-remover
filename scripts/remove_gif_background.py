@@ -331,6 +331,138 @@ def measure_change_line_density(rgb):
     return max(_axis(rgb), _axis(np.ascontiguousarray(rgb.transpose(1, 0, 2))))
 
 
+PLATEAU_CLIFF_STRONG_STEP = 40      # a colour step this big is an EDGE, not a ramp step
+PLATEAU_CLIFF_MIN_PLATEAU = 2       # px of flat colour required on each side
+PLATEAU_CLIFF_THRESHOLD = 0.30      # at or above this, the art is hard-edged
+PLATEAU_CLIFF_MIN_SAMPLES = 500     # below this the ratio is not dispositive
+# For an alpha-only mask the hardness question becomes "does the ALPHA channel hold a ramp?", and
+# this is the line between a cutout and a ramp. It is not a fine margin: measured over 524 real
+# sprite-pack files (pixel art by provenance), EVERY ONE has 4 or fewer distinct alpha levels --
+# 32 at 1, 198 at 2, 293 at 3, 1 at 4, and none above. The 15 alpha-only antialiased icons in this
+# project's folders carry 186-256. So the two populations are separated by a factor of ~46, and 16
+# sits between them without being tuned to either edge. An earlier version of this cut at 2, which
+# would have called a 3-level sprite antialiased and handed it feathering plus 2px erosion -- the
+# destructive direction, on exactly the content --pixel-art exists to protect. SS28.10
+ALPHA_MASK_RAMP_LEVELS = 16
+# At or under this many distinct colours in the COMPOSITED frame, the art is drawn from a flat
+# palette rather than blended into one. 16 is not swept: it is the pixel-art convention itself --
+# EGA, PICO-8 and most sprite work are drawn on a 16-colour palette -- and the measured negative
+# frontier sits well above it. Over 146 labelled antialiased assets the LOWEST composited count is
+# 26 (a heavily quantized 93x96 sticker), the next 60, and the median 403; over 542 labelled pixel
+# art the median is 12 and the 25th percentile 9. So 16 sits 10 below the nearest negative with the
+# positives' bulk beneath it, the same shape of margin PLATEAU_CLIFF_THRESHOLD has. Sharing the
+# value of ALPHA_MASK_RAMP_LEVELS above is a coincidence of two different arguments, not one
+# threshold used twice. SS29
+FLAT_PALETTE_MAX_COLORS = 16
+
+
+def measure_plateau_cliff_ratio(rgb, strong=PLATEAU_CLIFF_STRONG_STEP,
+                                min_plateau=PLATEAU_CLIFF_MIN_PLATEAU):
+    """Of the STRONG colour steps in this frame, what share are plateau-to-plateau cliffs?
+
+    Returns (ratio, n_strong_steps). A strong step is a pair of adjacent pixels differing by
+    `strong` on some channel -- an edge, not an antialiasing increment. It is a CLIFF when both
+    sides sit in a flat run of at least `min_plateau` px. Upscaled pixel art transitions
+    block-to-block and is nearly all cliffs; a 1px antialiasing ramp cannot be one, because the
+    ramp pixel is a plateau of length 1 by construction.
+
+    This is the FIFTH structural discriminator tried and the first to survive both populations
+    (references/lessons.md SS28). The four before it -- modal run length, integer-lattice fit,
+    duplicate-line density, gap regularity (SS23.4, SS23.8, SS23.9) -- all asked *where does the
+    image change along a scan line*, unconditionally, and all four died on the same rock: a
+    flat-fill vector icon is locally as uniform as a pixel grid, so its long uniform runs score
+    like blocks. The difference here is the CONDITIONING: uniformity is only ever counted at a
+    strong step. A vector icon's flat interior contributes nothing, because it has no strong steps
+    in it; its edges do, and they carry the ramp pixel that disqualifies them.
+
+    Measured over 158 assets -- the 31 labelled (25 pixel art / 6 antialiased), 122 vector emoji
+    from this project's own asset folders, and the 5 corpus originals:
+
+        pixel art detected      22 of 25 (lowest detected 0.356)
+        antialiased + emoji     0 of 133 false positives (highest 0.186)
+
+    0.30 sits between 0.186 and 0.356, nearer the negative end on purpose: a false positive
+    applies --pixel-art to antialiased art (no feather, no erosion, nearest resize -- SS18's
+    catastrophe), while a false negative is only the status quo.
+
+    A HIGH value is dispositive for pixel art; a LOW value proves nothing, exactly like
+    change_line_density. The three misses are all art whose blocks have been softened by
+    re-encoding -- see SS28.3.
+
+    The caller takes the MEDIAN across sampled frames, NOT the max, which is the opposite of
+    ratio_max_across_frames and is deliberate. The two fire in opposite directions: a high band
+    ratio proves antialiasing, so one frame showing a ramp settles it; a high cliff ratio proves
+    pixel art, and one atypical frame must not. Measured -- a max-based rule would false-positive
+    `GIF Selections` (per-frame 0.000-0.344, only 3% of frames over the threshold) and
+    `love_transparent` (0.015-0.409, 20%). SS28.4
+    """
+    m = (rgb != rgb[0, 0]).any(axis=2)
+    ys, xs = np.where(m)
+    if ys.size >= 64:
+        rgb = rgb[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    good = total = 0
+    for col in (rgb, np.ascontiguousarray(rgb.transpose(1, 0, 2))):
+        c = col.astype(np.int16)
+        n = c.shape[1]
+        if n < 2 * min_plateau + 2:
+            continue
+        step = np.abs(np.diff(c, axis=1)).max(axis=2) >= strong
+        if not step.any():
+            continue
+        flat = np.ones_like(step)
+        for j in range(1, min_plateau):
+            left = np.zeros_like(step)
+            left[:, j:] = (c[:, j:-1] == c[:, :-1 - j]).all(axis=2)
+            right = np.zeros_like(step)
+            right[:, :n - 1 - j] = (c[:, 1:n - j] == c[:, 1 + j:]).all(axis=2)
+            flat &= left & right
+        total += int(step.sum())
+        good += int((step & flat).sum())
+    return (good / max(total, 1)), total
+
+
+def measure_composited_color_count(rgb):
+    """How many distinct colours does this frame contain?
+
+    The SIXTH structural discriminator, and the first that does not ask about edges at all. Pixel
+    art is drawn from a deliberate, small palette; antialiasing manufactures a continuum of
+    intermediate colours, and cannot help doing so. The count therefore separates the two
+    populations by more than an order of magnitude without measuring block size anywhere -- which
+    is exactly what the plateau-cliff ratio cannot do, because a 1:1 sprite has no 2px plateau for
+    a cliff to sit between and scores like a ramp (SS28.6 already says so in its own docstring).
+
+    It must be read off the COMPOSITED frame, and that is not a detail. Counted over opaque pixels
+    only, a flat-fill vector icon whose entire antialiasing lives in its partial-alpha edge reads
+    as a 35-colour palette -- `previous.png`, a plain chevron, measures 35 opaque colours and 289
+    composited. That is the same rock the four discriminators before the cliff ratio died on
+    (SS23.4, SS23.8, SS23.9): a flat vector interior is locally as uniform as a pixel grid.
+    Compositing is what SS28.5 already requires of every hardness measure here, for this reason.
+
+    Measured over the five labelled populations, 688 scoreable assets:
+
+        pixel art (542)    p25 9    median 12    p75 17    p95 32
+        antialiased (146)  lowest 26    next 60    median 403    max 27,089
+
+    A LOW value is dispositive for pixel art; a high value proves nothing, exactly like the cliff
+    ratio -- dithered pixel art re-encoded through a lossy step can carry hundreds of colours. And
+    the failure direction is benign: art flat enough to come in under the floor without being
+    pixel art is art with no ramps to protect, which wants --pixel-art's treatment anyway.
+    """
+    px = rgb.reshape(-1, 3).astype(np.uint32)
+    packed = (px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2]
+    # A boolean sieve over the 24-bit colour space, not np.unique. Same answer, exactly -- verified
+    # frame by frame -- but np.unique SORTS, so its cost tracks the pixel count and not the colour
+    # count: 1,347ms on a 1667x1667 frame and 3,903ms on a 3840x2160 one, against 18ms here, for an
+    # identical answer (verified frame by frame on real assets). This bounds the WORST case; it is
+    # not a speedup to a normal run -- an A/B/A over five assets put no-measure, np.unique and this
+    # within 1.3s of each other over 57s, and the "tripled analyze()" I first claimed came from
+    # comparing a slow 25-asset prefix to a whole-corpus mean on a machine another job was
+    # saturating. SS29.8. The 16MB buffer is allocated per call (1ms, calloc), not at module scope.
+    seen = np.zeros(1 << 24, bool)
+    seen[packed] = True
+    return int(seen.sum())
+
+
 def measure_antialiasing_presence(rgb, bg_rgb, palette, tolerance=15, ring=3):
     """
     Fraction of near-boundary pixels that are TRUE blends of the background and
@@ -407,6 +539,22 @@ def get_source_transparency_mask(im0):
     real color data there to make a foreground/background call on in the
     first place.
     """
+    # An RGBA/LA source keeps its transparency in the ALPHA CHANNEL, not in a
+    # palette index, and has no 'transparency' info key at all -- so every
+    # spelling below used to return None for a plain transparent PNG. That is
+    # the inverse-spelling failure this project keeps hitting: two exotic forms
+    # were handled and the most common one was not. Measured cost, 2026-08-18:
+    # a real itch.io sprite (98.5% fully transparent, (0,0,0) padding under it)
+    # went in with 7,130 opaque pixels and out with 4,675, because
+    # detect_bg_color read the padding colour and color_mask then matched the
+    # sprite's own 2,455 black outline pixels -- 7,130 - 2,455 = 4,675 exactly.
+    #
+    # ONLY alpha == 0 counts. A partially transparent pixel is a real
+    # antialiasing ramp with real colour in it; treating a soft edge as "the
+    # source declared this nothing" would throw away the very ramp SS28.5 exists
+    # to preserve.
+    if im0.mode in ('RGBA', 'LA', 'PA'):
+        return np.array(im0.convert('RGBA'))[..., 3] == 0
     if 'transparency' not in im0.info:
         return None
     trans_index = im0.info['transparency']
@@ -422,6 +570,163 @@ def get_source_transparency_mask(im0):
         return None
     raw = np.array(im0) if im0.mode == 'P' else np.array(im0.convert('P'))
     return raw == trans_index
+
+
+SOURCE_ALPHA_BAND_DEFAULT = 2
+
+
+def source_transparency_is_the_background(source_trans_mask, rgb, bg_rgb, tolerance):
+    """
+    Is the source's own transparency already standing in for the background?
+
+    Two conditions, both cheap, each blocking a DIFFERENT wrong engagement:
+
+      1. the transparent region touches the frame border -- that is what makes
+         it the outside rather than an interior hole. A source whose only
+         transparent pixels are punched holes still has a real painted
+         background that must be removable.
+      2. the modal RGB sitting UNDER those transparent pixels matches the
+         detected background colour. This tests the failure mechanism directly
+         instead of by proxy: when it holds, `detect_bg_color` did not find a
+         background, it found padding, and "remove every pixel of that colour"
+         is a meaningless instruction that happens to also match real art.
+
+    Returns (bool, reason). The reason string is reported, because a silent
+    change to the core removal path is exactly what this project's own history
+    says goes wrong.
+    """
+    if source_trans_mask is None or not source_trans_mask.any():
+        return False, 'source declares no fully transparent pixels'
+    touches = bool(source_trans_mask[0].any() or source_trans_mask[-1].any()
+                   or source_trans_mask[:, 0].any() or source_trans_mask[:, -1].any())
+    if not touches:
+        return False, ('the source transparency never touches the frame border, so it reads as '
+                       'interior holes rather than the background')
+    under = rgb[source_trans_mask]
+    if under.size == 0:
+        return False, 'no colour data under the transparent pixels'
+    packed = (under[:, 0].astype(np.uint32) << 16) | (under[:, 1].astype(np.uint32) << 8) | under[:, 2]
+    vals, counts = np.unique(packed, return_counts=True)
+    modal = int(vals[int(np.argmax(counts))])
+    modal_rgb = ((modal >> 16) & 255, (modal >> 8) & 255, modal & 255)
+    if max(abs(int(a) - int(b)) for a, b in zip(modal_rgb, bg_rgb)) > tolerance:
+        return False, (f'the colour under the source transparency is {rgb_to_hex(modal_rgb)}, which is '
+                       f'not the detected background {rgb_to_hex(tuple(bg_rgb))} -- so the background '
+                       f'is real paint, not padding')
+    share = float(counts.max()) / float(counts.sum())
+    return True, (f'{rgb_to_hex(tuple(bg_rgb))} is the padding colour under the source\'s own '
+                  f'transparency ({share:.0%} of {int(source_trans_mask.sum())} transparent pixels) '
+                  f'and that transparency reaches the frame border')
+
+
+def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band, reach=None):
+    """
+    The region colour-based removal is allowed to touch on an already-transparent
+    source: the source's transparent pixels, plus a `band`-pixel cleanup ring --
+    but ONLY when that ring cannot also be artwork.
+
+    ⚠️ The blunt ring was measured and it is HARMFUL. On a real itch.io sprite,
+    survival by band was: 0px -> 100.0% (alpha byte-identical to the source),
+    1px -> 70.7%, 2px -> 68.1%, unrestricted -> 65.6%. A 2px ring recovered only
+    184 of the 2,455 pixels the unrestricted path destroyed, because pixel art's
+    black outline sits DIRECTLY against its black padding: the ring IS the
+    outline. A compromise that keeps two thirds of the damage is not a fix.
+
+    So the ring is gated on a margin of KIND rather than a tuned radius: does the
+    background colour also occur in the artwork's INTERIOR, away from the
+    boundary? If it does, that colour is design, the ring would eat design, and
+    the scope collapses to exactly the source's own transparency. If it does not,
+    the only pixels of that colour anywhere are hugging the transparent boundary
+    -- which is what a leftover matte fringe from an earlier, imperfect cut looks
+    like -- and removing them is the whole point of not simply refusing.
+
+    Returns (scope_mask, reason).
+    """
+    if band <= 0:
+        return source_trans_mask, False, ('removal confined to exactly the pixels the source already '
+                                   'declared transparent (--source-alpha-band 0)')
+    # ⚠️ `reach` is the colour distance the REMOVAL path can actually act at, which is
+    # NOT `tolerance` when feathering is on: estimate_alpha_and_defringe works in a band
+    # of tolerance x --feather-band-multiplier, i.e. 60 at the defaults. Testing the veto
+    # at 15 while removal reaches 60 left the guarantee three quarters short, and it
+    # showed up as real loss: measured over every frame of 57 alpha-carrying assets, the
+    # feather path survived 99.71% mean / 95.24% worst against the non-feather path's
+    # 100.00% / 99.95%. A veto has to be evaluated at the radius of the thing it vetoes.
+    if reach is None:
+        reach = tolerance
+    ring = ndimage.binary_dilation(source_trans_mask, structure=np.ones((3, 3), bool),
+                                   iterations=int(band)) & ~source_trans_mask
+    interior = ~source_trans_mask & ~ring          # opaque art, away from the boundary
+    # color_mask is a pure per-channel comparison (checked: no neighbourhood term), so a
+    # flat pixel list is a valid argument -- but spell it as one rather than as a fake image.
+    if interior.any() and color_mask(rgb[interior], bg_rgb, reach).any():
+        return source_trans_mask, False, (f'the {band}px cleanup band was DROPPED: '
+                                   f'{rgb_to_hex(tuple(bg_rgb))} also occurs in the artwork away '
+                                   f'from the transparent boundary, so the band would delete design '
+                                   f'-- measured at 2px on a real sprite, it recovered 184 pixels '
+                                   f'and destroyed 2,271')
+    return (source_trans_mask | ring), True, (f'a {band}px cleanup band is included: '
+                                        f'{rgb_to_hex(tuple(bg_rgb))} occurs nowhere in the artwork '
+                                        f'except hugging the transparent boundary, which is what a '
+                                        f'leftover matte fringe looks like')
+
+
+def decide_source_alpha_policy(source_trans_masks, rgb_frames, bg_rgb, tolerance, band, reach):
+    """
+    ONE policy for the whole animation. Returns (engaged, band_allowed, reason, per_frame_scopes).
+
+    ⚠️ Deciding this per frame produces FLICKER, and it is not hypothetical: measured
+    over 57 alpha-carrying assets, **17 of them flip the veto branch mid-animation**
+    (one alternates keep/drop/keep/drop across consecutive frames). A scope that
+    changes between frames removes a pixel on frame 3 and keeps it on frame 4 --
+    exactly the frame-to-frame instability this project rejects error-diffusion
+    dithering for.
+
+    The reduction is deliberately asymmetric, on the safe side of each question:
+      * engaged if ANY frame's transparency reads as its background -- a frame where
+        the character happens to cover the border should not switch protection off;
+      * the cleanup band is allowed only if NO frame vetoes it -- one frame in which
+        the background colour is also design is enough to make the ring unsafe for
+        the whole animation.
+    """
+    engaged_frames, veto_frames, first_why, first_veto = 0, 0, None, None
+    # The scope each frame produced, kept rather than discarded: `_scope_for` used to
+    # recompute the identical binary_dilation per frame at render time, so an
+    # alpha-carrying animation paid two dilation passes per frame where one would do.
+    scopes = [None] * len(source_trans_masks)
+    for idx, (st, rgb) in enumerate(zip(source_trans_masks, rgb_frames)):
+        ok, why = source_transparency_is_the_background(st, rgb, bg_rgb, tolerance)
+        if not ok:
+            continue
+        engaged_frames += 1
+        if first_why is None:
+            first_why = why
+        if band > 0:
+            # ⚠️ Read the BOOLEAN, never the message. This used to test
+            # `band_why.startswith('the Npx cleanup band was DROPPED')`, so the guard was
+            # armed by prose: rewording that sentence -- an ordinary doc-pass edit in this
+            # repo -- would have left `veto_frames` at 0 and silently re-enabled the ring on
+            # exactly the sprites it was measured to destroy (survival 100.0% -> 68.1%).
+            scopes[idx], band_applied, band_why = build_source_alpha_scope(
+                st, rgb, bg_rgb, tolerance, band, reach)
+            if not band_applied:
+                veto_frames += 1
+                if first_veto is None:
+                    first_veto = band_why
+    if not engaged_frames:
+        return False, False, 'no frame\'s transparency reads as its background', scopes
+    n = len(source_trans_masks)
+    reason = (f'{first_why} (holds on {engaged_frames} of {n} frame(s))')
+    if band <= 0:
+        return True, False, reason + '. Removal confined to exactly the source\'s own transparency (--source-alpha-band 0)', scopes
+    if veto_frames:
+        return True, False, (reason + f'. The {band}px cleanup band is DROPPED for the whole '
+                             f'animation because {veto_frames} of {engaged_frames} engaged frame(s) '
+                             f'have that colour in the artwork away from the boundary -- one such '
+                             f'frame makes the ring unsafe for all of them, and deciding per frame '
+                             f'would flicker'), scopes
+    return True, True, (reason + f'. A {band}px cleanup band is included: no engaged frame has that '
+                        f'colour in the artwork away from the transparent boundary'), scopes
 
 
 def warn_if_source_has_transparency(im0, input_path):
@@ -466,17 +771,61 @@ def analyze(input_path, max_samples=40, tolerance=15):
     to catch.
     """
     im = Image.open(input_path)
-    n_frames = im.n_frames
+    # A STATIC source has no n_frames -- JpegImageFile raises AttributeError outright. The
+    # PROCESSING path learned this in v5.2.0 and uses getattr (see the identical comment above
+    # its own read); analyze() and load_animation_rgba_frames() were left on the bare attribute,
+    # so --analyze, --recommend, --auto and --verify all crashed with a raw traceback on exactly
+    # the static JPEG input v5.2.0 advertised. Found by feeding a real .jpeg from the labelled
+    # asset folder. This is the handoff's "inverse spelling" failure: five sites fixed, a sixth
+    # missed, and the gates could not see it because no test ever pointed --analyze at a JPEG.
+    n_frames = getattr(im, 'n_frames', 1)
     warn_if_source_has_transparency(im, input_path)
     im.seek(0)
     rgb0 = np.array(im.convert('RGB'))
     bg_rgb = detect_bg_color(rgb0)
     H, W, _ = rgb0.shape
 
+    # COMPOSITED, not `convert('RGB')` -- and this is the same correction SS28.5 made for the
+    # hardness family, applied to everything else that reads a frame. `convert('RGB')` DISCARDS
+    # alpha rather than resolving it, so on an RGBA source a half-transparent pixel keeps its
+    # full-strength art colour and every check downstream reads a colour no viewer will ever see.
+    # SS28.5 fixed only measure_edge_hardness and its relatives; `all_rgb_frames` feeds
+    # detect_bg_color's siblings, color_mask, the candidate-region enclosure search,
+    # measure_bg_component_margin, detect_band_interior_regions and
+    # collect_small_removed_region_sizes, and every one of them was still reading the raw plane.
+    #
+    # MEASURED before changing it, because the tracker's own scope note said this must not be
+    # switched blind (there is still no LABELLED RGBA corpus). Running analyze() twice per file,
+    # once with frames composited, over 14 partial-alpha icons and then over the 10 most
+    # translucent assets in the sprite corpus:
+    #   * three checks move -- band_interior_regions, candidate_regions, tumble_risk. Nothing
+    #     else does, and the detected background colour is stable either way.
+    #   * on the icons the movement is small (pixel counts 0.5-4%, bboxes 1px) and no verdict
+    #     flips. On the TRANSLUCENT population it is a verdict: seven Tiny Swords cloud sprites
+    #     go from 0 band-interior regions to 1 `solid_tint`, and `Shadow.png`'s
+    #     mean_distance_from_bg reads 58.2 uncomposited against 18.1 composited.
+    #   * two of those change the RECOMMENDED COMMAND, in both directions: `Clouds_03.png` gains
+    #     --protect-band-only 4 (a real tint the raw read could not see), and `Shadow.png` LOSES
+    #     --feather-band-multiplier 3.4 (the raw read had put a solid colour 58 from the
+    #     background when a viewer sees it at 18). An autonomous run pastes that command
+    #     verbatim, so this was a wrong flag on real assets, not a cosmetic field.
+    # A fully opaque source has no partial alpha and takes the identical path, byte for byte,
+    # which is what keeps the labelled corpus a valid control for it. SS29.11
     all_rgb_frames = []
     for i in range(n_frames):
         im.seek(i)
-        all_rgb_frames.append(np.array(im.convert('RGB')))
+        _rgba_i = np.array(im.convert('RGBA'))
+        _a_i = _rgba_i[..., 3]
+        if ((_a_i > 0) & (_a_i < 255)).any():
+            _f_i = _a_i[..., None].astype(np.float32) / 255.0
+            all_rgb_frames.append((_rgba_i[..., :3].astype(np.float32) * _f_i
+                                   + np.asarray(bg_rgb, dtype=np.float32) * (1.0 - _f_i)
+                                   ).round().clip(0, 255).astype(np.uint8))
+        else:
+            # ascontiguousarray, not a bare slice: `convert('RGB')` returned a fresh
+            # contiguous array and `_rgba_i[..., :3]` is a non-contiguous VIEW that also
+            # pins the whole RGBA buffer alive for every frame.
+            all_rgb_frames.append(np.ascontiguousarray(_rgba_i[..., :3]))
 
     # Tumble margin and the small-region histogram both scan every frame
     # and both start from the identical color_mask(rgb, bg_rgb, tolerance)
@@ -933,13 +1282,101 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # every previously recorded number; the DECISION uses the max, because
     # antialiasing is a property of the artwork -- if any frame clearly shows a
     # ramp, the art is antialiased no matter how many frames hide it.
-    _eh0 = measure_edge_hardness(rgb0, bg_rgb, tolerance)
-    _eh_ratios = [measure_edge_hardness(all_rgb_frames[i], bg_rgb, tolerance)['ratio']
+    #
+    # ONE MORE THING EVERY HARDNESS MEASURE NEEDS, and none of them had: if the source already
+    # carries an ALPHA CHANNEL, its antialiasing lives in ALPHA, not in RGB. Image.convert('RGB')
+    # drops alpha without compositing, so a partially transparent edge pixel keeps its
+    # full-strength art colour and the ramp vanishes -- every measure here then sees a hard
+    # silhouette that does not exist. Measured on a real 512x512 RGBA icon (`exchange.png`,
+    # 1.5% partial-alpha pixels): plateau_cliff_ratio 0.320 read straight from RGB against 0.000
+    # composited, i.e. the difference between "pixel art" and "obviously not". Compositing over
+    # the detected background colour reconstructs exactly what a viewer sees, which is the image
+    # the removal step will actually face. Opaque sources -- every asset in the labelled corpus --
+    # take the identical path, because there is no partial alpha to composite. SS28.5
+    _hardness_frames = dict()
+    _partial_alpha_seen = False
+    _alpha_levels = 1
+    _rgb_span = 0
+    _has_transparent_px = False
+    for i in sample_idxs:
+        im.seek(i)
+        _rgba = np.array(im.convert('RGBA'))
+        _a = _rgba[..., 3]
+        _alpha_levels = max(_alpha_levels, int(np.unique(_a).size))
+        _rgb_span = max(_rgb_span, int(_rgba[..., :3].max()) - int(_rgba[..., :3].min()))
+        _has_transparent_px = _has_transparent_px or bool((_a == 0).any())
+        if not ((_a > 0) & (_a < 255)).any():
+            continue
+        _partial_alpha_seen = True
+        _f = (_a[..., None].astype(np.float32) / 255.0)
+        _hardness_frames[i] = (_rgba[..., :3].astype(np.float32) * _f
+                               + np.asarray(bg_rgb, dtype=np.float32) * (1.0 - _f)
+                               ).round().clip(0, 255).astype(np.uint8)
+    _hf = (lambda i: _hardness_frames.get(i, all_rgb_frames[i]))
+
+    # AN ALPHA-ONLY SOURCE: one flat RGB value over the whole canvas, with the entire image
+    # carried in the alpha channel. A monochrome glyph icon exported this way is extremely
+    # common, and EVERY colour-based measure in this file is meaningless on it -- there is no
+    # background colour to key, no transition band, no blends, and no colour steps at all.
+    # Measured across this project's asset folders: 15 of 137 files are like this, each with
+    # exactly ONE unique RGB value (span 0) and 186-256 distinct ALPHA values.
+    #
+    # Left unhandled it is not a cosmetic misread. detect_bg_color returns that one colour,
+    # color_mask then matches every pixel in the frame, and the render removes the entire
+    # image: measured on `pencil.png`, 69,925 opaque pixels in and ZERO out, while --auto
+    # reported success because an empty output has no leftover background to count. The
+    # RENDER-side guard (_refuse_empty_render) is the backstop; this is the diagnosis.
+    _alpha_only_source = bool(_has_transparent_px and _rgb_span <= 8)
+
+    # Does the source's OWN transparency already stand in for its background? If so there is
+    # nothing for colour-based removal to do, and the RGB stored under those pixels is
+    # padding rather than a background colour -- keying on it deletes any artwork that shares
+    # the value, which on real sprites is the black outline (SS28.14). This has to reach
+    # --recommend, not just the renderer: an autonomous run pastes suggested_command
+    # verbatim, and a command that reads as "remove the background" while being a no-op is
+    # the kind of confidently-wrong output this whole project is aimed at.
+    _src_bg_transparent, _src_bg_why = False, None
+    if _has_transparent_px and not _alpha_only_source:
+        im.seek(0)
+        _st0 = get_source_transparency_mask(im)
+        if _st0 is not None and _st0.any():
+            _src_bg_transparent, _src_bg_why = source_transparency_is_the_background(
+                _st0, all_rgb_frames[0], bg_rgb, tolerance)
+
+    # Strictly binary alpha means a HARD CUTOUT: the silhouette carries no antialiasing, by
+    # construction. Computed here rather than beside its first old use because two rules below now
+    # need it before they may speak at all. SS28.12
+    _hard_alpha_cutout = bool(_has_transparent_px and _alpha_levels <= 2)
+
+    # WHEN THE TRANSITION-BAND MEASURES HAVE NOTHING TO MEASURE. Both band-based rules read the
+    # region between the background colour and the art. On a hard-alpha cutout whose transparency
+    # IS the background, that region does not exist: the pixels that held the antialiasing ramp
+    # were made fully transparent by whoever removed the background, and their RGB was replaced by
+    # a flat padding value. So `ratio max 0.000` there is a statement about the removal that
+    # already happened, not about the artwork -- it is guaranteed by the container whether the art
+    # is pixel art or not.
+    #
+    # Measured: FIVE of the seven false positives across all five populations were exactly this,
+    # and every one is antialiased art that had already been cut out -- `love_transparent.gif`
+    # (this tool's own output from antialiased `love.gif`), `clown_transparent-ezgif.com-crop.gif`,
+    # `NewDraws copy.gif` and two GIFs in the alphas set. Each was called hard-edged on the
+    # strength of an empty band, and --pixel-art on antialiased art is the destructive direction
+    # (SS18). Gating the two band rules on this predicate takes specificity from 0.966 to 0.993.
+    #
+    # This is SS28.9's lesson a second time: an empty measurement is not weak evidence, it is the
+    # absence of any evidence, and the fix is to establish WHY the plane is blank rather than to
+    # build something that out-votes it. Note the conjunction -- a SOFT-alpha source whose
+    # transparency is the background still gets a real band, because SS28.5 composites the ramp
+    # back before measuring. Only the binary cutout is unrecoverable. SS29
+    _band_measures_are_vacuous = bool(_src_bg_transparent and _hard_alpha_cutout)
+
+    _eh0 = measure_edge_hardness(_hf(0), bg_rgb, tolerance)
+    _eh_ratios = [measure_edge_hardness(_hf(i), bg_rgb, tolerance)['ratio']
                   for i in sample_idxs]
     _eh_max = max(_eh_ratios) if _eh_ratios else _eh0['ratio']
-    _art_palette = build_art_palette([all_rgb_frames[i] for i in sample_idxs], bg_rgb)
+    _art_palette = build_art_palette([_hf(i) for i in sample_idxs], bg_rgb)
     _blend_ratio = max(
-        (measure_antialiasing_presence(all_rgb_frames[i], bg_rgb, _art_palette, tolerance)
+        (measure_antialiasing_presence(_hf(i), bg_rgb, _art_palette, tolerance)
          for i in sample_idxs), default=0.0)
     # BOTH must agree before calling something hard-edged. The band ratio alone
     # produced two false positives on real vector art (SS18); requiring an
@@ -966,17 +1403,145 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # A low change-line density is dispositive on its own (see the measure's docstring for the
     # 37-asset separation and why a HIGH value proves nothing). Threshold 0.5 sits between a
     # measured 0.245 and 0.986 -- deliberately mid-gap rather than tuned to either edge.
-    _density = float(np.median([measure_change_line_density(all_rgb_frames[i])
+    _density = float(np.median([measure_change_line_density(_hf(i))
                                 for i in sample_idxs])) if sample_idxs else 1.0
-    _hard = (_no_transition_band_at_all or (_density < 0.5)
-             or ((_eh_max < 0.5) and (_blend_ratio < 0.15)))
+    # The plateau-cliff ratio is the measure that finally reaches DITHERED and photographic pixel
+    # art, which saturates change_line_density (a dither puts a change on essentially every line,
+    # so 7 of 25 labelled assets scored 0.592-1.000 and were missed). Conditioning on a strong
+    # colour step is what makes it survive the vector-emoji population that killed the four
+    # previous attempts -- see the measure's docstring and references/lessons.md SS28. Like the
+    # density, it can only ever ADD a hard-edged verdict: high is dispositive, low proves nothing.
+    _cliff_pairs = [measure_plateau_cliff_ratio(_hf(i)) for i in sample_idxs]
+    _cliff = float(np.median([r for r, _ in _cliff_pairs])) if _cliff_pairs else 0.0
+    _cliff_n = float(np.median([n for _, n in _cliff_pairs])) if _cliff_pairs else 0.0
+    # Too few strong steps and the ratio is an estimate from a handful of pixels rather than a
+    # measurement: one labelled antialiased asset has 177 of them and swings wildly. Report the
+    # count so a low-sample verdict is visible instead of silently confident (SS28.4).
+    _cliff_says_hard = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
+                        and _cliff >= PLATEAU_CLIFF_THRESHOLD)
+    # The palette-size measure reaches the art the cliff ratio structurally cannot: pixel art drawn
+    # 1:1, where no edge has a 2px plateau on either side. Median across sampled frames for the
+    # same reason the cliff ratio takes one -- a small count is dispositive, so a single atypical
+    # frame must not decide it. See the measure's docstring for the 688-asset separation.
+    _ncolors = int(np.median([measure_composited_color_count(_hf(i))
+                             for i in sample_idxs])) if sample_idxs else 0
+    _flat_palette = bool(_ncolors <= FLAT_PALETTE_MAX_COLORS and not _alpha_only_source)
+    # Record WHICH disjunct fired, not just that one did. `appears_hard_edged` has been an OR of
+    # several independent rules since v5.0.0, but --recommend's evidence line still described the
+    # ORIGINAL pair ("two independent measures agree: the transition band is empty AND there are
+    # no blends") for every verdict, including ones reached by change_line_density alone -- where
+    # both halves of that sentence can be false. An autonomous run takes the flags verbatim and a
+    # human audits the evidence, so evidence naming a measure that did not drive the decision is
+    # worse than none. Built here rather than re-derived in recommend() so the thresholds live in
+    # exactly one place.
+    _hard_reasons = []
+    _soft_notes = []
+    if _alpha_only_source:
+        # Hardness read from the ALPHA channel, because that is where the whole image is. The
+        # separation is a margin of KIND, not degree: a hard cutout has exactly 2 alpha levels
+        # (0 and 255), while the 15 measured alpha-only icons carry 186-256. No threshold is
+        # being tuned here, and no colour-based rule gets a vote -- each of them would be
+        # reporting on a uniform plane.
+        if _alpha_levels <= ALPHA_MASK_RAMP_LEVELS:
+            _hard_reasons.append(
+                f"the source is an alpha-only mask (one flat RGB value) with {_alpha_levels} "
+                f"alpha levels, at or under the {ALPHA_MASK_RAMP_LEVELS} a hard cutout uses -- "
+                f"no ramp anywhere")
+        else:
+            _soft_notes.append(
+                f"the source is an alpha-only mask: one flat RGB value across the canvas, with "
+                f"{_alpha_levels} distinct ALPHA levels, well over the "
+                f"{ALPHA_MASK_RAMP_LEVELS} a hard cutout uses. Every colour-based hardness measure is "
+                f"reading a uniform plane and none of them gets a vote; the {_alpha_levels} alpha "
+                f"levels ARE the antialiasing ramp, so this is antialiased art "
+                f"(references/lessons.md SS28.9).")
+    elif _no_transition_band_at_all and not _band_measures_are_vacuous:
+        _hard_reasons.append(
+            f"no transition band at all in any sampled frame (edge_hardness ratio max "
+            f"{_eh_max:.3f})")
+    elif _no_transition_band_at_all:
+        _soft_notes.append(
+            f"the transition band is empty (ratio max {_eh_max:.3f}), but this source is a "
+            f"hard-alpha cutout whose own transparency is the background, so an empty band is "
+            f"guaranteed by the export and says nothing about the artwork: the ramp pixels were "
+            f"made transparent and their colour replaced by padding. Not counted as evidence "
+            f"(references/lessons.md SS29).")
+    # A low density and a low cliff ratio CANNOT both be true of pixel art, and that contradiction
+    # is the only thing standing between the density rule and a measured false positive. Density
+    # below 0.5 means the image changes only every few scan lines -- blocks wider than one pixel --
+    # which ENTAILS plateaus of 2px or more on each side of an edge, i.e. a high cliff ratio. When
+    # the cliff ratio says the opposite on a decent sample, the low density is coming from
+    # something else: a large, simple, flat shape whose columns repeat because there is barely any
+    # detail, not because there is a pixel grid. Measured on `add.png`, a 512x512 vector icon:
+    # density 0.447 (reads as pixel art) against cliff 0.070 over 3,737 strong steps, band ratio
+    # 16.079 and blend ratio 2.960 (both emphatically antialiased). HEAD recommends --pixel-art
+    # for it. All 18 corpus assets the density rule detects score cliff 1.000, so this costs no
+    # detection. Note the asymmetry that keeps it safe: the cliff ratio may only SUPPRESS the
+    # density rule when it has the samples to contradict it -- with a thin sample the density rule
+    # still stands alone, which is the one regime where it is the only measure available. SS28.6
+    # ...WITH ONE EXCEPTION, and it was a real false negative before it existed. A source whose
+    # alpha is strictly binary is a HARD CUTOUT: there is no antialiasing at its silhouette, by
+    # construction. So on such a file a low cliff ratio cannot be evidence of a ramp -- it just
+    # means the art is drawn 1:1, where a block boundary has no 2px plateau to sit between. Letting
+    # the cliff ratio suppress the density rule there reverses a CORRECT verdict on real pixel art.
+    #
+    # Measured on 524 files from real sprite packs: without this exception the suppression turned 4
+    # genuine pixel-art sprite sheets from detected to undetected (`Soldier.png`, `Orc.png` and
+    # their with-shadows variants -- density 0.271-0.309, cliff 0.130-0.211 over 7,109-11,342
+    # steps, and band/blend 0.093-0.160 / 0.236-0.671, i.e. no antialiasing evidence at all).
+    # Contrast `add.png`, which the suppression SHOULD catch: 255 alpha levels, band ratio 16.079
+    # and blend 2.960. The discriminator is not the blend ratio -- SS23.5 measured that pixel art
+    # and vector art overlap completely on it -- it is the alpha channel, which states the fact
+    # directly rather than inferring it. SS28.12
+    _cliff_contradicts = (_cliff_n >= PLATEAU_CLIFF_MIN_SAMPLES
+                          and _cliff < PLATEAU_CLIFF_THRESHOLD
+                          and not _hard_alpha_cutout)
+    if _density < 0.5 and not _cliff_contradicts and not _alpha_only_source:
+        _hard_reasons.append(
+            f"change_line_density {_density:.3f}, below the 0.5 floor -- the image changes only "
+            f"at block boundaries")
+    elif _density < 0.5 and not _alpha_only_source:
+        _soft_notes.append(
+            f"change_line_density {_density:.3f} is below the 0.5 hard-edged floor, but "
+            f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps "
+            f"contradicts it: a pixel grid coarse enough to give that density would give "
+            f"plateau-to-plateau edges. Treating the low density as a large flat shape, not "
+            f"blocks (references/lessons.md SS28.6).")
+    if _cliff_says_hard and not _alpha_only_source:
+        _hard_reasons.append(
+            f"plateau_cliff_ratio {_cliff:.3f} across {int(_cliff_n)} strong colour steps, at or "
+            f"above the {PLATEAU_CLIFF_THRESHOLD:.2f} floor -- its edges are block-to-block "
+            f"cliffs, not antialiasing ramps")
+    if (_eh_max < 0.5) and (_blend_ratio < 0.15) and not _alpha_only_source \
+            and not _band_measures_are_vacuous:
+        _hard_reasons.append(
+            f"a thin transition band (ratio max {_eh_max:.3f}) together with essentially no "
+            f"background-to-art blend pixels (antialiasing_blend_ratio {_blend_ratio:.3f})")
+    if _flat_palette:
+        _hard_reasons.append(
+            f"the composited frame holds only {_ncolors} distinct colours, at or under the "
+            f"{FLAT_PALETTE_MAX_COLORS} of a flat pixel-art palette -- antialiasing manufactures a "
+            f"continuum of intermediate colours and cannot come out this small")
+    _hard = bool(_hard_reasons)
     edge_hardness = dict(_eh0)
     edge_hardness.update({
         'ratio_max_across_frames': round(float(_eh_max), 3),
         'ratio_min_across_frames': round(float(min(_eh_ratios)), 3) if _eh_ratios else None,
         'antialiasing_blend_ratio': _blend_ratio,
         'change_line_density': round(_density, 3),
+        'plateau_cliff_ratio': round(_cliff, 3),
+        'plateau_cliff_samples': int(_cliff_n),
+        'composited_color_count': _ncolors,
+        'band_measures_are_vacuous': _band_measures_are_vacuous,
         'appears_hard_edged': bool(_hard),
+        'hard_edged_reasons': _hard_reasons,
+        'hard_edged_suppressed_notes': _soft_notes,
+        'measured_on_alpha_composite': bool(_partial_alpha_seen),
+        'alpha_only_source': _alpha_only_source,
+        'source_background_already_transparent': _src_bg_transparent,
+        'source_background_transparent_reason': _src_bg_why,
+        'source_alpha_levels': int(_alpha_levels),
+        'source_is_hard_alpha_cutout': _hard_alpha_cutout,
     })
 
     # detect_band_interior_regions runs BEFORE the candidate-region loop and so
@@ -1029,27 +1594,56 @@ def recommend(input_path, tolerance=15):
     _blend = float(_eh.get('antialiasing_blend_ratio', 0.0))
     if _eh['appears_hard_edged']:
         flags.append('--pixel-art')
+        _reasons = _eh.get('hard_edged_reasons') or []
         evidence.append(
-            f"Hard-edged art detected -- recommending --pixel-art. Two independent "
-            f"measures agree: the transition band is empty in every sampled frame "
-            f"(edge_hardness ratio {_hardness:.3f}, max across frames "
-            f"{_hard_max:.3f}), AND there are essentially no background-to-art blend "
-            f"pixels (antialiasing_blend_ratio {_blend:.3f}, below the 0.15 floor). "
-            f"Genuine pixel art measures 0.000 on the second; the lowest real vector "
-            f"asset measured 0.538.")
+            "Hard-edged art detected -- recommending --pixel-art. What actually fired: "
+            + ("; ".join(_reasons) if _reasons else "(reason not recorded)")
+            + f". Each rule is dispositive on its own and none can veto another; the band ratio "
+              f"is {_hardness:.3f} on frame 0 and the blend ratio {_blend:.3f}, quoted here for "
+              f"context whether or not they drove the verdict "
+              f"(references/lessons.md SS23, SS28).")
     elif _hard_max < 0.5:
         # The exact false positive SS18 documents: a thin-antialiasing vector
         # export whose band ratio reads as hard-edged. Reported as evidence
         # rather than silently dropped, so the run is auditable.
+        # WHY it is not hard-edged has to match the case, and one wording cannot cover three.
+        # This line used to assert "real background-to-art blends ARE present (blend_ratio X,
+        # above the 0.15 floor)" unconditionally -- so on a hard-alpha cutout, where the verdict
+        # is now decided by the vacuous-band gate, it printed "blends ARE present" beside a
+        # measured blend ratio of 0.000, i.e. a sentence contradicted by its own number, on a
+        # whole content class. Same defect family as SS28.7: evidence naming a rule that did not
+        # drive the decision. Found by READING the output on a real asset rather than by checking
+        # that the branch existed. SS29.1
+        _vac = bool(_eh.get('band_measures_are_vacuous'))
+        if _vac:
+            _why = (f"the band measures got no vote at all -- this source is a hard-alpha cutout "
+                    f"whose own transparency is its background, so a thin or empty band is "
+                    f"guaranteed by the export and says nothing about the art "
+                    f"(antialiasing_blend_ratio {_blend:.3f} is reading the same blank region). ")
+        elif _blend >= 0.15:
+            _why = (f"real background-to-art blends ARE present (antialiasing_blend_ratio "
+                    f"{_blend:.3f}, above the 0.15 floor), so this is antialiased vector art with "
+                    f"a thin band -- typical of shapes made mostly of straight edges -- not pixel "
+                    f"art. ")
+        else:
+            _why = (f"no rule reached its hard-edged floor; a low band ratio is not on its own "
+                    f"evidence of blocks (antialiasing_blend_ratio {_blend:.3f}). ")
         evidence.append(
             f"NOT recommending --pixel-art despite a low edge_hardness ratio "
             f"({_hardness:.3f}, max across frames {_hard_max:.3f}, under the 0.5 "
-            f"hard-edged threshold): real background-to-art blends ARE present "
-            f"(antialiasing_blend_ratio {_blend:.3f}, above the 0.15 floor), so this "
-            f"is antialiased vector art with a thin band -- typical of shapes made "
-            f"mostly of straight edges -- not pixel art. --pixel-art here would "
+            f"hard-edged threshold): " + _why
+            + f"The three block-structure measures agree: change_line_density "
+            f"{float(_eh.get('change_line_density', 1.0)):.3f} (hard-edged below 0.5), "
+            f"plateau_cliff_ratio {float(_eh.get('plateau_cliff_ratio', 0.0)):.3f} over "
+            f"{int(_eh.get('plateau_cliff_samples', 0))} strong colour steps (hard-edged at or "
+            f"above {PLATEAU_CLIFF_THRESHOLD:.2f}), and composited_color_count "
+            f"{int(_eh.get('composited_color_count', 0))} (hard-edged at or under "
+            f"{FLAT_PALETTE_MAX_COLORS}). --pixel-art here would "
             f"disable feathering and erosion and damage the ramp "
-            f"(references/lessons.md SS1, SS18).")
+            f"(references/lessons.md SS1, SS18, SS28, SS29).")
+
+    for _note in (_eh.get('hard_edged_suppressed_notes') or []):
+        evidence.append("Hard-edged evidence weighed and set aside: " + _note)
 
     tumble = report.get('tumble_risk', {})
     tumble_safe = bool(tumble.get('likely_tumble_risk'))
@@ -1360,10 +1954,39 @@ def recommend(input_path, tolerance=15):
     if flags:
         suggested += " " + " ".join(flags)
 
+    if _eh.get('source_background_already_transparent'):
+        # Not a not_applicable_reason: unlike an alpha-only source, running the command here is
+        # SAFE (removal is confined to the source's own alpha since SS28.14) and a format/size
+        # conversion is a legitimate reason to run it. What would be dishonest is presenting it
+        # as background removal, so the evidence says plainly that there is nothing to remove.
+        evidence.insert(0, (
+            "NOTHING TO REMOVE: this source's background is ALREADY transparent -- "
+            f"{_eh.get('source_background_transparent_reason')}. Colour-based removal is confined "
+            "to the region that alpha already covers, so the command below will leave the artwork "
+            "intact and change little besides the container. Run it only if you want a format "
+            "change, a size cap, or a leftover matte fringe cleaned up. If a run reports ART LOSS "
+            "on this input, something overrode that confinement -- check --ignore-source-alpha and "
+            "--edge-cleanup-erosion before reaching for --bg-color."))
+
+    _not_applicable = None
+    if _eh.get('alpha_only_source'):
+        # An autonomous run pastes suggested_command verbatim, so on this input the field cannot
+        # hold a removal command: there is no background colour to key, and running one empties
+        # the file (SS28.9). None forces every caller to handle it -- run_auto checks this field
+        # before it renders anything.
+        _not_applicable = (
+            f"This source is an ALPHA-ONLY mask: one flat RGB value across the canvas, with the "
+            f"whole image carried in {_eh.get('source_alpha_levels')} levels of alpha. There is no "
+            f"background COLOUR to remove -- its background is already fully transparent. Running "
+            f"background removal would match the single flat colour everywhere and empty the file. "
+            f"If the goal is a smaller file, use --target-kb / --resize-max-dim on it directly; if "
+            f"it is a recolour, that is outside what this skill does.")
+        suggested = None
     return {
         'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
-        'evidence': evidence + region_notes,
+        'not_applicable_reason': _not_applicable,
+        'evidence': ([_not_applicable] if _not_applicable else []) + evidence + region_notes,
         'analysis': report,
     }
 
@@ -2280,16 +2903,26 @@ def build_band_only_removal_mask(removable_core, band_px):
     return ~removable_core & ~ring
 
 
-def compute_alpha_mask(rgb, protected, args):
+def compute_alpha_mask(rgb, protected, args, removal_scope=None):
     """
     Full alpha decision for one frame, combining the hard background mask
     with (optionally) feathered/dithered edges. Returns (alpha_uint8, rgb_out).
+
+    `removal_scope`, when given, is a boolean mask OUTSIDE of which nothing may
+    be made transparent. It is how an already-transparent source is honoured:
+    the source's own alpha has already answered the question for every pixel it
+    covers, so colour matching is confined to that region plus a thin band
+    around it (the only place a leftover matte fringe can live). Without it, a
+    padding colour that also appears in the artwork deletes the artwork -- see
+    source_transparency_is_the_background.
     """
     bg_rgb = hex_to_rgb(args.bg_color)
 
     if not args.feather:
         bg_mask = color_mask(rgb, bg_rgb, args.tolerance)
         transparent_mask = bg_mask & ~protected
+        if removal_scope is not None:
+            transparent_mask &= removal_scope
         alpha = np.where(transparent_mask, 0, 255).astype(np.uint8)
         return alpha, rgb
 
@@ -2304,6 +2937,17 @@ def compute_alpha_mask(rgb, protected, args):
         # reason the bayer/none modes above exist. See references/lessons.md
         # SS16 for the measured case that motivated this.
         alpha = np.clip(np.rint(alpha_f * 255.0), 0, 255).astype(np.uint8)
+        if removal_scope is not None:
+            # ⚠️ THE THIRD RETURN. This branch is the DEFAULT for every 8-bit-alpha
+            # container (line ~5131 sets dither_mode='continuous' for .webp/.avif/
+            # .apng/.png), so it is the one a PNG sprite actually takes -- and the
+            # first version of this scope logic applied it at the other two returns
+            # only. The result: --pixel-art (feather off) survived 100% while a
+            # plain PNG run still lost 2,455 outline pixels, and the log said
+            # "SOURCE ALPHA HONOURED" both times. Exactly the inverse-spelling
+            # failure SS28.13 records, committed while documenting it.
+            alpha = np.where(removal_scope, alpha, 255).astype(np.uint8)
+            recolored = np.where(removal_scope[..., None], recolored, rgb)
         return alpha, recolored
     if dither_mode == 'none':
         # Hard 50% cutoff on the ALREADY-defringed alpha, instead of a
@@ -2336,6 +2980,13 @@ def compute_alpha_mask(rgb, protected, args):
     # protected), so dithering there is a no-op; this keeps behavior identical
     # to the hard-cutoff path away from edges.
     alpha = np.where(keep, 255, 0).astype(np.uint8)
+    if removal_scope is not None:
+        # Outside the scope, keep BOTH the opacity and the original colour:
+        # estimate_alpha_and_defringe recolours edge pixels to unmix them from
+        # the background, and unmixing art from a padding colour it merely
+        # resembles is the same error one level down.
+        alpha = np.where(removal_scope, alpha, 255).astype(np.uint8)
+        recolored = np.where(removal_scope[..., None], recolored, rgb)
     return alpha, recolored
 
 
@@ -2577,6 +3228,21 @@ def build_protected_masks_robust(rgb_frames, args):
     return result
 
 
+def _timing_line(output_path, in_durations, out_alpha):
+    """Timing description, or the honest static-image line when there is no animation.
+
+    A static source has no timing to preserve, and comparing its default 100ms placeholder against
+    a written PNG's 0ms produced "a real timing defect, not encoder frame-coalescing" on an
+    ordinary single-frame sprite. v5.4.0 added the static-image line to the PROCESS path and left
+    verify() comparing durations -- the same split-brain that SS28.8 found in `n_frames`, where the
+    processing path was fixed and two other readers were not. Shared by BOTH of verify()'s exits
+    (the early dimension-mismatch return had its own copy of the call). SS28.13
+    """
+    if len(in_durations) <= 1 and len(out_alpha) <= 1:
+        return "1 frame (static image -- no animation timing to verify)"
+    return describe_written_timing(output_path, in_durations)
+
+
 def describe_written_timing(output_path, intended_durations):
     """
     Describe the timing of the file that was ACTUALLY written, by reading it
@@ -2644,7 +3310,7 @@ def load_animation_rgba_frames(path):
     reflects its real transparency index).
     """
     im = Image.open(path)
-    n = im.n_frames
+    n = getattr(im, 'n_frames', 1)   # static source: JPEG raises on the bare attribute
     rgb_frames, alpha_frames, durations = [], [], []
     for i in range(n):
         im.seek(i)
@@ -2739,7 +3405,7 @@ def verify(input_path, output_path, tolerance=15):
     exercising (a region that should have stayed protected but didn't),
     which nothing in the original design could see at all.
     """
-    in_rgb, _, in_durations = load_animation_rgba_frames(input_path)
+    in_rgb, in_alpha, in_durations = load_animation_rgba_frames(input_path)
     out_rgb, out_alpha, out_durations = load_animation_rgba_frames(output_path)
 
     report = {'input_path': input_path, 'output_path': output_path}
@@ -2752,7 +3418,7 @@ def verify(input_path, output_path, tolerance=15):
         report['output_dims'] = [ow, oh]
         report['note'] = ('Input/output canvas size differs (crop/resize likely used) -- '
                            'pixel-position checks are skipped; only the timing check ran.')
-        report['timing'] = describe_written_timing(output_path, in_durations)
+        report['timing'] = _timing_line(output_path, in_durations, out_alpha)
         return report
 
     report['dimensions_match'] = True
@@ -3144,8 +3810,72 @@ def verify(input_path, output_path, tolerance=15):
                     })
 
     report['small_region_inflation'] = {'flagged': inflated[:10], 'flagged_count': len(inflated)}
-    report['timing'] = describe_written_timing(output_path, in_durations)
+    # Every other check here is a QUALITY measure, and every one of them reads an empty output as
+    # flawless -- no leftover background, no fringe, no inflation. So the one check that catches
+    # total destruction has to be stated separately. SS28.9
+    _out_opaque = int(sum(int((a > 0).sum()) for a in out_alpha))
+    report['output_opaque_px'] = _out_opaque
+    # PARTIAL destruction, the sibling of the empty-output check below. When the SOURCE already
+    # carries transparency, its opaque area IS the artwork -- so the output should keep essentially
+    # all of it, and a big shortfall means colour-based removal ate real art. This cannot be a
+    # blanket ratio: on an ordinary opaque source the whole canvas is "opaque" and a low survival
+    # rate is the entire point of the tool. Measured on a real itch.io sprite sheet whose
+    # transparent region stores RGB (0,0,0): detect_bg_color picks black, and the sprite's black
+    # outlines go with it -- 7,130 opaque px in, 4,675 out, 65.6% survival, with every other check
+    # passing. SS28.13
+    _in_opaque = int(sum(int((a > 0).sum()) for a in in_alpha))
+    _src_had_alpha = any(bool((a < 255).any()) for a in in_alpha)
+    if _src_had_alpha and _in_opaque > 0:
+        _survival = _out_opaque / _in_opaque
+        report['opaque_survival_vs_transparent_source'] = round(_survival, 4)
+        if _survival < 0.95:
+            report['opaque_survival_warning'] = (
+                f"The SOURCE already had transparency, so its {_in_opaque} opaque pixels were the "
+                f"artwork -- and only {_out_opaque} survived ({_survival:.1%}). Colour-based "
+                f"removal has eaten real art: the background colour detected from the RGB stored "
+                f"under the transparent pixels also matches part of the design -- OR a later step "
+                f"eroded it. Removal itself is confined to the source's own alpha (SS28.14), so on "
+                f"a default run this points at one of four things, in the order worth checking: "
+                f"--ignore-source-alpha was passed; --edge-cleanup-erosion was passed explicitly "
+                f"(it shaves a source-defined silhouette, and nothing can distinguish that from "
+                f"trimming a fringe); the confinement did not engage (the transparency does not "
+                f"reach the frame border, or the colour under it is not the detected background); "
+                f"or the source is one this project has not seen. An explicit --bg-color is the "
+                f"LAST thing to reach for, not the first.")
+    if _out_opaque == 0:
+        report['output_is_empty'] = (
+            'EVERY pixel of every frame is transparent -- the output is empty, not clean. No '
+            'other check here can see this: an empty output has no leftover background, no '
+            'fringe and no thin protected region. Read edge_hardness.alpha_only_source and the '
+            'detected background colour.')
+    report['timing'] = _timing_line(output_path, in_durations, out_alpha)
     return report
+
+
+def _refuse_empty_render(alpha_frames, output_path):
+    """Refuse to write an output in which NOTHING is opaque, on any frame.
+
+    "Remove the background" has no valid result that is a fully transparent file, and writing one
+    silently is the worst outcome available: it overwrites whatever was at the output path, and
+    every quality check downstream reads it as perfect -- an empty output has no leftover
+    background to count, no fringe, and no protected region to come back thin. Measured on a real
+    alpha-only PNG (`pencil.png`): 69,925 opaque pixels in, ZERO out, and --auto printed success.
+    SS28.9
+
+    Note the invariant is deliberately whole-file, not per-frame: a genuinely blank frame is
+    normal inside an animation that fades out. Only "no opaque pixel anywhere" is impossible.
+    """
+    if any(bool((a > 0).any()) for a in alpha_frames):
+        return
+    raise SystemExit(
+        f"ERROR: refusing to write {output_path!r} -- every pixel of every frame came out "
+        f"transparent, so the render would destroy the image rather than remove its background. "
+        f"Nothing has been written.\n"
+        f"  The usual causes: the detected --bg-color matched the ARTWORK as well as the "
+        f"background, or the source is an alpha-only mask (one flat RGB value, with the whole "
+        f"image in its alpha channel) and so has no background colour to key at all.\n"
+        f"  Run --analyze and read 'alpha_only_source' and 'background_color', or pass an "
+        f"explicit --bg-color.")
 
 
 def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
@@ -3184,6 +3914,7 @@ def render_frames_to_gif(rgb_frames, alpha_frames, durations, loop, output_path,
     identical indices across frames so static regions compress like the
     static regions they are.
     """
+    _refuse_empty_render(alpha_frames, output_path)
     n_colors = max(2, min(colors, 255))
     palette_colors = min(n_colors, 254)  # leave room for the reserved transparency slot
 
@@ -3638,6 +4369,18 @@ def resolve_output_format(output_path, args):
     explicit = getattr(args, 'format', None)
     if explicit and explicit != 'auto':
         return explicit
+    # An unrecognised extension falls through to GIF, which is right for a path with no
+    # extension -- but NOT for another image format Pillow will claim by extension. Writing GIF
+    # frames to `out.jpeg` made Pillow pick its JPEG handler and die inside SAVE_ALL, surfacing as
+    # a raw traceback line rather than "that is not a container I can write". Same shape as
+    # v5.4.0's --verify FileNotFoundError fix: a legible refusal beats an internal crash.
+    _low = str(output_path).lower()
+    for _ext in ('.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.ico', '.pdf', '.svg', '.mp4', '.webm'):
+        if _low.endswith(_ext):
+            raise SystemExit(
+                f"ERROR: {output_path!r} asks for {_ext} output, which cannot hold transparency "
+                f"and is not a container this script writes. Choose .gif, .webp, .avif or "
+                f"'.apng'/'.png' (or pass --format).")
     return format_from_path(output_path)
 
 
@@ -3662,6 +4405,7 @@ def render_frames_to_webp(rgb_frames, alpha_frames, durations, loop, output_path
     that defeats inter-frame prediction. Reach for lossy only when fitting a
     hard byte cap.
     """
+    _refuse_empty_render(alpha_frames, output_path)
     ims = []
     for rgb_out, alpha in zip(rgb_frames, alpha_frames):
         ims.append(Image.fromarray(
@@ -3693,6 +4437,7 @@ def render_frames_to_avif(rgb_frames, alpha_frames, durations, loop, output_path
     (Diors-Builds settled the same question for WebP only by testing a real
     Discord client on desktop and mobile.)
     """
+    _refuse_empty_render(alpha_frames, output_path)
     # Fail before doing the work, not after. AVIF needs Pillow built with AVIF
     # support (or the pillow-avif-plugin); --recommend actively ranks AVIF FIRST
     # under a byte cap, so an autonomous run is steered straight at this
@@ -3725,6 +4470,7 @@ def render_frames_to_apng(rgb_frames, alpha_frames, durations, loop, output_path
     --recommend still ranks WebP and AVIF ahead of it; APNG is here for the case
     where the destination wants PNG specifically.
     """
+    _refuse_empty_render(alpha_frames, output_path)
     ims = [Image.fromarray(np.dstack([r, a[:, :, None]]).astype(np.uint8), 'RGBA')
            for r, a in zip(rgb_frames, alpha_frames)]
     ims[0].save(output_path, 'PNG', save_all=True, append_images=ims[1:],
@@ -4718,6 +5464,65 @@ def process(input_path, output_path, args, diagnostics=None):
     rgb_frames = []
     alpha_frames = []
     any_source_transparency = False
+    source_alpha_scope_reasons = []
+
+    # ONE policy for the whole animation. Deciding per frame made 17 of 57 measured
+    # assets flip the veto branch mid-animation, which changes what is removable
+    # between consecutive frames -- flicker, the same instability this project
+    # rejects error-diffusion dithering for. The reach passed here is the distance
+    # the removal path can actually act at, which is tolerance x the feather band
+    # multiplier when feathering is on, not tolerance.
+    _sa_band = int(getattr(args, 'source_alpha_band', SOURCE_ALPHA_BAND_DEFAULT))
+    _sa_reach = (int(round(args.tolerance * getattr(args, 'feather_band_multiplier', 4.0)))
+                 if getattr(args, 'feather', True) else args.tolerance)
+    _sa_engaged = _sa_band_ok = False
+    _sa_scopes = []
+    if not getattr(args, 'ignore_source_alpha', False) and any(
+            m is not None and m.any() for m in source_trans_masks):
+        _sa_engaged, _sa_band_ok, _sa_reason, _sa_scopes = decide_source_alpha_policy(
+            source_trans_masks, rgb_frames_raw, hex_to_rgb(args.bg_color),
+            args.tolerance, _sa_band, _sa_reach)
+        if _sa_engaged:
+            source_alpha_scope_reasons.append(_sa_reason)
+
+    def _scope_for(i, st):
+        """The removal scope for frame `i`, reusing what the policy already computed.
+
+        The policy dilates every engaged frame to answer the veto question and used to
+        throw the result away, so this recomputed the identical dilation per frame --
+        two passes where one does, on every alpha-carrying animation. Keyed by INDEX
+        rather than by mask identity because two frames can legitimately share an
+        equal mask, and by index the reuse is exact.
+        """
+        if not _sa_engaged or st is None or not st.any():
+            return None
+        if not _sa_band_ok:
+            return st
+        cached = _sa_scopes[i] if i < len(_sa_scopes) else None
+        if cached is not None:
+            return cached
+        return ndimage.binary_dilation(st, structure=np.ones((3, 3), bool),
+                                       iterations=_sa_band)
+
+    # Edge-cleanup erosion exists to trim the mis-coloured ring that the feathering
+    # math leaves behind. When the silhouette came from the SOURCE's own alpha there
+    # is no such ring to trim, and erosion just eats the artwork: measured on a real
+    # sprite written to .gif, 1,642 of 7,130 opaque pixels survived (23.0%) with the
+    # scope working perfectly -- the colour path kept every pixel and erosion then
+    # removed three quarters of them. Same "explicit wins, and we say so" contract
+    # --pixel-art uses.
+    if _sa_engaged and args.edge_cleanup_erosion > 0:
+        if 'edge_cleanup_erosion' in typed_option_names():
+            print(f"NOTE: the source's own alpha defines the silhouette, so edge-cleanup erosion "
+                  f"has nothing to trim -- but you passed {args.edge_cleanup_erosion} explicitly, "
+                  f"so it stands. It will shave {args.edge_cleanup_erosion}px off real artwork.",
+                  file=sys.stderr)
+        else:
+            print(f"edge-cleanup erosion set to 0 (was {args.edge_cleanup_erosion}): the source's "
+                  f"own alpha defines the silhouette, so there is no feathering fringe to trim and "
+                  f"erosion would delete artwork. Pass --edge-cleanup-erosion explicitly to "
+                  f"override.", file=sys.stderr)
+            args.edge_cleanup_erosion = 0
 
     for i in range(n_frames):
         rgb = rgb_frames_raw[i]
@@ -4726,8 +5531,30 @@ def process(input_path, output_path, args, diagnostics=None):
             # opaque), so it needs neither protected_masks nor the feather path.
             alpha, rgb_out = recovered_alpha[i], recovered_rgb[i]
             source_trans_mask = source_trans_masks[i]
+            # This branch keys on the background colour too -- build_art_palette
+            # rejects art colours near it and the flood starts from the border --
+            # so it has the SAME data-loss failure, measured at 4,678 of 7,130
+            # opaque (65.6%) on the sprite from SS28.13. It needs its own
+            # treatment rather than the colour path's, because the whole point of
+            # palette unmixing is to produce legitimate PARTIAL alpha for an
+            # interior fade: forcing everything outside the scope fully opaque
+            # would delete the feature. So outside the scope a pixel may keep any
+            # recovered partial alpha but may NOT be made fully transparent --
+            # an interior pixel reaching exactly 0 means "entirely background
+            # coloured", which on a padding-coloured source is the outline.
             if source_trans_mask is not None and source_trans_mask.any():
                 any_source_transparency = True
+                scope = _scope_for(i, source_trans_mask)
+                if scope is not None:
+                    # Palette unmixing produces legitimate PARTIAL alpha for an
+                    # interior fade, so forcing everything outside the scope fully
+                    # opaque would delete the feature. Outside the scope a pixel may
+                    # keep any recovered partial alpha but may not be made FULLY
+                    # transparent: an interior pixel reaching exactly 0 means
+                    # "entirely background coloured", which on a padding-coloured
+                    # source is the outline. Measured before the fix: 4,678 of 7,130.
+                    alpha = np.where(~scope & (alpha == 0), 255, alpha)
+                    rgb_out = np.where(scope[..., None], rgb_out, rgb)
                 alpha = np.where(source_trans_mask, 0, alpha)
             rgb_frames.append(rgb_out)
             alpha_frames.append(alpha)
@@ -4736,7 +5563,15 @@ def process(input_path, output_path, args, diagnostics=None):
         if getattr(args, 'protect_band_only', None) is not None:
             removable_core = ~protected
             protected = build_band_only_removal_mask(removable_core, args.protect_band_only)
-        alpha, rgb_out = compute_alpha_mask(rgb, protected, args)
+
+        # An already-transparent source has ALREADY decided which pixels are
+        # background. Colour matching may then only clean up a leftover matte
+        # fringe hugging that boundary; anywhere else it is matching padding
+        # against artwork. Restricting rather than refusing is what keeps this
+        # useful on a PARTIAL cut, and it degrades to "change nothing" when the
+        # source's alpha is already complete.
+        removal_scope = _scope_for(i, source_trans_masks[i])
+        alpha, rgb_out = compute_alpha_mask(rgb, protected, args, removal_scope=removal_scope)
 
         source_trans_mask = source_trans_masks[i]
         if source_trans_mask is not None and source_trans_mask.any():
@@ -4750,6 +5585,15 @@ def process(input_path, output_path, args, diagnostics=None):
 
         rgb_frames.append(rgb_out)
         alpha_frames.append(alpha)
+
+    if source_alpha_scope_reasons:
+        # The scope's own reason string says what it did; do NOT restate it here.
+        # The first version announced "plus a 2px cleanup band" from the flag value
+        # and then appended a reason saying the band had been DROPPED -- one
+        # sentence contradicting the next, which is how a log stops being read.
+        print(f"SOURCE ALPHA HONOURED. {source_alpha_scope_reasons[0]}. "
+              f"Pass --ignore-source-alpha to remove by colour across the whole frame anyway.",
+              file=sys.stderr)
 
     if any_source_transparency:
         print("Preserved the source's own pre-existing transparent pixels "
@@ -4799,7 +5643,23 @@ def process(input_path, output_path, args, diagnostics=None):
         else:
             _tiny_for_cal = (find_tiny_removed_regions(alpha_frames, exempt_max)
                              if exempt_max is not None and exempt_max > 0 else None)
-        if getattr(args, 'auto_erosion', False) and not args.pixel_art:
+        # ⚠️ A FOURTH consumer of the same wrong assumption, and it OVERRODE the guard
+        # below. auto-erosion picks a level from a fringe-fraction curve -- how many
+        # outer-ring pixels look background-coloured. On a source whose padding colour
+        # is also its outline colour, the artwork's own outline reads as fringe, so the
+        # curve keeps improving as the outline disappears. Measured on a 192x32 sprite:
+        # the guard set erosion 0, the calibration read (0:1.0, 1:0.2448, 2:0.2985,
+        # 3:0.2064) and chose 3, and 3px of erosion left 1,226 of 3,167 opaque pixels
+        # (38.7%). The metric cannot succeed here -- it is measuring art and calling it
+        # fringe -- so the honest move is to not run it, exactly as for --pixel-art.
+        if _sa_engaged and getattr(args, 'auto_erosion', False) and not args.pixel_art:
+            print("erosion auto-calibration SKIPPED: the source's own alpha defines the "
+                  "silhouette, so the fringe metric would be measuring artwork. Its curve is "
+                  "monotone in the wrong direction on such a source -- it improves as the "
+                  "outline is eroded away. Pass --edge-cleanup-erosion explicitly to force a "
+                  "level.", file=sys.stderr)
+        if (getattr(args, 'auto_erosion', False) and not args.pixel_art
+                and not _sa_engaged):
             _cal_pal = build_art_palette(
                 rgb_frames[::max(1, len(rgb_frames) // 8)], hex_to_rgb(args.bg_color))
             _cal_log = []
@@ -5341,6 +6201,9 @@ def auto_run(input_path, output_path, args, parser):
     """
     print("=== AUTO 1/3: analysing source ===", file=sys.stderr)
     rec = recommend(input_path, tolerance=args.tolerance)
+    if rec.get('not_applicable_reason'):
+        raise SystemExit("ERROR: --auto has nothing to do here, and doing it anyway would "
+                         "destroy the image.\n  " + rec['not_applicable_reason'])
     rec_tokens = shlex.split(rec['suggested_command'])[4:]
 
     base = parser.parse_args([input_path, output_path])
@@ -5502,6 +6365,15 @@ def auto_run(input_path, output_path, args, parser):
                   f"{_worst['mean_opacity_fraction']}", file=sys.stderr)
         if _tm:
             print(f"  full verify -- timing: {_tm}", file=sys.stderr)
+        # An autonomous run is the only reader of this. SS28.13's survival check is worthless if it
+        # sits in a JSON field nobody prints -- the same reason SS26.7 exists.
+        if _v.get('opaque_survival_warning'):
+            print(f"  full verify -- ART LOSS: {_v['opaque_survival_warning']}", file=sys.stderr)
+        elif _v.get('opaque_survival_vs_transparent_source') is not None:
+            print(f"  full verify -- opaque artwork surviving from the transparent source: "
+                  f"{_v['opaque_survival_vs_transparent_source']:.1%}", file=sys.stderr)
+        if _v.get('output_is_empty'):
+            print(f"  full verify -- {_v['output_is_empty']}", file=sys.stderr)
     except SystemExit:
         pass
     except Exception as _exc:
@@ -5967,6 +6839,22 @@ def main():
                         'flags always win), renders, then RE-VERIFIES the rendered file and '
                         'corrects/re-renders if the encoded result disagrees with what the '
                         'pre-encode calibration predicted. Also enables --auto-erosion.')
+    p.add_argument('--ignore-source-alpha', action='store_true',
+                   help="Remove by COLOUR across the whole frame even when the source is "
+                        "already transparent. Off by default because a transparent source's "
+                        "padding colour routinely also appears in its artwork -- a measured "
+                        "sprite lost 2,455 of its 7,130 opaque pixels that way, all of them "
+                        "black outline. Use this only when you know the source's own alpha is "
+                        "wrong and the colour really is a background.")
+    p.add_argument('--source-alpha-band', type=int, default=SOURCE_ALPHA_BAND_DEFAULT,
+                   metavar='PX',
+                   help=f"How far outside the source's own transparent region colour-based "
+                        f"removal may reach, in pixels (default {SOURCE_ALPHA_BAND_DEFAULT}). "
+                        f"This is where a leftover matte fringe from an earlier, imperfect "
+                        f"background removal lives. 0 confines removal to exactly the pixels "
+                        f"the source already declared transparent, i.e. changes nothing on a "
+                        f"source whose cut is already clean. Ignored unless the source carries "
+                        f"transparency that reads as its background.")
     p.add_argument('--auto-erosion', action='store_true',
                    help='Choose --edge-cleanup-erosion by measuring THIS asset against '
                         'itself (its own erosion 0/1/2/3 curve) instead of a fixed default. '

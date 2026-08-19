@@ -165,6 +165,8 @@ Five modes replace "run it and hope":
 | `--remove-region …` | The inverse: force-remove, overriding protection inside it. |
 | `--remove-region-feather <px>` | Edge taper for that cut (default 1.5). |
 | `--protect-band-only <px>` | Feather only a thin ring around the removable core; force-protect everything else. For when a solid design colour sits near the background. |
+| `--ignore-source-alpha` | Remove by colour across the whole frame even when the source's own transparency already IS its background. Restores pre-v5.5.0 behaviour; on real sprite packs the padding under that transparency is the same value as the artwork's outlines, so this can destroy art. |
+| `--source-alpha-band <px>` | Width of the cleanup ring allowed outside the source's own transparency (default 2). Automatically dropped for the whole animation when the background colour also occurs in the artwork away from the boundary. |
 
 </details>
 
@@ -197,12 +199,15 @@ Five modes replace "run it and hope":
 </details>
 
 <details>
-<summary><b>Transparency recovery</b> — 2 flags</summary><br>
+<summary><b>Transparency recovery</b> — 5 flags</summary><br>
 
 | flag | |
 |:--|:--|
 | `--recover-fade-alpha` | Reconstructs partial alpha that a GIF export flattened into progressively paler background-coloured pixels. Needs a WebP/AVIF output. |
 | `--fade-color <hex[,hex…]>` | Name the fading element when it is too brief or too small to auto-detect. |
+| `--translucent-region circle:cx,cy,r \| rect:x,y,w,h` | Force a region to a fixed partial alpha — for art that should be see-through but was exported opaque. Needs a WebP/AVIF output. Coordinates are source-relative and applied before `--crop`/`--resize-max-dim`. |
+| `--translucent-alpha <0.0-1.0>` | The alpha that region gets (default 0.35). |
+| `--translucent-color <hex[,hex…]>` | Pick the region by colour instead of geometry. |
 
 </details>
 

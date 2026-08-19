@@ -1,0 +1,40 @@
+{
+ "_method": "Labelled by eye 2026-08-17 from EDGE-DENSE crops upscaled NEAREST. A centre crop is unreliable -- it lands on flat fill and every asset looks smooth; three assets were mislabelled that way before the method was corrected.",
+ "_counts": {
+  "pixel_art": 25,
+  "antialiased": 6
+ },
+ "labels": {
+  "07761f30caa2d3601cb83c9a22995fae.gif": "pixel_art",
+  "1-ezgif.com-remove-background.gif": "pixel_art",
+  "2d4a092f5494a8d2455703857ee83d5c.gif": "antialiased",
+  "5bf1a3da90ad03bfd0a59710e186f804.gif": "pixel_art",
+  "6CFF9959-74C8-425B-B202-CC0DAB153280.gif": "pixel_art",
+  "7cddd430a86242b8392e73359cce55dd.gif": "pixel_art",
+  "8acad64cea776e80dd037ef42a39d71f.gif": "pixel_art",
+  "9a4177e82f1a333ef64066f7a7529eb2.gif": "pixel_art",
+  "Cut loop.gif": "antialiased",
+  "DFB2A5D7-E57C-450F-A884-7BDB9B37D477.gif": "pixel_art",
+  "Fenda N5.gif": "pixel_art",
+  "GIF Selections.gif": "antialiased",
+  "GIFfromGIFER-ezgif.com-remove-background.gif": "pixel_art",
+  "Ivan Dixon _ Pixelated mario, Mario 8 bit pixel art, 8bit mario.gif": "pixel_art",
+  "Pixel Art GIF - Find & Share on GIPHY.gif": "pixel_art",
+  "Pixel Saber.gif": "pixel_art",
+  "PlantPixelArtSticker-FindShareonGIPHY-ezgif.com-remove-background.gif": "pixel_art",
+  "Starters!.gif": "antialiased",
+  "The Last Jedi Pixel Art - Mikołaj Birek.gif": "pixel_art",
+  "Tobi_.gif": "pixel_art",
+  "_ (10).gif": "pixel_art",
+  "_ (11).gif": "pixel_art",
+  "_ (12).gif": "pixel_art",
+  "_ (5).gif": "antialiased",
+  "_ (8).gif": "pixel_art",
+  "_ (9).gif": "pixel_art",
+  "_6-ezgif.com-remove-background.gif": "antialiased",
+  "ezgif.com-remove-background.gif": "pixel_art",
+  "pandapandasleepingkawaianime-ezgif.com-remove-background.gif": "pixel_art",
+  "willypage-ezgif.com-remove-background.gif": "pixel_art",
+  "🐼Sleeping panda is sleeping.gif": "pixel_art"
+ }
+}
