@@ -92,7 +92,16 @@ def spread(items, k):
 def collect(setname):
     plan = SETS[setname]; out = []
     for pop, k in plan.items():
-        rows = [(key, p, pop, lab) for key, p, pop2, lab in iter_assets([pop])]
+        # include_excluded, and it is not a copy-paste of the scoring call. Those
+        # 31 assets are EXCLUDED FROM SCORING on purpose -- 31 flat overlay plates
+        # would hand any hard-edge rule 31 free true negatives that test nothing --
+        # but they are exactly the degenerate inputs a RENDER gate wants, and this
+        # harness had been inheriting the scoring default by accident. Measured
+        # 2026-08-18: the flat 1-colour tile correctly hits `_refuse_empty_render`
+        # (rc=1, nothing written), and two 1800x1200 overlay plates render at 88%
+        # and 93% of their source alpha -- real loss on assets nobody had rendered.
+        rows = [(key, p, pop, lab)
+                for key, p, pop2, lab in iter_assets([pop], include_excluded=True)]
         if pop == 'sprites' and k:
             # spread ACROSS packs, not across the flat sorted list -- 78% of this
             # population is one pack, so a flat spread is that pack's baseline.
