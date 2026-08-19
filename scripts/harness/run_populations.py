@@ -36,11 +36,28 @@ def load(path, name):
 ap = argparse.ArgumentParser()
 ap.add_argument('--out', required=True)
 ap.add_argument('--only', default=None, help='comma-separated population names')
+# The corpus is 774 assets and ~42 minutes, and pruning barely moved that: the 212
+# measurement-identical sprites removed on 2026-08-19 were worth 3.6% of runtime, because
+# cost is dominated by `emoji` (122 large animated GIFs, 65.8%). Deleting evidence is the
+# wrong lever -- 122 negatives are what make "0 false positives" a claim, and 20 would not
+# be. Subsampling for ITERATION is the right one; the release gate still runs everything.
+ap.add_argument('--sample', type=int, default=None,
+                help='score at most N assets per population, spread evenly through each. For '
+                     'iteration only -- never quote a recall or specificity figure from a '
+                     'sampled run, and never use one as a release gate.')
 ap.add_argument('--script', default=os.path.join(ROOT, 'scripts/remove_gif_background.py'))
 a = ap.parse_args()
 pops = a.only.split(',') if a.only else None
 mod = load(a.script, 'under_test')
 assets = list(iter_assets(pops, include_excluded=True))
+if a.sample:
+    bypop = {}
+    for row in assets:
+        bypop.setdefault(row[2], []).append(row)
+    assets = [g[i * len(g) // min(a.sample, len(g))]
+              for g in bypop.values() for i in range(min(a.sample, len(g)))]
+    print(f"⚠️  SAMPLED: {len(assets)} assets, at most {a.sample} per population. "
+          f"Figures from this run are for iteration only.", flush=True)
 print(f"{len(assets)} assets; script={a.script}", flush=True)
 out, t0 = {}, time.time()
 partial = a.out + '.partial'

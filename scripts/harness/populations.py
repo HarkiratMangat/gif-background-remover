@@ -78,6 +78,18 @@ POPULATIONS = {
              'pixel art. Every asset whose source ramps did not survive is in _excluded/.',
         blind_to='pixel art. ⚠️ DERIVED -- each one shares a source with an asset in small_aa, so the two '
                  'populations are NOT independent and a pooled figure over both double-counts the artwork.'),
+    'gradient_beds': dict(
+        dir=os.path.join(ROOT, 'local/corpus gradient beds'), labels=None, recurse=False,
+        default_label='ambiguous',
+        what='23 assets carrying a smooth horizontal alpha ramp, built with the ACTUAL nameplate-bed curve '
+             'and palette from Dior\'s Builds (utils/nameplatePalettes.js: four stops 0 -> 0.08 -> 0.08 -> 0.5, '
+             'twelve dark-theme hexes), reproduced in Python so nothing in that repo is executed or modified '
+             'and no network or Cloudinary is involved. Harkirat\'s suggestion, because gradient-heavy source '
+             'material is genuinely hard to find in the wild.',
+        blind_to='EVERYTHING about hardness -- labelled `ambiguous` on purpose, so it is excluded from every '
+                 'recall and specificity figure. Its job is the gifsicle colour-dither question, which is about '
+                 'what the ENCODER does to a smooth ramp, not about what kind of art something is. That is also '
+                 'why a constructed fixture is legitimate here and was not for the detection corpus.'),
     'corpus': dict(
         dir=os.path.join(ROOT, 'local/corpus-webp-avif-2026-08-17'), labels=None, recurse=False,
         glob='*_ORIGINAL.gif', default_label='antialiased',
