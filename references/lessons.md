@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~63,000 tokens across 29 sections. The median section is ~1200 and the largest ~11600. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+It is ~66,000 tokens across 31 sections. The median section is ~1155 and the largest ~11587. **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
 Three routes, cheapest first:
 
