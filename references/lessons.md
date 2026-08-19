@@ -116,6 +116,13 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--analyze` suddenly feels much slower after a new measure landed | §29.8 (`np.unique` sorts; a boolean sieve is 75x faster and exact) |
 | `--pixel-art` recommended for an asset that is this tool's own compressed output | §29.9 (quantization turns 1px ramps into plateaus; analyse the ORIGINAL) |
 | A discriminator is sound on a source but wrong on a re-encoded copy | §29.9 (ask what `--compress heavy` does to any new measure) |
+| A render baseline says "byte-identical" and you are not sure it proved anything | §29.10 (check which assets' verdicts moved — the set may not express the change) |
+| Wondering what a MISSED `--pixel-art` verdict actually costs | §29.10 (nothing until a resize; then several hundred manufactured partial-alpha px) |
+| A candidate region or band-interior tint is wrong on a translucent PNG | §29.11 (every non-hardness check read the raw alpha plane; fixed) |
+| `--protect-band-only` or `--feather-band-multiplier` looks wrong on an RGBA source | §29.11 (measured on the composite now — both flags moved on real assets) |
+| Tempted by a palette statistic to reach 1:1 sprites the cliff ratio misses | §29.12 (three tried; the best one is a size proxy — falsified, do not re-derive) |
+| A new measure scores perfectly and you cannot find its failure population | §29.12 (build it; the corpus had ONE antialiased asset at sprite scale) |
+| An output has fewer opaque pixels than its source and no flag explains it | §29.13 (count the FRAMES — a duplicate frame coalesced away is not art loss) |
 | An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
 | Pixel art with 1-px shading at its edges reads as antialiased | §28.11 (hand-antialiased art; no edge-local measure can separate it) |
 | A transparent-background PNG sprite is not detected as pixel art | §28.12 (HEAD detected 0 of 294; fixed) |
@@ -1645,3 +1652,67 @@ Two of three flip, both on `plateau_cliff_ratio` clearing the 0.30 floor — **n
 A threshold that would catch the 108-and-122 cases removes none of the false positives actually in the corpus and costs five real detections. **Not implemented.** The honest position is a documented hazard: decide content type from the ORIGINAL asset, never from a compressed derivative — which is also why the corpus roster now marks its 13 derived files.
 
 **The transferable part:** every structural measure in this file keys on a property of the pixels, and this tool *writes pixels*. A measure that is sound on a source can be wrong on the tool's own output, and re-analysing your own output is a loop nobody had tested. Ask of any new discriminator: what does `--compress heavy` do to it?
+
+### 29.10 The render gate never RESIZED, and that is what "all 106 byte-identical" was hiding
+
+The render baseline runs every asset through `--auto` and nothing else. That is the right default — `--auto` is the autonomous entry point — but it cannot express the single most destructive thing a wrong `--pixel-art` verdict does: **switch the resize filter from LANCZOS to nearest-neighbour.** So when the v5.5.0 hardness change moved 8 verdicts inside the render set and all 106 outputs came back byte-identical, part of what that result meant was *this set cannot express the change*.
+
+**Measured, and the misses are not cosmetic.** 47 assets rendered twice at half their larger side — `--auto --resize-max-dim N` against `--auto --pixel-art --resize-max-dim N`:
+
+| group | n | partial-alpha px under `--auto` | under `--pixel-art` | frame-0 pixels differing |
+|---|---|---|---|---|
+| sprite misses (undetected pixel art) | 29 | 388 – 1,333 | **0** | 4.5% – 85% |
+| sprites correctly detected | 10 | — | — | **0.0%** |
+| antialiased controls | 8 | up to 67,552 | 2,090 | 4.6% – 76.5% |
+
+The detected group is the control that makes the rest attributable: `--auto` already applies `--pixel-art` there, so adding it explicitly changes nothing, and a 0.0% row proves the harness is comparing what it claims to. On the missed group, LANCZOS manufactures a soft halo of several hundred partial-alpha pixels on art that has no ramps — exactly the damage `--pixel-art` exists to prevent.
+
+**It also puts a number on the asymmetry this project keeps asserting.** A false negative costs ~400–1,300 manufactured pixels on a sprite; forcing `--pixel-art` onto antialiased art destroys 67,552 real ones on a single icon. Roughly fifty to one, in favour of a conservative threshold — which is the quantitative form of "a false positive is destructive, a false negative is only the status quo".
+
+`render_baseline.py` now renders every asset a second time through `--resize-max-dim` at half its larger side and fingerprints that alpha plane too, under a key suffixed ` [resize]`. Sources under 64px are skipped and say so.
+
+### 29.11 Everything except the hardness family was still reading the raw alpha plane
+
+§28.5 established that a hardness measure on an RGBA source must read a COMPOSITE, because `convert('RGB')` discards alpha rather than resolving it and a half-transparent pixel keeps its full-strength art colour. That fix reached `measure_edge_hardness` and its relatives and stopped there: `analyze()`'s `all_rgb_frames` was still built with the bare `convert('RGB')`, and `color_mask`, the candidate-region enclosure search, `measure_bg_component_margin`, `detect_band_interior_regions` and `collect_small_removed_region_sizes` all read it.
+
+**Measured before changing anything, by running `analyze()` twice per file with the frames composited the second time.** The probe carries its own falsifier: compositing over magenta instead of the detected background moves 110 fields, so a quiet result means the checks agree and not that the patch never ran.
+
+* **14 partial-alpha icons:** 5 of 14 move at all, and only `band_interior_regions` and `candidate_regions` do. Pixel counts shift 0.5–4%, bounding boxes by 1px, circularity 0.07 → 0.08. **No verdict flips** and the detected background colour is stable.
+* **The 10 most translucent assets in the sprite corpus — the population that can actually falsify it:** the movement is verdict-level. Seven Tiny Swords cloud sprites go from **0 band-interior regions to 1**, classified `solid_tint`. `Shadow.png` reads `mean_distance_from_bg` **58.2 uncomposited against 18.1 composited**. `4.1-clear-notification.png`'s tumble `worst_margin_ratio` reads **1.08 against 2.01**.
+* **Two of those change the recommended command, in both directions.** `Clouds_03.png` gains `--protect-band-only 4` — a real solid tint the raw read could not see. `Shadow.png` LOSES `--feather-band-multiplier 3.4`, because the raw read put a solid art colour 58 from the background where a viewer sees it at 18.
+
+An autonomous run pastes `suggested_command` verbatim, so those were wrong flags on real assets rather than cosmetic report fields. `all_rgb_frames` is now composited whenever a frame carries partial alpha. **A fully opaque source has no partial alpha and takes the identical path**, which is what keeps the 31 labelled GIFs a valid control for the change.
+
+**The transferable part is the shape of the original fix.** §28.5 was correct and incomplete in the same way §28.14 was: a correction applied to the family that motivated it, while the other consumers of the same bad input were never enumerated. The question to ask is not "did I fix the measure" but "who else reads this array".
+
+### 29.12 A seventh discriminator that scored 0.972 with zero false positives, and the population that killed it
+
+**Do not re-derive this.** The two packs `plateau_cliff_ratio` and `composited_color_count` cannot reach — Tiny RPG at 0.235 and CatPackFree at 0.250 — sit at 20–64 composited colours, drawn 1:1, with hand-placed shading. Three candidate measures were scored against all 719 assets and all three are dead:
+
+* **colours per strong colour step** (the count normalised by edge length, on the theory that antialiasing manufactures colours in proportion to edges). Pixel art p95 0.027 against antialiased p25 0.030 looks separable, but the 33 misses run 0.010–0.253 and the antialiased negatives start at 0.006 — complete overlap exactly where it matters.
+* **ramp fraction** (share of opaque pixels that are the middle of a monotone 3-pixel colour ramp). Inverted: the misses score **0.05–0.10** and the vector icons **0.000–0.010**, because these sprites carry real hand-drawn antialiasing and the flat icons keep theirs in the alpha channel.
+* **`min_share`** — the smallest share of the artwork any single composited colour carries, on the theory that every entry of a hand-picked palette is a FILL somewhere while machine antialiasing manufactures intermediates that exist only along one edge. **This one scored beautifully: recall 0.9389 → 0.9722, +18 true positives, specificity unchanged at 0.9865, zero new false positives across 148 antialiased assets.**
+
+**It is a size proxy, and two falsifiers say so.** First, `art_px <= 2000` — a rule with no colour statistic in it at all — scores recall **0.9833**, *better*, at one new false positive. Second, and decisively: inside the size-matched band of 400–3,000 art pixels the corpus holds **99 pixel-art assets and exactly ONE antialiased asset**. There was never a population that could tell the two hypotheses apart.
+
+**So the missing population was constructed, and it killed the measure.** Real antialiased emoji downscaled to 64px and quantized to the palette a small icon actually ships with:
+
+| quantized to | assets clearing `min_share >= 0.002` | highest |
+|---|---|---|
+| 128 colours | 0 of 118 | 0.00077 |
+| 64 colours | 0 of 118 | 0.00122 |
+| **32 colours** | **13 of 118 (11.0%)** | 0.00488 |
+| **16 colours** | **36 of 118 (30.5%)** | 0.01489 |
+
+The Orc and Soldier sprites the measure was built for sit at **0.0024–0.0071 with 20–32 colours** — inside the range that 11–30% of quantized antialiased icons reach. ⚠️ **The plain LANCZOS downscale WITHOUT quantization passes 0 of 236 and is not a valid falsifier**: at 64px it carries 128–1,371 distinct colours over 1,375–1,900 art pixels, nearly one unique colour per pixel, which is a resampling artefact no authored icon has. A fixture can be too easy in a way that reads as a clean result.
+
+**Two things follow.** The residual is a CORPUS gap as much as a measure gap — this project owns essentially no antialiased art at sprite scale, so any measure that helps there is untestable for false positives, and acquiring twenty real 32–128px antialiased icons would do more than another discriminator. And §29.9's hazard is now measured on 118 assets rather than three: **quantization moves antialiased art into pixel art's numbers**, which reaches the shipped 16-colour floor too, not just the cliff ratio.
+
+### 29.13 Two residuals from the source-alpha fix, both measurement artefacts
+
+Both P3 items the render baseline flagged and nobody had explained are closed, and neither was a defect.
+
+* **`Soldier_Attack02.png`, reported at 1,677 opaque against a source's 1,653.** Re-measured on both copies of the file: source **1,677**, output **1,677**, gained 0, lost 0, and no partial alpha anywhere in either. The output equals the source exactly. The 1,653 does not reproduce.
+* **`f2ea31a625….gif` at 87.3% of its source figure.** The suspicion that the comparison was invalid turns out to be wrong in a useful way — `load_animation_rgba_frames` and a per-`seek` count agree exactly at 912,486, so the numbers did describe the same pixels. The real answer is the frame count: the source's frames 0 and 1 are **identical duplicates** at 116,007 opaque each, the output coalesces them, and 912,486 − 116,007 = **796,479**, the output total to the pixel. Zero art loss.
+
+**The transferable part:** an unexplained residual is worth chasing even when both directions are harmless, and the answer twice was in the denominator rather than in the pipeline. Establish what the source figure actually counts before treating a ratio as loss.

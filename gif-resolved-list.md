@@ -24,6 +24,61 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### ~~`[P2 · S · Sonnet5-High]` The render gate never RESIZES, so `--pixel-art`'s main destructive lever is untested end to end~~ — **CLOSED 2026-08-18 (v5.5.0)**
+
+`render_baseline.py` now renders every asset a SECOND time through `--resize-max-dim` at half its larger side and fingerprints that alpha plane too, under a key suffixed ` [resize]`; sources under 64px are skipped and say so. `--no-resize-pass` turns it off and documents what that blinds.
+
+**The measurement that came out of building it is the useful part, and it settles a question this item could only pose.** 47 assets rendered both ways at half size — `--auto` against `--auto --pixel-art`: the 29 undetected sprites gain **388–1,333 partial-alpha pixels** under `--auto` where a correct verdict produces **zero** (4.5–85% of pixels differ); the 10 correctly-detected sprites differ by **0.0%**, which is the control that makes the rest attributable; and forcing `--pixel-art` onto antialiased art destroys up to **67,552** real partial-alpha pixels on one icon. So a missed verdict is real damage once a resize is in play, and the false-positive direction costs roughly fifty times more — the quantitative form of the asymmetry this project keeps asserting. `references/lessons.md` §29.10
+
+**Original item, verbatim:**
+
+#### `[P2 · S · Sonnet5-High]` The render gate never RESIZES, so `--pixel-art`'s main destructive lever is untested end to end *(filed 2026-08-18)*
+
+**Added 2026-08-18, from the first release-gated use of the render baseline.** The harness runs every asset through `--auto` with no other flags. That is the right default — it is the autonomous entry point — but it means the gate cannot see the single most destructive thing a wrong `--pixel-art` verdict does: **switch the resize filter from LANCZOS to nearest-neighbour.** Nothing in the 106-asset diff exercises `--resize-max-dim`, `--compress`, or WebP/AVIF output either.
+
+**The measured consequence, which is why this is P2 and not P3.** The v5.5.0 hardness change flipped 8 verdicts inside the render set and the rendered output of all 106 assets came back **byte-identical**. That is a genuine no-regression result, but a weak one: all 8 are already-transparent sources, where removal is confined to the source's own alpha and the erosion guard has already forced erosion to 0, so no hardness verdict can move those pixels. The 31 fully-opaque assets — the only ones where feathering and erosion are live — had **zero** verdict changes. So "0 changed" partly means "this set cannot express the change".
+
+**Do:** add a second render pass per asset with `--resize-max-dim` at roughly half the source's larger side, and fingerprint that alpha plane too. A `--pixel-art` verdict that only matters on resize needs a baseline that resizes. Cheap: the harness already loops, and `fast` is 24 assets. `references/lessons.md` §29.5
+
+---
+
+### ~~`[P2 · M · Opus5-High]` Only the HARDNESS measures read an alpha composite — every other `--analyze` check still reads RGB with the alpha discarded~~ — **CLOSED 2026-08-18 (v5.5.0)**
+
+Measured first, exactly as this item's scope note demanded, by running `analyze()` twice per file with the frames composited the second time — the probe carrying its own falsifier (compositing over magenta moves 110 fields, so a quiet result means agreement and not a patch that never ran).
+
+**On 14 partial-alpha icons the exposure looked cosmetic:** 5 of 14 move at all, only `band_interior_regions` and `candidate_regions`, pixel counts 0.5–4%, bboxes 1px, no verdict flips. **On the 10 most translucent assets in the sprite corpus — the population that can actually falsify it — it is verdict-level:** seven Tiny Swords cloud sprites go from 0 band-interior regions to 1 `solid_tint`; `Shadow.png` reads `mean_distance_from_bg` 58.2 uncomposited against 18.1 composited; `4.1-clear-notification.png`'s tumble margin ratio reads 1.08 against 2.01. **Two of those change the recommended command, in both directions** — `Clouds_03.png` gains `--protect-band-only 4`, `Shadow.png` loses `--feather-band-multiplier 3.4`.
+
+`all_rgb_frames` is now composited whenever a frame carries partial alpha. Verified: 12 fully-opaque labelled assets produce byte-identical `analyze()` reports before and after, so the opaque corpus stays a valid control. `references/lessons.md` §29.11
+
+**Original item, verbatim:**
+
+#### `[P2 · M · Opus5-High]` Only the HARDNESS measures read an alpha composite — every other `--analyze` check still reads RGB with the alpha discarded
+
+**Added 2026-08-18 (v5.5.0), and deliberately scoped this way rather than forgotten.** §28.5 fixed the edge-hardness family: for a source carrying partial alpha, those measures now run on a composite over the detected background colour, because the antialiasing lives in ALPHA and `convert('RGB')` drops it. **`analyze()`'s `all_rgb_frames` is still built with the bare `convert('RGB')`, and every other check reads it** — `detect_bg_color`, `color_mask`, the candidate-region enclosure search, `measure_bg_component_margin`/tumble, `detect_band_interior_regions`, `collect_small_removed_region_sizes`. On an RGBA source those are all reading full-strength art colour where a viewer sees a blend.
+
+**Why it was NOT fixed in the same pass, which is a scope decision and not a shrug:** switching `all_rgb_frames` wholesale changes background detection and region classification for every alpha-carrying input, and **this project has no labelled RGBA-source corpus to validate that against.** The 31 labelled assets and the 5 corpus originals are all fully opaque, so they cannot detect a regression here in either direction — the same "the population that would falsify it is not in the sample" trap §23.8 and §28.2 are about. Shipping it blind would be the more expensive mistake.
+
+**First slice (S):** assemble a small RGBA-source corpus — the `interface emojis/` PNGs are ready-made (`exchange.png`, `add.png`, `delete.png`, `alert.png` all carry partial alpha) — and diff full `--analyze` reports composited vs not, per check, to find out which checks actually change their answer. Fix only those that do, with the diff as evidence. Until then the honest position is that hardness is right on RGBA input and the rest is unmeasured.
+
+---
+
+### ~~`[P3 · S · Sonnet5-High]` Two residuals from the source-alpha fix, both small and both unexplained~~ — **CLOSED 2026-08-18 (v5.5.0) — neither was a defect**
+
+`Soldier_Attack02.png`: re-measured on both copies, source **1,677** opaque and output **1,677**, gained 0, lost 0, no partial alpha in either. The 1,653 the item quoted does not reproduce. `f2ea31a625….gif`: the suspicion that the comparison was invalid is itself wrong — `load_animation_rgba_frames` and a per-`seek` count agree exactly at 912,486 — and the real answer is the FRAME COUNT. The source's frames 0 and 1 are identical duplicates at 116,007 opaque each, the output coalesces them, and 912,486 − 116,007 = **796,479**, the output total to the pixel. Zero art loss. `references/lessons.md` §29.13
+
+**Original item, verbatim:**
+
+#### `[P3 · S · Sonnet5-High]` Two residuals from the source-alpha fix, both small and both unexplained *(filed 2026-08-18)*
+
+**Added 2026-08-18**, from the end-to-end render baseline that caught the auto-erosion override (§28.14). After that fix, 6 of the 7 regressed assets land EXACTLY on their source's opaque count. Two do not, and neither is understood:
+
+1. **`Soldier_Attack02.png` comes out at 1,677 opaque against a source's 1,653 — 24 pixels MORE.** With the cleanup band dropped and no flags applied, the output should equal the source exactly. The direction is harmless (more artwork retained, not less), which is why it is P3 rather than P1, but "harmless and unexplained" is still unexplained. **Do:** diff the output alpha against the source alpha and identify those 24 pixels; the likely suspect is a source pixel with partial alpha being forced to 255 outside the scope.
+2. **`f2ea31a625…gif` sits at 87.3% of its source figure (796,479 against 912,486).** ⚠️ **The comparison itself may be invalid:** the pipeline COMPOSITES a GIF's frames while the measurement counted them per-`seek`, so the two numbers may not describe the same pixels. **Do:** establish a comparable source count for an animated GIF first — through `load_animation_rgba_frames`, the function the pipeline actually uses — before treating this as art loss. If it survives that, the cleanup band is the next suspect (the veto did not fire on this asset, so its 2px ring is in scope).
+
+**Why both are worth keeping:** the render baseline found the auto-erosion override on its first real use, and these two are what it flagged and nobody has explained. An unexplained residual is how the next real defect stays hidden.
+
+---
+
 ### ~~`[P2 · M · Sonnet5-XHigh]` The corpus check compares RECOMMENDATIONS, never RENDERS — 24 of 31 assets are unexercised end to end~~ — **CLOSED 2026-08-18 (v5.5.0)**
 
 **✅ DONE — the wiring that was all that remained is in place.** `CLAUDE.md`'s release-gate checklist now has gate 6 (diff the RENDERED output: the `fast` 24-asset set for routine checks, `standard` 106 at release, then `--compare A B`) and gate 7 (re-score the labelled populations through `analyze()` whenever an `edge_hardness` rule or threshold changes, reporting per population and, for sprites, per pack). The harness itself moved out of gitignored space in the same pass, because a gate whose script and ground truth are untracked is not a control — the hand-written labels for all 714 labelled assets were one `rm -rf` from gone, and `populations.py` now exits loudly when a corpus directory is absent instead of scoring a vacuous 1.000 over an empty population. `references/lessons.md` §29. Original note follows.
