@@ -2086,4 +2086,18 @@ with a control confirming the falsifier could fail: with both holes protected an
 
 ⚠️ **Losing the target is REPORTED, not hidden.** When no candidate passes the continuity gate on a frame, the mask is carried forward along the last motion vector and those frame indices are printed. A tracker that quietly emits a plausible-looking mask after losing its target is the failure this project refuses everywhere else; the alternatives — dropping the frame (a visible flicker) or falling back to the frame-0 mask (wrong by exactly the distance travelled) — are both worse and both silent.
 
+### 33.1 A detector for "this file is our own output", attempted and measured — it does not work
+The re-encoding hazard (§29.9) would stop being a documented warning and become a verdict the tool could reach by itself if it could recognise its own output. There is a plausible signature: this tool dithers the alpha transition band with a FIXED 8×8 Bayer matrix, and source art never does. Correlating the transparent/opaque pattern in the boundary band against BAYER8's threshold ordering should separate the two.
+
+**It does not.** Thirty third-party transparent GIFs against thirty of our own GIF renders:
+
+| | min | median | max |
+|---|---|---|---|
+| third-party (never touched by us) | −0.0045 | **+0.0010** | +0.0150 |
+| our own output | −0.0156 | **−0.0006** | +0.1148 |
+
+One of thirty of our own files clears a 0.02 threshold. The medians are indistinguishable and the distributions overlap almost completely. The signature does not survive to the file — `--auto`'s edge-cleanup erosion trims the dithered ring, and gifsicle re-quantizes the boundary on the way out. A principled idea, tested, falsified.
+
+⚠️ **Three attempts were needed to get a measurement that meant anything, and the first two both returned confident-looking answers.** Attempt 1 compared already-transparent sources against our output of them — but `--auto` correctly does nothing to those, so it scored each file against itself and reported "identical, not separable". Attempt 2 switched to opaque sources, which have no alpha boundary at all, so the score was undefined and it returned zero pairs. Only the third had two groups that both carry a boundary band and only one of which we wrote. **A negative result is only worth having once you have checked that the test could have produced a positive one.**
+
 **No new dependency.** `scipy.ndimage.label` plus centroids does what HoughCircles was reached for, which is what the deferred item asked for: a script-native primitive rather than bespoke external tooling every time.
