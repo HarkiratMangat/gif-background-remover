@@ -1651,7 +1651,20 @@ Two of three flip, both on `plateau_cliff_ratio` clearing the 0.30 floor — **n
 
 A threshold that would catch the 108-and-122 cases removes none of the false positives actually in the corpus and costs five real detections. **Not implemented.** The honest position is a documented hazard: decide content type from the ORIGINAL asset, never from a compressed derivative — which is also why the corpus roster now marks its 13 derived files.
 
-⚠️ **CORRECTION, 2026-08-18: the TIER named above is wrong.** Fourteen antialiased assets were run through the real CLI at every tier and re-analysed. `--compress heavy` flipped **0 of 14**; `--compress optimize` flipped **4** and `medium` flipped 1; the `none` tier — `--auto` with no compression — flipped 0, which is the control that makes the rest attributable. The flips land at mid colour counts (119–127) and `heavy` overshoots them, because that tier also resizes. The three-asset table above is not wrong about those three assets; it is wrong as a statement about the tier, which is what a reader takes from it. **A finding measured on three assets names a mechanism, never a rate or a trigger.**
+⚠️ **CORRECTION, 2026-08-18, and the finding is bigger than the tier.** The three-asset table above is not wrong about those three assets; it is wrong as a statement about `--compress heavy`, which is what a reader takes from it. **48 antialiased assets were run through the real CLI at every tier and re-analysed:**
+
+| tier | flips to hard-edged |
+|---|---|
+| **none — `--auto` with NO compression (the control)** | **4 / 48 (8.3%)** |
+| `--compress optimize` | **12 / 48 (25.0%)** |
+| `--compress medium` | 10 / 48 (20.8%) |
+| `--compress heavy` | 6 / 48 (12.5%) |
+
+**14 of 48 assets (29.2%) flip at one tier or more, and `heavy` is the LEAST affected tier, not the most.** Nearly every flip is `plateau_cliff_ratio` clearing 0.30 (values 0.303–0.573 over 2,150–16,104 strong steps); two are `change_line_density`.
+
+**The control is the finding.** `--compress` is not required at all: **re-analysing this tool's own uncompressed GIF output flips 8.3% of antialiased assets to pixel art**, because writing a GIF *is* a palette reduction — `add.png` goes 402 composited colours to 133 with no compression flag anywhere. So the hazard is not a property of a `--compress` tier; it is a property of the GIF container, and the tiers only deepen it. The correct rule is **decide content type from the ORIGINAL asset, never from any output this tool has written** — which is strictly broader than the "compressed derivative" the original note warned about.
+
+⚠️ **This is the SECOND correction to the same claim, and the second one was also wrong.** A 3-asset table said "heavy"; a 14-asset partial said "heavy flips 0, optimize flips 4, and the `none` control flips 0, which makes the rest attributable to compression". At 48 the control flips 4. **A PREFIX of a spread is not a spread**: the sample was drawn evenly across a key-sorted list, so its first 14 were the first 29% of that ordering — one population and one folder — not a scaled-down version of the whole. Stopping a sampled run early re-introduces exactly the bias the sampling removed.
 
 **The transferable part:** every structural measure in this file keys on a property of the pixels, and this tool *writes pixels*. A measure that is sound on a source can be wrong on the tool's own output, and re-analysing your own output is a loop nobody had tested. Ask of any new discriminator: what does `--compress heavy` do to it?
 
