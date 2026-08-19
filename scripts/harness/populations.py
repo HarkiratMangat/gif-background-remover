@@ -63,6 +63,21 @@ POPULATIONS = {
         subdirs=["Arrows", "Database emojis", "codm emojis", "interface emojis", "more", "untitled folder"],
         what='122 vector emoji/icons, presumed antialiased -- the main false-positive falsifier. COUNTED, not remembered: the six folders hold 130 files, of which 122 carry an image extension (2 .zip, 1 .psd and 5 extensionless directories are not assets). The tracker carried "145" for weeks; that figure was never derived.',
         blind_to='pixel art -- a rule that fires on nothing scores perfectly here.'),
+    'small_aa': dict(
+        dir=os.path.join(ROOT, 'local/corpus small sizes'), labels='small_aa.json', recurse=False,
+        what='150 antialiased icons and custom emoji at 32-128px -- the population the corpus was MISSING. '
+             'Before it, exactly ONE antialiased asset sat in the 400-3,000 art-pixel band against 99 pixel-art '
+             'ones, so every measure built for small sprites scored perfectly and was untestable (SS29.12).',
+        blind_to='pixel art -- it contains none. Large art: everything over 128px was moved to _excluded/, '
+                 'because the corpus already held 133 antialiased assets of that class.'),
+    'small_aa_quantized': dict(
+        dir=os.path.join(ROOT, 'local/corpus small quantized'), labels='small_aa_quantized.json', recurse=False,
+        what='117 DERIVED assets: the small_aa originals re-exported as GIF at 16-64 colours. Not a synthetic '
+             'fixture -- this is what a small GIF icon IS, and it is the transformation that puts real '
+             'antialiased art into the 16-64 colour band where it becomes indistinguishable from hand-authored '
+             'pixel art. Every asset whose source ramps did not survive is in _excluded/.',
+        blind_to='pixel art. ⚠️ DERIVED -- each one shares a source with an asset in small_aa, so the two '
+                 'populations are NOT independent and a pooled figure over both double-counts the artwork.'),
     'corpus': dict(
         dir=os.path.join(ROOT, 'local/corpus-webp-avif-2026-08-17'), labels=None, recurse=False,
         glob='*_ORIGINAL.gif', default_label='antialiased',
