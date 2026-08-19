@@ -51,7 +51,10 @@ for i, (k, path, pop, lab) in enumerate(assets):
         eh = r['edge_hardness']
         rec.update({f: eh.get(f) for f in FIELDS})
         rec['pred'] = eh.get('appears_hard_edged')
-        rec['frames'] = r.get('frame_count')
+        # 'frame_count' is not a key analyze() returns -- it is 'n_frames_total' -- so this
+        # field was None on all 719 records, and a question about animated assets silently
+        # answered "zero". Caught 2026-08-19 by sanity-checking a count before acting on it.
+        rec['frames'] = r.get('n_frames_total')
     # SystemExit, not just Exception: the script under test raises it in several places
     # (_refuse_empty_render, populations.check_corpora, argparse errors) and it derives from
     # BaseException, so one bad asset would kill a 45-minute run and never write <out> --
