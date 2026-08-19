@@ -6,11 +6,11 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~68,000 tokens across 29 sections. The median section is ~1180 and the largest ~11622. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
+This file is far too large to read whole, and it only grows — so the question is never "can I afford it?" but "which one section do I need?". Any single section is a small fraction of it, and the table of contents below is the live list. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
 
-**Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+**Find the one section you need and read only that**; reading it end to end costs orders of magnitude more than the answer does.
 
-Three routes, cheapest first:
+Four routes, cheapest first:
 
 1. **Symptom table below** — scan it for something resembling what you are seeing, then jump to that section.
 2. **Grep for the symptom in your own words.** Prose here is soft-wrapped (one line per paragraph) specifically so that multi-word phrases match on a single line:
@@ -21,8 +21,12 @@ Three routes, cheapest first:
    ```
    python3 -c "import re,sys;s=open('references/lessons.md').read();print(re.search(r'^## 16\..*?(?=^## \d+\.|\Z)',s,re.M|re.S).group(0))"
    ```
+4. **Print the real per-section sizes**, if you need to budget rather than guess. Derived on the spot, so it is always accurate — no size figure is stored in prose anywhere, because every version of that number went stale:
+   ```
+   python3 -c "import re;s=open('references/lessons.md').read();[print(f'{len(b)//4:>6} tok  {b.splitlines()[0][3:]}') for b in re.findall(r'(?ms)^(## \d+\..*?)(?=^## \d+\.|\Z)',s)]"
+   ```
 
-**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4`, `§26.5` …), so you can extract a part rather than the whole. §16 alone is ~6,500 tokens across 21 sub-anchors; one of them is usually what you actually want:
+**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4`, `§26.5` …), so you can extract a part rather than the whole. §16 alone spans 21 sub-anchors; one of them is usually what you actually want:
    ```
    python3 -c "import re;s=open('references/lessons.md').read();print(re.search(r'^### 16\.5 .*?(?=^### |\Z)',s,re.M|re.S).group(0))"
    ```

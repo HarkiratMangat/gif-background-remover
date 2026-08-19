@@ -23,9 +23,18 @@ Checks (all falsifiable, all cheap):
      [Priority · Effort · Model-effort] tag
   8. --diff <base> only: conservation -- an item removed from gif-deferred-list.md must be
      traceable into gif-resolved-list.md. A sweep and a deletion look identical in a diff.
+  9. every numbered lessons section carries an `Also searched as:` line whose phrases the
+     section does NOT already contain -- a tag that repeats the body is dead weight
+ 10. no doc caches lessons.md's SIZE. That figure rotted four times; it is now derived on
+     demand by route 4 of the file's own "How to read this file" block, and asserting it
+     in prose is the failure. README must also name every argparse flag.
+
+Both the closure-marker gate and the cached-size gate carry falsifier suites that run on
+EVERY invocation (`_self_test`), because a gate rewritten without one ships looking
+stricter and being blinder -- which happened here once, to the closure gate.
 """
 import re
-import statistics, os, sys, subprocess
+import os, sys, subprocess
 
 SK, LE, SC = 'SKILL.md', 'references/lessons.md', 'scripts/remove_gif_background.py'
 REFS = ['references/lessons.md', 'references/version-history.md',
@@ -278,52 +287,66 @@ _MARK_CASES = [
 ]
 
 
-def check_counted_claims(fails):
-    """The lessons size claim and README's flag coverage, checked instead of remembered.
+_SIZE_CLAIM = re.compile(r'~?\s*([\d,]+)\s*(k)?\s+tokens\b', re.I)
 
-    ⚠️ The size claim has now rotted THREE times -- "~32k" while the file was 46k,
-    "~63,000" while it was 66k, and "~66,000" within the same session that derived it,
-    because sections were added afterwards. It is quoted in three places and it is the
-    number a session uses to decide whether it can afford to read the file, so being
-    wrong by 5% is worse than saying nothing. Re-deriving it by hand is a discipline,
-    and this repo's own rule is that a discipline is not a control.
+# Each case is one line that has appeared, or would appear, in these docs.
+_SIZE_CASES = [
+    ('It is ~68,000 tokens across 29 sections.', True),
+    ('upkeep -- it is ~68k tokens and must stay navigable', True),
+    ('it is ~32k tokens and must never be read whole', True),
+    ('the file is 46,000 tokens', True),
+    ('If the section will exceed roughly 1,500 tokens', False),   # a THRESHOLD in a rule
+    ('numbering made 16.5 a 245-token read', False),              # singular: not a size claim
+    ('16 was 6,500 tokens in 21 unnumbered subsections', False),  # a SECTION, and historical
+    ('costs orders of magnitude more than the answer does', False),
+]
+
+
+def _size_claims(text, floor=10000):
+    """Absolute token-size figures at or above `floor`, in order of appearance.
+
+    The floor is what removes the need for any carve-out list: only a whole-FILE size is
+    ever this large, so a threshold in a rule ("roughly 1,500 tokens") and a historical
+    section measurement ("6,500 tokens") pass untouched with no exceptions to maintain.
+    Every exception in this file's other gates has eventually hidden a real defect.
+
+    Two limits, stated rather than implied. It matches TOKEN figures only -- a byte/KB
+    pattern would be a false-positive machine here, since this skill's whole subject is
+    file size and Discord's 256KB cap is quoted in nearly every doc. And a bare figure
+    with no unit ("its largest is ~11622") is not caught.
+    """
+    out = []
+    for num, k in _SIZE_CLAIM.findall(text):
+        v = int(num.replace(',', '')) * (1000 if k else 1)
+        if v >= floor:
+            out.append(v)
+    return out
+
+
+def check_counted_claims(fails):
+    """No doc may cache lessons.md's size, and README must name every flag.
+
+    ⚠️ The size claim was quoted in three files and it rotted FOUR times -- "~32k" while
+    the file was 46k, "~63,000" at 66k, "~66,000" within the session that derived it, and
+    "~68,000" the next day. An earlier version of this check verified the number instead
+    of banning it; that stopped the rot being SILENT but made it permanent maintenance,
+    since every added section broke the build until someone re-derived a figure nobody
+    reads. So the claim was deleted (2026-08-19) and this check inverted: stating an
+    absolute token size for the file is now itself the failure. lessons.md's "How to read
+    this file" block prints real per-section sizes on demand (route 4) instead, which is
+    the only version of that number that cannot go stale.
 
     README is not packaged, but it is the front door on GitHub and it had drifted two
     releases behind -- 42 of 47 flags, missing the whole translucency group and both
     source-alpha flags.
     """
-    text = open(LE).read()
-    secs = [x for x in re.split(r'(?m)^## ', text)[1:] if re.match(r'^\d+\.', x)]
-    tok = len(text) // 4
-    m = re.search(r'It is ~([\d,]+) tokens across (\d+) sections\.'
-                  r' The median section is ~(\d+) and the largest ~(\d+)\.', text)
-    if not m:
-        fails.append(f'{LE}: the "How to read this file" block no longer states its size -- '
-                     f'that claim is how a session decides whether it can afford this file')
-    else:
-        claimed_tok = int(m.group(1).replace(',', ''))
-        sizes = sorted(len(x) // 4 for x in secs)
-        real = {'tokens': tok, 'sections': len(secs),
-                'median': int(statistics.median(sizes)), 'largest': max(sizes)}
-        got = {'tokens': claimed_tok, 'sections': int(m.group(2)),
-               'median': int(m.group(3)), 'largest': int(m.group(4))}
-        # tokens are quoted to the nearest thousand; everything else is exact
-        if abs(real['tokens'] - got['tokens']) > 1000:
-            fails.append(f'{LE}: claims ~{got["tokens"]:,} tokens, actually ~{real["tokens"]:,} '
-                         f'-- re-derive it (wc -c / 4), do not nudge it')
-        for k in ('sections', 'median', 'largest'):
-            if real[k] != got[k]:
-                fails.append(f'{LE}: claims {k}={got[k]}, actually {real[k]}')
-        for f in (SK, 'CLAUDE.md'):
-            if os.path.exists(f):
-                for n in re.findall(r'~(\d+)k tokens|~([\d,]+) tokens', open(f).read()):
-                    v = int((n[0] or n[1]).replace(',', '')) * (1000 if n[0] else 1)
-                    # >= 10k only: the same sentence also quotes the MEDIAN section size,
-                    # and a gate that flags its own neighbouring figure teaches people to
-                    # ignore it. Caught by this check firing on itself.
-                    if v >= 10000 and abs(v - real['tokens']) > 1000:
-                        fails.append(f'{f}: quotes the lessons size as ~{v:,} tokens, '
-                                     f'actually ~{real["tokens"]:,}')
+    for f in dict.fromkeys([SK, 'CLAUDE.md'] + REFS):
+        if not os.path.exists(f):
+            continue
+        for v in _size_claims(open(f).read()):
+            fails.append(f'{f}: caches a token size (~{v:,}) for {LE} -- that figure rotted '
+                         f'four times and is deliberately gone. Print sizes on demand '
+                         f'instead; see route 4 of its "How to read this file" block')
     if os.path.exists('README.md'):
         flags = set(re.findall(r"p\.add_argument\('(--[a-z0-9-]+)'", open(SC).read()))
         named = set(re.findall(r'(--[a-z0-9-]+)', open('README.md').read()))
@@ -367,10 +390,19 @@ def check_lessons_keywords(fails):
 
 
 def _self_test():
+    """Both gates prove themselves red-green on every invocation. A gate rewritten
+    without a suite ships looking stricter and being blinder -- measured here once."""
+    out = []
     bad = [why for body, want, why in _MARK_CASES
            if (CLOSED_MARK.search('x\n\n' + body + '\n') is not None) != want]
-    return [f'audit_docs.py: the closure-marker gate FAILS ITS OWN falsifier suite '
-            f'({len(bad)} of {len(_MARK_CASES)}): {bad}'] if bad else []
+    if bad:
+        out.append(f'audit_docs.py: the closure-marker gate FAILS ITS OWN falsifier suite '
+                   f'({len(bad)} of {len(_MARK_CASES)}): {bad}')
+    stale = [t for t, want in _SIZE_CASES if bool(_size_claims(t)) != want]
+    if stale:
+        out.append(f'audit_docs.py: the cached-size gate FAILS ITS OWN falsifier suite '
+                   f'({len(stale)} of {len(_SIZE_CASES)}): {stale}')
+    return out
 
 
 def _items(text):
