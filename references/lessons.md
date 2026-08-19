@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~67,000 tokens across 29 sections. The median section is ~1180 and the largest ~11622. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
+It is ~68,000 tokens across 29 sections. The median section is ~1180 and the largest ~11622. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
 
 **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
@@ -126,6 +126,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A new measure scores perfectly and you cannot find its failure population | §29.12 (build it; the corpus had ONE antialiased asset at sprite scale) |
 | An output has fewer opaque pixels than its source and no flag explains it | §29.13 (count the FRAMES — a duplicate frame coalesced away is not art loss) |
 | A guard stopped firing and nothing in the diff looks like logic | §29.15 (it was armed by a string; a doc-pass reword disarms it) |
+| `--analyze` feels slow and you want to know where the time goes | §29.16 (profile first — `np.unique(axis=0)` was 7.5s of it, but fixing it bought 10%) |
 | Wondering whether the cleanup ring is safe on a given animation | §29.15 (`band_applied` is a value now, not a sentence to parse) |
 | A rendered image looks static and you are about to file an animation defect | §29.14 (test a known-animating file first — the preview pane animates nothing) |
 | An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
@@ -1827,6 +1828,14 @@ Both P3 items the render baseline flagged and nobody had explained are closed, a
 * **`f2ea31a625….gif` at 87.3% of its source figure.** The suspicion that the comparison was invalid turns out to be wrong in a useful way — `load_animation_rgba_frames` and a per-`seek` count agree exactly at 912,486, so the numbers did describe the same pixels. The real answer is the frame count: the source's frames 0 and 1 are **identical duplicates** at 116,007 opaque each, the output coalesces them, and 912,486 − 116,007 = **796,479**, the output total to the pixel. Zero art loss.
 
 **The transferable part:** an unexplained residual is worth chasing even when both directions are harmless, and the answer twice was in the denominator rather than in the pipeline. Establish what the source figure actually counts before treating a ratio as loss.
+
+### 29.16 `np.unique(axis=0)` sorts ROWS, and it was the largest line in an `--analyze` profile
+
+`build_art_palette` asked `np.unique(sample, axis=0, return_counts=True)` for the distinct colours in a stack of frames. On the 7.4-million-row sample a 138-frame 640x640 emoji produces, that call takes **7,524 ms**. Packing each pixel to a uint32 and uniquing a 1-D array takes **65 ms** — **115x** — and returns the same colours in the same order with the same counts, because `(r<<16)|(g<<8)|b` sorts lexicographically by `(r, g, b)` exactly as row-unique does. Asserted on real frames rather than argued, and `analyze()`'s entire output is byte-identical before and after.
+
+The reason is not that `axis=0` is poorly implemented: it builds a structured view over the rows and sorts THAT, so its cost tracks the pixel count. The 1-D form sorts 4-byte integers. **This is the same lesson `measure_composited_color_count`'s boolean sieve already records — `np.unique`'s cost is the SORT, so give it the smallest thing that can be sorted.** Applied at both `axis=0` call sites.
+
+**What it did NOT do is make `--analyze` fast**, and that is worth stating because the 115x invites the opposite conclusion: end to end the same asset went 16.4s to 14.7s, about 10%. The rest of the profile is genuine per-frame work — the outline-leak search at 3.2s, band-interior regions across every frame, connected-component labelling, binary erosions — where each further percent means restructuring passes on a pipeline that has already produced three data-loss classes. **A 115x on one line is a 10% on the run, and quoting the first number without the second would be the same overclaim this file keeps recording.**
 
 ### 29.15 A guard armed by a sentence is disarmed by an edit that looks like documentation
 

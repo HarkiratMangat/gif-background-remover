@@ -98,7 +98,11 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 `FLAT_PALETTE_MAX_COLORS = 16` is argued from the pixel-art convention (EGA/PICO-8) rather than swept, and its safety rests on the measured negative frontier: over 146 labelled antialiased assets the LOWEST composited count is 26. **That is a margin resting on one asset**, and the class that could land under the floor — a lossily-quantized antialiased image — is now measured and it is not rare. Real antialiased emoji downscaled to 64px and quantized to 16 colours put **36 of 118 (30.5%)** into palette territory the floor cannot distinguish, and re-analysing this tool's own GIF output already flips 8.3% of antialiased assets by a different rule.
 
-**Do:** acquire or construct ~20 genuinely antialiased assets in the 16-60 composited-colour band and measure where the floor actually sits against them. Do NOT move the threshold before that measurement exists — the failure direction is destructive. Note the argued mitigation still stands and should be re-tested rather than assumed: "art flat enough to come in under 16 colours has no ramps to protect and wants `--pixel-art`'s treatment anyway." `references/lessons.md` §29.4, §29.12
+✅ **The corpus now exists, and the floor DOES fire on it — measured 2026-08-19.** `small_aa` (150 real icons and custom emoji at 32–128px) and `small_aa_quantized` (117 of those re-exported as GIF at 16–64 colours) are registered populations. Scoring the current code against them: **62 disagreements, ~40 of which are the colour-count rule firing on assets holding 2–16 colours** — `small_aa_quantized` specificity reads 0.615.
+
+⚠️ **Do NOT treat 0.615 as a specificity collapse yet, and do NOT move the threshold to improve it.** Those 267 labels are PROVISIONAL: all were labelled `antialiased`, but only 8 were inspected by eye before the blanket label went on. Inspecting the 17 disagreements in `small_aa` showed the split is real BOTH ways — Mareep, CryPepe, Pepecoin and the flame emoji are genuinely antialiased and genuinely misclassified, while BlackVerified, FlyingHearts, HOT and PrettyGay are flat 2–4 colour vector shapes with no ramps at all, where `hard-edged` is arguably the correct verdict and `measure_composited_color_count`'s own docstring says so.
+
+**Do:** inspect the 62 disputed assets individually and fix the labels first — that is the load-bearing set, not all 267. THEN measure where the floor sits. Do NOT move the threshold before that measurement exists — the failure direction is destructive. Note the argued mitigation still stands and should be re-tested rather than assumed: "art flat enough to come in under 16 colours has no ramps to protect and wants `--pixel-art`'s treatment anyway." `references/lessons.md` §29.4, §29.12
 
 ### `[P2 · M · Opus5-High]` `analyze()` keys on the COMPOSITE, `process()` still keys on the raw plane *(filed 2026-08-19 by the xhigh code review)*
 
@@ -157,8 +161,10 @@ The flag works on a single-file run and is absent from the batch manifest schema
 ⚠️ **The browser half is NOT closed, and the attempt to close it produced a vacuous result that a control caught.** The in-app preview pane sampled the APNG over 1.2s and reported no frame advance — which looks like a damning defect and is not one: **the same test on a plain animated GIF also reported static**, so the pane renders snapshots and animates nothing. Without that control this session would have filed a false product defect. **Do:** open one in a REAL browser (or hand one to Harkirat), and keep WebP as the fallback until someone has actually watched it move. `references/lessons.md` §29.14
 
 
-### `[P3 · M · Sonnet5-High · ⛓️blocked-by: no gradient-heavy corpus]` Re-test gifsicle's colour dither on a GRADIENT-heavy corpus *(opened 2026-08-17, tagged 2026-08-18)*
+### `[P3 · M · Sonnet5-High]` Re-test gifsicle's colour dither on a GRADIENT-heavy corpus — **UNBLOCKED 2026-08-19** *(opened 2026-08-17, tagged 2026-08-18)*
 The `medium`/`heavy` tiers use `gifsicle --dither=floyd-steinberg` for COLOUR quantization. Spot- measured on `love.gif` at `medium` settings, Floyd-Steinberg came out **worst on both** axes that matter for animation:
+
+✅ **The blocker is gone.** `local/corpus gradient beds/` holds 23 assets carrying a real smooth alpha ramp (1,990–12,413 partial-alpha px each), built with Dior's Builds' actual nameplate-bed curve and palette — Harkirat's suggestion, because gradient-heavy source material is genuinely hard to find in the wild. Registered as the `gradient_beds` population with `default_label='ambiguous'`, so it is excluded from every recall and specificity figure: its job is the encoder question, not classification. **Do:** run the dither comparison across it and record the result. `references/lessons.md` §6 has the original gifski/pngquant evaluation this extends.
 
 | dither | KiB | mean colour err | frame-to-frame instability in static regions |
 |---|---|---|---|
