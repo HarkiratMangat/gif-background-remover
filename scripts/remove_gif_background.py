@@ -2052,7 +2052,13 @@ def _gather_outline_candidates(rgb, bg_rgb, comp_footprint, tolerance,
         # Quantize to merge near-duplicate antialiased shades into one
         # candidate rather than treating each as separate.
         q = (px // 20 * 20).astype(np.uint8)
-        vals, counts = np.unique(q.reshape(-1, 3), axis=0, return_counts=True)
+        # packed, for the same reason as build_art_palette above -- q is quantized to a 20-step
+        # grid so there are at most a few thousand distinct values, but the ROW sort still
+        # dominates on a large frame.
+        _qp = ((q[..., 0].astype(np.uint32).reshape(-1) << 16)
+               | (q[..., 1].astype(np.uint32).reshape(-1) << 8) | q[..., 2].astype(np.uint32).reshape(-1))
+        _qv, counts = np.unique(_qp, return_counts=True)
+        vals = np.stack([(_qv >> 16) & 255, (_qv >> 8) & 255, _qv & 255], 1).astype(np.uint8)
         order = np.argsort(-counts)
         for v in vals[order][:3]:
             candidate_colors[tuple(int(x) for x in v)] = True
@@ -4078,7 +4084,17 @@ def build_art_palette(rgb_frames, bg_rgb, sample_stride=8, protect_parents=None,
     bg = np.asarray(bg_rgb, dtype=np.float32)
     sample = np.concatenate(
         [f.reshape(-1, 3) for f in rgb_frames[::sample_stride]], 0).astype(np.uint8)
-    cols, counts = np.unique(sample, axis=0, return_counts=True)
+    # PACK to uint32, then unique on a 1-D array -- never np.unique(axis=0). Both return the
+    # same colours in the same order with the same counts (asserted on real frames), because
+    # (r<<16)|(g<<8)|b sorts lexicographically by (r,g,b) exactly as row-unique does. But
+    # axis=0 builds a structured view and sorts ROWS, and that costs 7,524 ms on the 7.4M-row
+    # sample a 138-frame emoji produces, against 65 ms here -- 115x, and it was the single
+    # largest line in an --analyze profile. Same lesson as measure_composited_color_count's
+    # sieve: the cost of np.unique tracks the SORT, so give it the smallest thing to sort.
+    _packed = ((sample[:, 0].astype(np.uint32) << 16)
+               | (sample[:, 1].astype(np.uint32) << 8) | sample[:, 2])
+    _vals, counts = np.unique(_packed, return_counts=True)
+    cols = np.stack([(_vals >> 16) & 255, (_vals >> 8) & 255, _vals & 255], 1).astype(np.uint8)
     floor = max(1, int(len(sample) * 0.0008))
     cand = [(c.astype(np.float32), int(n)) for c, n in zip(cols, counts)
             if n >= floor and np.linalg.norm(c.astype(np.float32) - bg) > 40]
