@@ -94,6 +94,34 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 
 
+### `[P2 · S · Opus5-High]` The 16-colour flat-palette floor rests on a sample of ONE, and this session made that worse *(filed 2026-08-18)*
+
+`FLAT_PALETTE_MAX_COLORS = 16` is argued from the pixel-art convention (EGA/PICO-8) rather than swept, and its safety rests on the measured negative frontier: over 146 labelled antialiased assets the LOWEST composited count is 26. **That is a margin resting on one asset**, and the class that could land under the floor — a lossily-quantized antialiased image — is now measured and it is not rare. Real antialiased emoji downscaled to 64px and quantized to 16 colours put **36 of 118 (30.5%)** into palette territory the floor cannot distinguish, and re-analysing this tool's own GIF output already flips 8.3% of antialiased assets by a different rule.
+
+**Do:** acquire or construct ~20 genuinely antialiased assets in the 16-60 composited-colour band and measure where the floor actually sits against them. Do NOT move the threshold before that measurement exists — the failure direction is destructive. Note the argued mitigation still stands and should be re-tested rather than assumed: "art flat enough to come in under 16 colours has no ramps to protect and wants `--pixel-art`'s treatment anyway." `references/lessons.md` §29.4, §29.12
+
+### `[P3 · S · Sonnet5-High]` Two predicates about one property are computed on different frame sets *(filed 2026-08-18)*
+
+`source_background_already_transparent` is computed from **frame 0 only**, while `source_alpha_levels` is a **max over sampled frames**, and `_band_measures_are_vacuous` is the conjunction of the two — so the vacuous-band gate mixes a frame-0 property with an all-frames one. `decide_source_alpha_policy` decides the same underlying property per ANIMATION, so the file now holds two answers to "is this source's transparency its background" derived from different evidence.
+
+**Left alone deliberately, and the reason is the only thing making it P3:** both directions of the asymmetry err toward abstention — fewer hard-edged verdicts, i.e. away from the destructive direction. **Do:** make the two agree on a frame set, or state in one place which one is authoritative and why. Cheap; the risk is that "harmless today" stops being true the next time a rule reads either predicate.
+
+### `[P3 · S · Sonnet5-High]` The 2px cleanup band's BENEFIT is still unproven *(filed 2026-08-18)*
+
+The source-alpha scope fix vetoes the 2px cleanup ring whenever the background colour also occurs in the artwork away from the boundary, and that veto is measured and correct: across 76 alpha-carrying assets it fires on exactly the 25 that were losing art and takes all 25 to 100% survival. **What was never measured is the band's upside.** On those same 76 assets it removes nothing the unrestricted path would have left, so its fringe-cleanup value is entirely unexercised — only its RISK was measured and neutralised. **Do:** find or construct a source whose own alpha leaves a real fringe the band would clean, or delete the band and its `--source-alpha-band` flag as unearned complexity. Quote the veto, never the band. `references/lessons.md` §28.14
+
+### `[P3 · XS · Sonnet5-Medium]` `--source-alpha-band` is not plumbed into batch manifests *(filed 2026-08-18)*
+
+The flag works on a single-file run and is absent from the batch manifest schema, so a batch job cannot tune the ring per asset. Small and mechanical; the same shape as any other per-asset flag already in the manifest. ⚠️ Sequenced behind the item above — if the band turns out to be unearned, this becomes moot rather than done.
+
+### `[P3 · S · Sonnet5-High]` The 31 `unsuitable_no_edges` sprites are excluded from RENDER baselines too, and `_refuse_empty_render` is untested *(filed 2026-08-18)*
+
+`EXCLUDED_LABELS` exists so 31 flat overlay plates do not hand a hard-edge rule 31 free true negatives that test nothing. `render_baseline.py` inherits that exclusion by reusing `iter_assets`'s scoring default — which is an accident, not a decision: those files are exactly the degenerate inputs a RENDER gate wants. The flat 1-colour tile is a natural `_refuse_empty_render` test and has never been run through one. **Do:** pass `include_excluded=True` in the render harness and assert the refusal fires rather than an empty output being written. (They cost ~20s each in `analyze()`, which is why a full scoring run stalls around index 560 — irrelevant to rendering.)
+
+### `[P3 · XS · Sonnet5-Medium]` `audit_docs.py`'s heading/body drift gate matches a bare keyword anywhere in a body *(filed 2026-08-18)*
+
+The gate fails an OPEN item whose body contains any of its three closure keywords anywhere at all, which is right for a closure marker and wrong for ordinary prose — it fired on this very file for a sentence that used the past-tense-release keyword as an ADJECTIVE ("the … 16-colour floor"), which had to be reworded to "already in the released code". ⚠️ **Writing this item TRIPPED the gate**, on the sentence above that quoted the keywords — a defect that reproduces itself in its own bug report. **Do NOT loosen it casually**: it has caught real drift, and a gate that stops catching drift is worse than a gate that occasionally makes you reword. **Do:** require the keyword to appear as a MARKER — bolded, or at the start of a line — which is how every genuine closure in both files is written, and re-run the gate against the known drift case to prove it still fails.
+
 ### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
 **Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
 
