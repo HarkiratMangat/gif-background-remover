@@ -775,10 +775,47 @@ def analyze(input_path, max_samples=40, tolerance=15):
     bg_rgb = detect_bg_color(rgb0)
     H, W, _ = rgb0.shape
 
+    # COMPOSITED, not `convert('RGB')` -- and this is the same correction SS28.5 made for the
+    # hardness family, applied to everything else that reads a frame. `convert('RGB')` DISCARDS
+    # alpha rather than resolving it, so on an RGBA source a half-transparent pixel keeps its
+    # full-strength art colour and every check downstream reads a colour no viewer will ever see.
+    # SS28.5 fixed only measure_edge_hardness and its relatives; `all_rgb_frames` feeds
+    # detect_bg_color's siblings, color_mask, the candidate-region enclosure search,
+    # measure_bg_component_margin, detect_band_interior_regions and
+    # collect_small_removed_region_sizes, and every one of them was still reading the raw plane.
+    #
+    # MEASURED before changing it, because the tracker's own scope note said this must not be
+    # switched blind (there is still no LABELLED RGBA corpus). Running analyze() twice per file,
+    # once with frames composited, over 14 partial-alpha icons and then over the 10 most
+    # translucent assets in the sprite corpus:
+    #   * three checks move -- band_interior_regions, candidate_regions, tumble_risk. Nothing
+    #     else does, and the detected background colour is stable either way.
+    #   * on the icons the movement is small (pixel counts 0.5-4%, bboxes 1px) and no verdict
+    #     flips. On the TRANSLUCENT population it is a verdict: seven Tiny Swords cloud sprites
+    #     go from 0 band-interior regions to 1 `solid_tint`, and `Shadow.png`'s
+    #     mean_distance_from_bg reads 58.2 uncomposited against 18.1 composited.
+    #   * two of those change the RECOMMENDED COMMAND, in both directions: `Clouds_03.png` gains
+    #     --protect-band-only 4 (a real tint the raw read could not see), and `Shadow.png` LOSES
+    #     --feather-band-multiplier 3.4 (the raw read had put a solid colour 58 from the
+    #     background when a viewer sees it at 18). An autonomous run pastes that command
+    #     verbatim, so this was a wrong flag on real assets, not a cosmetic field.
+    # A fully opaque source has no partial alpha and takes the identical path, byte for byte,
+    # which is what keeps the labelled corpus a valid control for it. SS29.11
     all_rgb_frames = []
     for i in range(n_frames):
         im.seek(i)
-        all_rgb_frames.append(np.array(im.convert('RGB')))
+        _rgba_i = np.array(im.convert('RGBA'))
+        _a_i = _rgba_i[..., 3]
+        if ((_a_i > 0) & (_a_i < 255)).any():
+            _f_i = _a_i[..., None].astype(np.float32) / 255.0
+            all_rgb_frames.append((_rgba_i[..., :3].astype(np.float32) * _f_i
+                                   + np.asarray(bg_rgb, dtype=np.float32) * (1.0 - _f_i)
+                                   ).round().clip(0, 255).astype(np.uint8))
+        else:
+            # ascontiguousarray, not a bare slice: `convert('RGB')` returned a fresh
+            # contiguous array and `_rgba_i[..., :3]` is a non-contiguous VIEW that also
+            # pins the whole RGBA buffer alive for every frame.
+            all_rgb_frames.append(np.ascontiguousarray(_rgba_i[..., :3]))
 
     # Tumble margin and the small-region histogram both scan every frame
     # and both start from the identical color_mask(rgb, bg_rgb, tolerance)
