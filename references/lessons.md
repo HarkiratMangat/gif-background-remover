@@ -123,6 +123,8 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A specificity figure collapses on one population and nowhere else | §32 (check whether that population is a DERIVATIVE) |
 | A corpus label was applied to everything at once | §32 (a blanket label measures the labeller, not the code) |
 | Flat 2-3 colour vector art called pixel art | §32.3 (the 16-colour floor's first real negatives) |
+| Native-resolution (1:1) pixel art read as antialiased | §32.7 (plateau_cliff_ratio needs a scale factor) |
+| A whole sprite pack detected at 20-25% while others are at 100% | §32.7 |
 | Pixel art in a lossy WebP/JPEG read as antialiased | §32.3 (the encode fills the plateaus in) |
 | Partial transparency in a PNG/WebP source disappears after `--auto` | §31 |
 | `SOURCE ALPHA HONOURED` printed, and the fade died anyway | §31 (the scope covers alpha==0 only) |
@@ -2024,6 +2026,23 @@ Four true positives for twenty false positives, in a project whose stated asymme
 **Specificity does not move at all.** No threshold between 10 and 16 removes a single independent false positive; the floor's total independent cost is 6, and every candidate change is pure recall loss. The three real detections it would have cost are named — `Free City Enemies Pixel Art` 1/Hurt, 3/Hurt, 3/Hurt2, at cc 13–15.
 
 The floor stays at 16. **The measurement that would have justified moving it was run, and it came out the other way** — which is the only kind of evidence that settles a threshold. And the check that saved it was one `Counter` over the populations of the assets that changed: [[feedback_falsifier_population]], applied to a win rather than to a loss.
+
+### 32.7 The seventh discriminator: a REAL but narrow band is not an EMPTY one
+Six structural discriminators had been tried and falsified before this. The seventh is different in kind: it is not a new measure, it is a **refinement of an existing suppression**.
+
+`_band_measures_are_vacuous` silences both transition-band rules on a hard-alpha cutout whose transparency is its background, because there an empty band is guaranteed by the export (§29). That is right, and it was applied to every such source — including the ones whose band is **not** empty. Among the 378 labelled assets the gate silences:
+
+| ratio_max | pixel art | antialiased |
+|---|---|---|
+| 0.000 (guaranteed empty — stays silent) | 46 | 40 |
+| **0 < ratio < 0.20** | **49** | **9** |
+| ratio ≥ 0.30 | 118 | 75 |
+
+A band that EXISTS on a cutout is real evidence, and its **width** separates the classes: native-resolution pixel art carries a thin one — the artist's own 1px shading against the silhouette — while antialiasing carries a wide one. Measured on the independent populations: **recall 0.8932 → 0.9644 for specificity 0.9787 → 0.9681**, and the pack that motivated it goes **0.235 → 0.941 (32/34)**. The prediction made before implementing matched the measured result exactly.
+
+**Why `plateau_cliff_ratio` could never have caught these.** It requires flat runs of 2px or more. Tiny Swords sits at 197/197 because it is UPSCALED pixel art — each art pixel is several screen pixels. The Orc and Soldier sheets are 100×100 at 1:1, so every art pixel is one screen pixel and there are no multi-pixel plateaus to find, by construction. Their cliff ratios are 0.07–0.28 against a 0.30 floor. **A measure that needs a scale factor is blind to art drawn at native resolution**, which is most of what a sprite sheet actually contains.
+
+⚠️ **Two caveats kept with the rule rather than buried.** The 0.20 threshold is chosen from this corpus; the reason to trust it is that independent specificity is FLAT at 0.9681 across 0.10, 0.15 and 0.20 and only falls at 0.25 — a plateau, not a knife-edge. And 22 of the 24 new detections are one pack, so it is pack-concentrated by construction, that pack being the population it was built for. What makes it a rule rather than a fit is that it names a **mechanism** instead of a signature, and that it was scored on the independent populations *before* being kept — which is exactly the check that killed the 16-colour change in §32.5.
 
 ### 32.6 The star family: one artwork, six files, and the encode decides the verdict
 `star1.gif`, `star2.webp` and `star3.gif` are the same isometric pixel-art star. All three are MISSED. Their quantized twins are CAUGHT:
