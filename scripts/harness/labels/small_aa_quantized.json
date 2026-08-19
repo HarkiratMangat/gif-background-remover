@@ -1,5 +1,5 @@
 {
- "_note": "\u26a0\ufe0f PROVISIONAL. Every asset is labelled `antialiased`, but only 8 were inspected by eye (a 4x contact sheet) before the blanket label was applied -- which is the shortcut this project's rules exist to prevent. Scoring the current code against them surfaced 62 disagreements, and inspecting the 17 in small_aa showed the split is REAL BOTH WAYS: Mareep, CryPepe, Pepecoin and the flame emoji are genuinely antialiased and genuinely misclassified, while BlackVerified, FlyingHearts, HOT and PrettyGay are flat 2-4 colour vector shapes with no ramps at all, where `hard-edged` is arguably the correct verdict (see measure_composited_color_count's own docstring). DO NOT quote a specificity figure from these labels until each disputed asset has been inspected individually, and DO NOT re-label to improve a score -- that moves the score of the thing that raised the question.",
+ "_note": "⚠️ DERIVED, and labelled from the ORIGINAL artwork -- the only thing a label can honestly describe here. Each asset is a small_aa original re-exported as GIF at 16-64 colours, so its label follows its source: this project's own rule is to judge content type from the ORIGINAL and never from a compressed derivative. 3 label(s) moved to pixel_art on 2026-08-19 to follow a source that was relabelled by eye. MEASURED 2026-08-19: 45 assets here are called pixel art by the current code. That is NOT 45 new false positives -- it is the documented quantization hazard measured at scale for the first time (references/lessons.md §29.9, §32). Palette reduction turns a 1px antialiasing ramp into flat neighbouring blocks, which is exactly what plateau_cliff_ratio and the 16-colour floor detect. The Blox-Fruits items are the clearest case: chunky and blocky here, smooth 3D-style renders in the source. ⚠️ DO NOT quote this population's specificity as evidence that a threshold needs moving. It measures the hazard, not the detector's behaviour on real inputs, and every asset shares a source with one in small_aa, so the two populations are NOT independent.",
  "labels": {
   "001-rose__q16.gif": "antialiased",
   "002-rose-1__q24.gif": "antialiased",
@@ -113,9 +113,9 @@
   "emoji_9__q24.gif": "antialiased",
   "ezgif.com-optimize copy__q32.gif": "antialiased",
   "ok__q48.gif": "antialiased",
-  "star1__q64.gif": "antialiased",
-  "star2__q16.gif": "antialiased",
-  "star3__q24.gif": "antialiased",
+  "star1__q64.gif": "pixel_art",
+  "star2__q16.gif": "pixel_art",
+  "star3__q24.gif": "pixel_art",
   "wind__q32.gif": "antialiased",
   "yellow-triangle__q48.gif": "antialiased"
  }

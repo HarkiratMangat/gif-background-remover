@@ -65,6 +65,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 29. [A sixth discriminator, and a measure that had been reading a plane blank by construction](#29-a-sixth-discriminator-and-a-measure-that-had-been-reading-a-plane-blank-by-construction)
 30. [Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background](#30-two-defaults-judged-by-the-wrong-measurement-the-gifsicle-dither-and-the-leak-gates-background)
 31. [The source's own alpha was thrown away before the mask was computed](#31-the-sources-own-alpha-was-thrown-away-before-the-mask-was-computed)
+32. [A blanket label is a measurement of nothing, and the quantized twin is not the artwork](#32-a-blanket-label-is-a-measurement-of-nothing-and-the-quantized-twin-is-not-the-artwork)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -119,6 +120,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | An outline colour passes the leak gate but visibly swallows background | §30.3 (background that is not the biggest piece was invisible to it) |
 | A default was chosen on a measurement that cannot see what the feature is for | §30.2 (measure the thing the feature exists to do, then price it) |
 | A faded/glowing source comes out fully opaque | §31 (the source alpha never reached the output; now clamped) |
+| A specificity figure collapses on one population and nowhere else | §32 (check whether that population is a DERIVATIVE) |
+| A corpus label was applied to everything at once | §32 (a blanket label measures the labeller, not the code) |
+| Flat 2-3 colour vector art called pixel art | §32.3 (the 16-colour floor's first real negatives) |
+| Pixel art in a lossy WebP/JPEG read as antialiased | §32.3 (the encode fills the plateaus in) |
 | Partial transparency in a PNG/WebP source disappears after `--auto` | §31 |
 | `SOURCE ALPHA HONOURED` printed, and the fade died anyway | §31 (the scope covers alpha==0 only) |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
@@ -1957,3 +1962,44 @@ Nothing above half opacity is touched, and two thirds of it is under 2% — pixe
 ⚠️ **Deliberately NOT applied to the `--recover-fade-alpha` branch.** That feature exists to RECONSTRUCT a fade the source already flattened, so there the source alpha is 255 by definition — clamping to it would be a no-op at best and would delete the feature at worst.
 
 **The transferable part:** this is `--pixel-art`'s inverse-spelling failure one level down. `get_source_transparency_mask` was carefully written to run BEFORE `convert('RGB')` because flattening destroys information — and then the very next line threw away the rest of the same channel. **A guard that protects one value of a field is not a guard on the field.** `alpha == 0` was handled with a docstring's worth of care; `alpha == 137` was not handled at all.
+
+
+## 32. A blanket label is a measurement of nothing, and the quantized twin is not the artwork
+**Also searched as:** ground truth wrong · mislabelled corpus · label noise · provisional labels · derived population · re-exported · palette reduced twin · specificity collapse · montage · thumbnail grid · hand-checked · visual audit · sanity-check the labels
+
+267 assets arrived as a new corpus and every one was labelled `antialiased` in a single pass, with 8 inspected. Scoring the code against that produced **62 disagreements**, a `small_aa` specificity of 0.887 and a `small_aa_quantized` specificity of **0.615** — a number that looks exactly like a detector falling over, and was not.
+
+### 32.1 What eye inspection actually changed
+Every disagreement was rendered to a 4x nearest-neighbour contact sheet (then 6x for the final calls) and judged against one **operational** criterion, because "looks blocky" is not one:
+
+> **Is the pixel grid the artwork?** If nearest-neighbour is the right way to enlarge it, it is `pixel_art`. If the shapes are curves that merely have hard edges at this size, it is `antialiased` — because `--pixel-art` switches the resize filter to nearest and would jag every curve.
+
+| | before | after |
+|---|---|---|
+| `small_aa` specificity | 0.887 (133/150) | **0.970 (130/134)** |
+| `small_aa` recall | no figure — no positives existed | **0.667 (6/9)** |
+| `small_aa_quantized` specificity | 0.615 | 0.623 |
+
+**9 assets were real pixel art the blanket pass got wrong** — a lightning bolt, four flame sprites, a tiny character sprite and three isometric stars, all with unmistakable staircase diagonals at 6x. **7 more are genuinely undecidable at 32–128px** and were set to `ambiguous` on purpose, which excludes them from every recall and specificity figure. Guessing them would have moved the score of the very thing that raised the question ([[feedback_do_not_relabel_when_a_measure_objects]]).
+
+### 32.2 The finding that only came from checking the ORIGINALS
+The disagreement list under-samples by construction: an original often scores "antialiased" (agreeing with a wrong label) while its quantized twin scores "pixel art" (disagreeing). So the families the twins implicated were pulled and inspected directly — and **the entire Blox-Fruits item family, 16 assets, is smooth soft-shaded 3D-style rendering in the original and chunky flat blocks in its 16-colour twin.** Those labels are correct as they stand.
+
+That is what the 0.615 was: **not 45 false positives, but the quantization hazard measured at scale for the first time.** Palette reduction manufactures exactly the structure `plateau_cliff_ratio` and the 16-colour floor exist to detect. Relabelling that population to match the code would have been fitting the ground truth to the answer; moving a threshold to "fix" it would have broken detection on real pixel art. The honest handling is a note on the population saying its specificity is a measurement OF the hazard, plus the fact that **it is not independent of `small_aa` — every asset shares a source with one.**
+
+### 32.3 The four false positives and three misses that survive, which are the real work
+With the labels honest, `small_aa` leaves seven errors, and each names a specific mechanism:
+
+| asset | verdict | why |
+|---|---|---|
+| `FlyingHearts.gif` (cc **2**) | false positive | the 16-colour flat-palette floor. **Its first real negatives:** flat 2–3 colour vector art with curved shapes. |
+| `PrettyGay.gif` (cc **3**, pcr 0.536) | false positive | the floor AND `plateau_cliff_ratio` — brush strokes with no ramp at all |
+| `boost.gif` (cc 25, pcr 0.449) | false positive | `plateau_cliff_ratio` on a flat-shaded gem |
+| `CryPepe.png` (cc **4376**, pcr 0.0) | false positive | the thin-band + no-blend-pixels rule, on an image with 4,376 colours |
+| `star1.gif`, `star3.gif` | miss | hard-alpha cutouts; the band is empty and correctly not counted (§29), leaving the colour rules alone to decide |
+| `star2.webp` (cc **1502**, pcr 0.0) | miss | **lossy WebP filled the plateaus in.** Its two siblings are the same artwork at 239 and 253 colours. |
+
+`star2.webp` is the cleanest demonstration this corpus offers of the re-encoding hazard: one artwork, three files, and the lossy one is the only one that hides.
+
+### 32.4 The transferable rule
+**A label applied to a whole population in one pass is a measurement of the labeller, not of the code** — and it fails in the direction that flatters, because "everything is a negative" makes specificity the only computable number and recall undefined. Two questions before quoting any figure from a new corpus: *how many of these did someone actually look at?*, and *is this population DERIVED from another one in the same run?* A derivative shares its errors with its source and cannot serve as an independent check on it.
