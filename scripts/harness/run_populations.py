@@ -132,7 +132,12 @@ def main():
         return _WORKER_MOD
     if a.jobs > 1:
         print(f"running {a.jobs} workers", flush=True)
-        with ProcessPoolExecutor(max_workers=a.jobs, max_tasks_per_child=8,
+        # No max_tasks_per_child. It was there to bound memory, but the largest asset in the
+        # corpus holds 100 MB of frames and 8 workers of those is 0.8 GB of 16 -- so it was
+        # bounding nothing, while its repeated respawns hung the pool partway through a full
+        # run: parent alive at 0% CPU, zero workers left, no error raised. A knob that solves
+        # no measured problem and can hang the run is worse than absent.
+        with ProcessPoolExecutor(max_workers=a.jobs,
                                  initializer=_init_worker, initargs=(a.script,)) as ex:
             for n, (k, rec) in enumerate(ex.map(score_one, assets, chunksize=1)):
                 out[k] = rec
