@@ -66,6 +66,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 30. [Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background](#30-two-defaults-judged-by-the-wrong-measurement-the-gifsicle-dither-and-the-leak-gates-background)
 31. [The source's own alpha was thrown away before the mask was computed](#31-the-sources-own-alpha-was-thrown-away-before-the-mask-was-computed)
 32. [A blanket label is a measurement of nothing, and the quantized twin is not the artwork](#32-a-blanket-label-is-a-measurement-of-nothing-and-the-quantized-twin-is-not-the-artwork)
+33. [Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin](#33-following-a-moving-hole-identity-by-continuity-when-nothing-in-a-single-frame-can-tell-it-from-its-twin)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -124,6 +125,9 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A corpus label was applied to everything at once | §32 (a blanket label measures the labeller, not the code) |
 | Flat 2-3 colour vector art called pixel art | §32.3 (the 16-colour floor's first real negatives) |
 | Native-resolution (1:1) pixel art read as antialiased | §32.7 (plateau_cliff_ratio needs a scale factor) |
+| A hole to punch MOVES, and matching decoration must be kept | §33 (`--remove-region-track`) |
+| `--remove-region` hits the right spot on frame 0 and nowhere else | §33 |
+| Two identical same-coloured features, opposite treatment | §33 (seed one; identity is carried by continuity) |
 | A whole sprite pack detected at 20-25% while others are at 100% | §32.7 |
 | Pixel art in a lossy WebP/JPEG read as antialiased | §32.3 (the encode fills the plateaus in) |
 | Partial transparency in a PNG/WebP source disappears after `--auto` | §31 |
@@ -2060,3 +2064,26 @@ The originals carry gradient bevel shading, so they have hundreds of colours and
 
 ### 32.4 The transferable rule
 **A label applied to a whole population in one pass is a measurement of the labeller, not of the code** — and it fails in the direction that flatters, because "everything is a negative" makes specificity the only computable number and recall undefined. Two questions before quoting any figure from a new corpus: *how many of these did someone actually look at?*, and *is this population DERIVED from another one in the same run?* A derivative shares its errors with its source and cannot serve as an independent check on it.
+
+
+## 33. Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin
+**Also searched as:** moving target · per-frame tracking · follows the animation · hole that drifts · rotating cutout · same colour opposite treatment · centroid tracking · region follows · keeps up with the animation
+
+Filed 2026-08-08 as the one case with no answer. Two solutions existed and neither reaches it: §14's geometric gate needs the hole and the decoration to differ measurably in size or aspect on EVERY frame, and §15's `--remove-region` is static — on a real tumbling asset a fixed circle missed the true target in **76% of frames**. The remaining option was writing a bespoke tracking script per asset, and the live session that hit it reached for `cv2.HoughCircles`.
+
+**The insight is that the seed supplies what no single frame can.** Two identical holes are indistinguishable in one frame and completely distinguishable across an animation, because only one of them is where the seeded one just was. `--remove-region-track` takes the same spec syntax as `--remove-region`, treats it as a frame-0 SEED, and carries identity forward by continuity — centroid distance from a predicted position, gated at a fraction of the frame diagonal, with area and aspect ratios (relative to the seed, so a hole that foreshortens through a rotation still matches) as tie-breakers.
+
+**Measured on an asset built to make the premise true** — a rotating card with two byte-identical white holes, both orbiting, so neither geometry nor a static region can work:
+
+| | target hole punched | decoy wrongly punched |
+|---|---|---|
+| `--remove-region` (static seed) | **1 / 24** | 1 / 24 |
+| `--remove-region-track` | **24 / 24** | **0 / 24** |
+
+with a control confirming the falsifier could fail: with both holes protected and no region flag, the target stays opaque on 24/24 frames.
+
+⚠️ **A constructed asset is legitimate here for the same reason `gradient_beds` is** — the question is "does the tracker follow the seeded region", not "what kind of art is this". It is deliberately built so that the item's own premise holds: same colour, same radius, both moving. A real asset should still be run through it when one appears; what this measurement establishes is that the mechanism works, not that it has met the wild.
+
+⚠️ **Losing the target is REPORTED, not hidden.** When no candidate passes the continuity gate on a frame, the mask is carried forward along the last motion vector and those frame indices are printed. A tracker that quietly emits a plausible-looking mask after losing its target is the failure this project refuses everywhere else; the alternatives — dropping the frame (a visible flicker) or falling back to the frame-0 mask (wrong by exactly the distance travelled) — are both worse and both silent.
+
+**No new dependency.** `scipy.ndimage.label` plus centroids does what HoughCircles was reached for, which is what the deferred item asked for: a script-native primitive rather than bespoke external tooling every time.

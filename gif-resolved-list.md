@@ -24,6 +24,25 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
+**Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
+
+**The problem:** this repo now has two real solutions to "punch a hole shared with same-color decoration that needs opposite treatment" -- §14's geometric-gate approach (`--tumble-safe` + `--keep-bg-blob-if-near` + tight `--hole-size-range`/`--hole-max-aspect`), which needs the hole and the decoration to differ measurably in size/aspect across every frame; and §15's `--remove-region`, which needs either a static target or an external per-frame tracking script (confirmed: a static circle alone missed the true target in 76% of frames on a real tumbling asset). Neither covers a moving hole that ISN'T geometrically separable from its decoration and has no available tracking tooling -- a real, currently-unsolved case, not yet encountered on a real asset but now a known gap rather than a silent one.
+
+**First slice (S):** wait for a real asset that actually needs this before designing a fix -- speculative design against a hypothetical case risks solving the wrong shape of problem, the same mistake `--keep-bg-blob-if-near`'s color-adjacency approach made when first reached for on §14's own asset. If/when a real case arrives, the likely direction is a lighter-weight, script-native per-frame tracking primitive (a lower-effort analog to the live session's `cv2.HoughCircles` step) rather than requiring bespoke external tooling every time.
+
+**Model pick reasoning:** premise High (no real case yet, so even the shape of the right fix is speculative) · deliberation High (a script-native tracking primitive is real algorithm design) -> `Opus5-High`, and only once a concrete motivating case exists.
+
+✅ **CLOSED 2026-08-19 — `--remove-region-track` ships.** The first slice said to wait for a real asset; Harkirat asked for it to be built now, which supersedes that, and the design turned out not to need one to be falsifiable.
+
+**The insight is that the SEED supplies what no single frame can.** Two identical holes are indistinguishable within a frame and completely distinguishable across an animation, because only one of them is where the seeded one just was. The flag takes `--remove-region`'s spec syntax, treats it as a frame-0 seed, and carries identity forward by continuity: centroid distance from a predicted position, gated at a fraction of the frame diagonal, with area and bbox-aspect ratios relative to the seed as tie-breakers.
+
+**Measured on an asset built to make this item's premise TRUE** — a rotating card with two byte-identical white holes, both orbiting, so neither the geometric gate nor a static region can work: static `--remove-region` punches the target on **1 of 24 frames** (and the decoy on 1), while `--remove-region-track` punches it on **24 of 24 and the decoy on 0**. Control: with both holes protected and no region flag, the target stays opaque on 24/24, so the falsifier could have failed.
+
+⚠️ A constructed asset is legitimate here for the same reason `gradient_beds` is — the question is whether the tracker follows the seeded region, not what kind of art it is. **A real asset should still be run through it when one appears.** ⚠️ Losing the target is REPORTED: when no candidate passes the continuity gate the mask is carried forward along the last motion vector and those frame indices are printed. No new dependency — `scipy.ndimage.label` plus centroids replaces the `cv2.HoughCircles` the live session reached for. `references/lessons.md` §33.
+
+---
+
 ### `[P2 · M · Opus5-High]` `edge_hardness` misclassifies pixel art — 3 of 25 still missed *(was `[P1 · L]`; 18/25 → 22/25 with 0 false positives in v5.5.0, 2026-08-18)*
 
 **Added 2026-08-17.** Harkirat supplied `local/Diors-builds Emojis/others/` — 9 real assets, 8 of them genuine pixel art on COLOURED backgrounds. The tool calls 6 of the 8 antialiased. Full ground- truth table, both failure mechanisms, and the measured numbers: `references/lessons.md` §23.

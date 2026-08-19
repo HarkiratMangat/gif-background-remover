@@ -163,6 +163,7 @@ Five modes replace "run it and hope":
 | `--outline-tolerance <n>` | Tolerance for the outline colour (default 40). |
 | `--protect-region circle:cx,cy,r \| rect:x,y,w,h` | Manual region, `;`-separated for several. **A last resort** — a fixed circle rarely matches a real interior's irregular shape. |
 | `--remove-region …` | The inverse: force-remove, overriding protection inside it. |
+| `--remove-region-track …` | Same spec, but as a frame-0 SEED that is then FOLLOWED across the animation — for a hole that moves and cannot be told from same-coloured decoration by size or aspect. |
 | `--remove-region-feather <px>` | Edge taper for that cut (default 1.5). |
 | `--protect-band-only <px>` | Feather only a thin ring around the removable core; force-protect everything else. For when a solid design colour sits near the background. |
 | `--ignore-source-alpha` | Remove by colour across the whole frame even when the source's own transparency already IS its background. Restores pre-v5.5.0 behaviour; on real sprite packs the padding under that transparency is the same value as the artwork's outlines, so this can destroy art. |

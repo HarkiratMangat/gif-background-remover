@@ -2609,24 +2609,44 @@ def apply_remove_regions(rgb_frames, alpha_frames, remove_mask, feather_px=1.5):
     radius measured only from unaffected frames was the confirmed fix
     there, not a smarter per-frame measurement).
     """
-    if remove_mask is None or not remove_mask.any():
-        return rgb_frames, alpha_frames
+    # `remove_mask` may be ONE mask for the whole animation (the original contract) or a
+    # LIST of per-frame masks from track_region_across_frames. The single-mask path still
+    # computes its taper exactly once, so a static region costs what it always did.
+    per_frame = isinstance(remove_mask, (list, tuple))
+    if not per_frame:
+        if remove_mask is None or not remove_mask.any():
+            return rgb_frames, alpha_frames
+        masks = [remove_mask] * len(rgb_frames)
+    else:
+        masks = list(remove_mask)
+        if not masks or not any(m is not None and m.any() for m in masks):
+            return rgb_frames, alpha_frames
 
-    dist_outside = ndimage.distance_transform_edt(~remove_mask)
-    # 1.0 at/inside the mask boundary, tapering linearly to 0.0 by
-    # feather_px outside it -- the region OUTSIDE remove_mask that still
-    # gets touched at all is exactly this feather band.
-    taper = np.clip(1.0 - dist_outside / max(feather_px, 1e-6), 0.0, 1.0)
-    taper[remove_mask] = 1.0
-    touched = taper > 0
+    _cache = {}
 
-    # Sample the local kept color from a thin ring just outside the mask
-    # (not the whole frame, and not a single global color) so shading/
-    # lighting/shine gradients across the design are respected per frame.
-    ring = (dist_outside > 0) & (dist_outside <= feather_px + 2.0)
+    def _geom(m):
+        key = id(m)
+        if key not in _cache:
+            dist_outside = ndimage.distance_transform_edt(~m)
+            # 1.0 at/inside the mask boundary, tapering linearly to 0.0 by
+            # feather_px outside it -- the region OUTSIDE remove_mask that still
+            # gets touched at all is exactly this feather band.
+            taper = np.clip(1.0 - dist_outside / max(feather_px, 1e-6), 0.0, 1.0)
+            taper[m] = 1.0
+            # Sample the local kept color from a thin ring just outside the mask
+            # (not the whole frame, and not a single global color) so shading/
+            # lighting/shine gradients across the design are respected per frame.
+            _cache[key] = (taper, taper > 0,
+                           (dist_outside > 0) & (dist_outside <= feather_px + 2.0))
+        return _cache[key]
 
     out_rgb, out_alpha = [], []
-    for rgb, alpha in zip(rgb_frames, alpha_frames):
+    for m, rgb, alpha in zip(masks, rgb_frames, alpha_frames):
+        if m is None or not m.any():
+            out_rgb.append(rgb)
+            out_alpha.append(alpha)
+            continue
+        taper, touched, ring = _geom(m)
         rgb2 = rgb.copy()
         if ring.any():
             local_color = rgb[ring].reshape(-1, 3).mean(axis=0)
@@ -2634,7 +2654,7 @@ def apply_remove_regions(rgb_frames, alpha_frames, remove_mask, feather_px=1.5):
             # No ring pixels (mask touches frame edge, or feather_px is
             # tiny relative to pixel grid) -- fall back to whatever color
             # already borders the mask directly.
-            border = ndimage.binary_dilation(remove_mask, iterations=1) & ~remove_mask
+            border = ndimage.binary_dilation(m, iterations=1) & ~m
             local_color = rgb[border].reshape(-1, 3).mean(axis=0) if border.any() else np.zeros(3)
         for c in range(3):
             rgb2[:, :, c] = np.where(touched, local_color[c], rgb2[:, :, c]).astype(np.uint8)
@@ -2642,6 +2662,114 @@ def apply_remove_regions(rgb_frames, alpha_frames, remove_mask, feather_px=1.5):
         out_rgb.append(rgb2)
         out_alpha.append(np.clip(alpha2, 0, 255).astype(np.uint8))
     return out_rgb, out_alpha
+
+
+def track_region_across_frames(rgb_frames, bg_rgb, tolerance, seed_mask, log=None,
+                               max_centroid_jump_frac=0.25):
+    """Follow ONE background-coloured region across an animation, from a frame-0 seed.
+
+    The gap this closes, filed 2026-08-08 (references/lessons.md SS15): punching a hole
+    that shares its colour AND its geometry with decoration that must be kept. The two
+    existing answers both fail here -- SS14's geometric gate needs the hole and the
+    decoration to differ measurably in size or aspect on EVERY frame, and --remove-region
+    is static, which on a real tumbling asset missed the true target in 76% of frames.
+    The remaining option was a bespoke external tracking script per asset.
+
+    What makes tracking possible when geometry is not: the SEED. The user names the
+    target once, on frame 0, and identity is then carried forward by continuity rather
+    than by any property that distinguishes it from its twin. Two identical holes are
+    indistinguishable in a single frame and completely distinguishable across an
+    animation, because only one of them is where the seeded one just was.
+
+    Scoring, cheapest discriminator first:
+      * centroid distance from the previous frame's target, gated at
+        `max_centroid_jump_frac` of the frame diagonal -- a region cannot teleport;
+      * area ratio, then bbox aspect ratio, as tie-breakers among candidates that pass
+        the gate. Both are RELATIVE to the seed, so a hole that grows or foreshortens
+        through a rotation still matches while an unrelated blob does not.
+
+    ⚠️ Returns (masks, report). When no candidate passes the gate on a frame the mask is
+    carried forward from the previous frame TRANSLATED by the last motion vector, and the
+    frame index is recorded in `report['coasted_frames']`. A tracker that silently loses
+    its target and keeps emitting a plausible mask is the exact failure this project
+    refuses -- so coasting is reported, and process() prints it.
+
+    scipy only, no OpenCV: the live session that motivated this reached for
+    cv2.HoughCircles, and a dependency that heavy for a per-frame centroid is what the
+    deferred item asked to avoid.
+    """
+    log = log if log is not None else []
+    H, W = seed_mask.shape
+    diag = float(np.hypot(H, W))
+    gate = max_centroid_jump_frac * diag
+
+    def components(rgb):
+        bg = color_mask(rgb, bg_rgb, tolerance)
+        lab, n = ndimage.label(bg, structure=STRUCTURE)
+        out = []
+        for i in range(1, n + 1):
+            m = lab == i
+            ys, xs = np.nonzero(m)
+            if not len(ys):
+                continue
+            h = ys.max() - ys.min() + 1.0
+            w = xs.max() - xs.min() + 1.0
+            out.append({'mask': m, 'area': float(m.sum()),
+                        'cy': float(ys.mean()), 'cx': float(xs.mean()),
+                        'aspect': w / max(h, 1.0)})
+        return out
+
+    # frame 0: the seeded component is the one overlapping the seed most
+    cands = components(rgb_frames[0])
+    best = max(cands, key=lambda c: (c['mask'] & seed_mask).sum(), default=None)
+    if best is None or not (best['mask'] & seed_mask).any():
+        log.append('--remove-region-track: the seed region overlaps no background-coloured '
+                   'component on frame 0, so there is nothing to follow. Falling back to the '
+                   'static seed for every frame.')
+        return [seed_mask] * len(rgb_frames), {'tracked_frames': 0, 'coasted_frames': [],
+                                               'seed_found': False}
+    masks = [best['mask']]
+    prev, vel, coasted = best, (0.0, 0.0), []
+    for i, rgb in enumerate(rgb_frames[1:], start=1):
+        pred_y, pred_x = prev['cy'] + vel[0], prev['cx'] + vel[1]
+        scored = []
+        for c in components(rgb):
+            d = float(np.hypot(c['cy'] - pred_y, c['cx'] - pred_x))
+            if d > gate:
+                continue
+            area_pen = abs(np.log((c['area'] + 1.0) / (best['area'] + 1.0)))
+            asp_pen = abs(np.log((c['aspect'] + 1e-3) / (best['aspect'] + 1e-3)))
+            scored.append((d / max(gate, 1e-6) + area_pen + 0.5 * asp_pen, c))
+        if scored:
+            c = min(scored, key=lambda t: t[0])[1]
+            vel = (c['cy'] - prev['cy'], c['cx'] - prev['cx'])
+            prev = c
+            masks.append(c['mask'])
+        else:
+            # ⚠️ COASTING, and it is reported. Shift the last mask by the last motion
+            # vector rather than emitting nothing (a dropped frame is a visible flicker)
+            # or the frame-0 mask (which is wrong by exactly the amount it has moved).
+            dy, dx = int(round(vel[0])), int(round(vel[1]))
+            m = np.zeros_like(masks[-1])
+            src = masks[-1]
+            ys, xs = np.nonzero(src)
+            ys2, xs2 = ys + dy, xs + dx
+            ok = (ys2 >= 0) & (ys2 < H) & (xs2 >= 0) & (xs2 < W)
+            m[ys2[ok], xs2[ok]] = True
+            masks.append(m)
+            coasted.append(i)
+            prev = {'cy': prev['cy'] + vel[0], 'cx': prev['cx'] + vel[1],
+                    'area': prev['area'], 'aspect': prev['aspect']}
+    report = {'tracked_frames': len(masks) - len(coasted), 'coasted_frames': coasted,
+              'seed_found': True, 'seed_area': best['area']}
+    if coasted:
+        log.append(f"--remove-region-track: no candidate passed the continuity gate on "
+                   f"{len(coasted)} of {len(masks)} frame(s) {coasted[:8]}; those masks were "
+                   f"carried forward along the last motion vector. Check those frames.")
+    else:
+        log.append(f"--remove-region-track: followed the seeded region across all "
+                   f"{len(masks)} frame(s).")
+    return masks, report
 
 
 BAYER4 = np.array([
@@ -5964,9 +6092,17 @@ def process(input_path, output_path, args, diagnostics=None):
     # Force-remove regions (inverse of --protect-region), applied last so it
     # overrides whatever --protect-outline-color / --protect-region decided
     # -- see apply_remove_regions' docstring for the case this is for.
-    if getattr(args, 'remove_region', None):
+    if getattr(args, 'remove_region', None) or getattr(args, 'remove_region_track', None):
         H0, W0 = alpha_frames[0].shape
-        remove_mask = parse_protect_regions(args.remove_region, (H0, W0))
+        if getattr(args, 'remove_region_track', None):
+            _seed = parse_protect_regions(args.remove_region_track, (H0, W0))
+            _tlog = []
+            remove_mask, _treport = track_region_across_frames(
+                rgb_frames, hex_to_rgb(args.bg_color), args.tolerance, _seed, log=_tlog)
+            for _l in _tlog:
+                print(_l, file=sys.stderr)
+        else:
+            remove_mask = parse_protect_regions(args.remove_region, (H0, W0))
         rgb_frames, alpha_frames = apply_remove_regions(
             rgb_frames, alpha_frames, remove_mask,
             feather_px=args.remove_region_feather)
@@ -6694,6 +6830,20 @@ def main():
                          'for a target that moves/resizes across frames '
                          '(tumbling/rotating content) without re-deriving '
                          'the mask per frame yourself first.')
+    p.add_argument('--remove-region-track', default=None,
+                    help='Like --remove-region, but the spec is a SEED on frame 0 and the '
+                         'region is then FOLLOWED across the animation instead of staying '
+                         'put. For a hole that moves and cannot be told from same-coloured '
+                         'decoration by size or aspect -- the case --remove-region cannot '
+                         'reach (a static circle missed the true target in 76%% of frames on '
+                         'a real tumbling asset) and --tumble-safe\'s geometric gate cannot '
+                         'either. Identity is carried by CONTINUITY, not by any property '
+                         'that separates the target from its twin: only one candidate is '
+                         'where the seeded one just was. If no candidate passes the '
+                         'continuity gate on a frame, the mask is carried forward along the '
+                         'last motion vector and those frame indices are PRINTED -- a '
+                         'tracker that loses its target silently is worse than one that '
+                         'says so. Same spec syntax as --remove-region.')
     p.add_argument('--remove-region-feather', type=float, default=1.5,
                     help='Feather width in px for --remove-region\'s edge '
                          'taper (default 1.5).')
