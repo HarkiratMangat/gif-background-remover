@@ -37,6 +37,7 @@ def main():
     sk, le, sc = open(SK).read(), open(LE).read(), open(SC).read()
     fails = []
     fails += _self_test()
+    fails = check_lessons_keywords(fails)
 
     # Ground truth is the REAL CLI, not the source text. Reading add_argument() calls checks a
     # SIGNATURE; running --help checks BEHAVIOUR, which is gate 5's own rule turned on this gate.
@@ -94,6 +95,19 @@ def main():
     packaged = {SK, SC} | {os.path.join('references', f)
                            for f in os.listdir('references')}
     allowed_mentions = {'CLAUDE.md'}
+    # ⚠️ A BARE FILENAME is just as unreachable as a path, and this check used to miss
+    # every one of them: it tested `os.path.exists(t)`, which is relative to the repo
+    # ROOT, so `audit_docs.py` and `render_baseline.py` (really at scripts/ and
+    # scripts/harness/) resolved to nothing and passed. Both were sitting in
+    # references/lessons.md, naming scripts the package does not contain, while this
+    # gate reported clean. Same defect class as the closure-marker gate: matching the
+    # SPELLING in front of you rather than the thing you mean.
+    repo_basename = {}
+    for dp, dn, fn in os.walk('.'):
+        dn[:] = [d for d in dn if d not in ('.git', 'local', '__pycache__', 'node_modules')]
+        for fl in fn:
+            repo_basename.setdefault(fl, os.path.normpath(os.path.join(dp, fl)))
+    packaged_basenames = {os.path.basename(x) for x in packaged}
     for f in sorted(packaged):
         for tok in sorted(set(re.findall(r'`([^`\n]{2,80})`', open(f).read()))):
             t = tok.strip().lstrip('./').split()[0].rstrip('.,:;')
@@ -103,6 +117,11 @@ def main():
                 continue
             if os.path.exists(t) or t.startswith(('local/', '.remember', '/Users/', '.claude/')):
                 fails.append(f'{f}: points at `{t}`, which is NOT in the .skill package')
+            elif ('/' not in t and t not in packaged_basenames
+                  and t in repo_basename):
+                fails.append(f'{f}: names `{t}` (really {repo_basename[t]}), which is a repo '
+                             f'file NOT in the .skill package -- a bare filename is no more '
+                             f'reachable from the sandbox than a path')
 
     # 6. the frontmatter description must claim the skill's PRIMARY function and every
     # format it supports on BOTH sides. Two real defects motivated this, found by Harkirat
@@ -246,6 +265,38 @@ _MARK_CASES = [
     ("**NOT DONE yet**, and here is why", False, 'negation must not read as closure'),
     ("We have not yet RESOLVED the question", False, 'negated prose'),
 ]
+
+
+def check_lessons_keywords(fails):
+    """Every numbered lessons section carries an 'Also searched as:' line, and no
+    phrase on it merely repeats vocabulary its own section already contains.
+
+    The second half is the whole point. `rg` already searches the body, so a tag
+    that duplicates a word in the section is dead weight; the index earns its bytes
+    only by covering vocabulary the section does NOT use. Measured 2026-08-19: of 60
+    plausible search terms, 18 returned nothing from this file -- jaggies, banding,
+    ghosting, posterise, quantise, tilemap, atlas, nearest-neighbor, bilinear,
+    premultiplied, sub-pixel, anti-alias, frame rate among them.
+
+    Gated rather than trusted because this repo has been bitten twice by
+    unmaintained metadata: the symptom table once had 6 of 25 sections unreachable,
+    and the lessons size claim has now rotted twice.
+    """
+    text = open(LE).read()
+    parts = re.split(r'(?m)^(?=## \d+\. )', text)[1:]
+    for sec in parts:
+        num = re.match(r'## (\d+)\.', sec).group(1)
+        m = re.search(r'(?m)^\*\*Also searched as:\*\* (.+)$', sec)
+        if not m:
+            fails.append(f'{LE}: §{num} has no "Also searched as:" line -- a section nobody '
+                         f'can find by synonym is a section nobody has')
+            continue
+        body = sec.replace(m.group(0), '').lower()
+        dead = [t.strip() for t in m.group(1).split('·') if t.strip().lower() in body]
+        if dead:
+            fails.append(f'{LE}: §{num} tags {dead} which its own text already contains -- '
+                         f'`rg` finds those already, so the tag is dead weight')
+    return fails
 
 
 def _self_test():

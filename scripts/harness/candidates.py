@@ -26,6 +26,16 @@ The four candidates and what each is a hypothesis ABOUT:
               excluding those pixels makes it look like a 35-colour palette.
               Compositing is what SS28.5 already requires of every hardness
               measure, for exactly this reason.
+  ⚠️ rare_frac / rare_mass / k99_frac / min_share are ALL FALSIFIED -- kept for the
+     same reason cliff_op is, so nobody re-derives them. `min_share` scored recall
+     0.9389 -> 0.9722 with ZERO new false positives over 148 antialiased assets and
+     is a SIZE PROXY: `art_px <= 2000`, a rule with no colour statistic in it,
+     scores 0.9833, and inside the size-matched band of 400-3,000 art pixels the
+     corpus holds 99 pixel-art assets and exactly ONE antialiased one. Constructing
+     the missing population -- real antialiased icons at sprite scale, quantized to
+     a realistic palette -- false-positives it on 11% at 32 colours and 30% at 16.
+     Do not ship any of them. references/lessons.md SS29.12
+
   rare_frac   share of the palette that is RARE -- distinct composited colours
               carrying under 0.2% of the art pixels, over the total distinct
               count. Hypothesis: a hand-picked pixel-art palette has no rare
