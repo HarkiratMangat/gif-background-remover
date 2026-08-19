@@ -24,7 +24,8 @@ Checks (all falsifiable, all cheap):
   8. --diff <base> only: conservation -- an item removed from gif-deferred-list.md must be
      traceable into gif-resolved-list.md. A sweep and a deletion look identical in a diff.
 """
-import re, os, sys, subprocess
+import re
+import statistics, os, sys, subprocess
 
 SK, LE, SC = 'SKILL.md', 'references/lessons.md', 'scripts/remove_gif_background.py'
 REFS = ['references/lessons.md', 'references/version-history.md',
@@ -38,6 +39,7 @@ def main():
     fails = []
     fails += _self_test()
     fails = check_lessons_keywords(fails)
+    fails = check_counted_claims(fails)
 
     # Ground truth is the REAL CLI, not the source text. Reading add_argument() calls checks a
     # SIGNATURE; running --help checks BEHAVIOUR, which is gate 5's own rule turned on this gate.
@@ -274,6 +276,62 @@ _MARK_CASES = [
     ("**NOT DONE yet**, and here is why", False, 'negation must not read as closure'),
     ("We have not yet RESOLVED the question", False, 'negated prose'),
 ]
+
+
+def check_counted_claims(fails):
+    """The lessons size claim and README's flag coverage, checked instead of remembered.
+
+    ⚠️ The size claim has now rotted THREE times -- "~32k" while the file was 46k,
+    "~63,000" while it was 66k, and "~66,000" within the same session that derived it,
+    because sections were added afterwards. It is quoted in three places and it is the
+    number a session uses to decide whether it can afford to read the file, so being
+    wrong by 5% is worse than saying nothing. Re-deriving it by hand is a discipline,
+    and this repo's own rule is that a discipline is not a control.
+
+    README is not packaged, but it is the front door on GitHub and it had drifted two
+    releases behind -- 42 of 47 flags, missing the whole translucency group and both
+    source-alpha flags.
+    """
+    text = open(LE).read()
+    secs = [x for x in re.split(r'(?m)^## ', text)[1:] if re.match(r'^\d+\.', x)]
+    tok = len(text) // 4
+    m = re.search(r'It is ~([\d,]+) tokens across (\d+) sections\.'
+                  r' The median section is ~(\d+) and the largest ~(\d+)\.', text)
+    if not m:
+        fails.append(f'{LE}: the "How to read this file" block no longer states its size -- '
+                     f'that claim is how a session decides whether it can afford this file')
+    else:
+        claimed_tok = int(m.group(1).replace(',', ''))
+        sizes = sorted(len(x) // 4 for x in secs)
+        real = {'tokens': tok, 'sections': len(secs),
+                'median': int(statistics.median(sizes)), 'largest': max(sizes)}
+        got = {'tokens': claimed_tok, 'sections': int(m.group(2)),
+               'median': int(m.group(3)), 'largest': int(m.group(4))}
+        # tokens are quoted to the nearest thousand; everything else is exact
+        if abs(real['tokens'] - got['tokens']) > 1000:
+            fails.append(f'{LE}: claims ~{got["tokens"]:,} tokens, actually ~{real["tokens"]:,} '
+                         f'-- re-derive it (wc -c / 4), do not nudge it')
+        for k in ('sections', 'median', 'largest'):
+            if real[k] != got[k]:
+                fails.append(f'{LE}: claims {k}={got[k]}, actually {real[k]}')
+        for f in (SK, 'CLAUDE.md'):
+            if os.path.exists(f):
+                for n in re.findall(r'~(\d+)k tokens|~([\d,]+) tokens', open(f).read()):
+                    v = int((n[0] or n[1]).replace(',', '')) * (1000 if n[0] else 1)
+                    # >= 10k only: the same sentence also quotes the MEDIAN section size,
+                    # and a gate that flags its own neighbouring figure teaches people to
+                    # ignore it. Caught by this check firing on itself.
+                    if v >= 10000 and abs(v - real['tokens']) > 1000:
+                        fails.append(f'{f}: quotes the lessons size as ~{v:,} tokens, '
+                                     f'actually ~{real["tokens"]:,}')
+    if os.path.exists('README.md'):
+        flags = set(re.findall(r"p\.add_argument\('(--[a-z0-9-]+)'", open(SC).read()))
+        named = set(re.findall(r'(--[a-z0-9-]+)', open('README.md').read()))
+        missing = sorted(flags - named)
+        if missing:
+            fails.append(f'README.md: does not name {len(missing)} of {len(flags)} flags '
+                         f'-- {missing[:6]}{"..." if len(missing) > 6 else ""}')
+    return fails
 
 
 def check_lessons_keywords(fails):

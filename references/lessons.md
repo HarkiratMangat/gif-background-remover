@@ -6,7 +6,7 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~66,000 tokens across 29 sections. The median section is ~1155 and the largest ~11587. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
+It is ~67,000 tokens across 29 sections. The median section is ~1180 and the largest ~11622. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
 
 **Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
 
@@ -125,6 +125,8 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Tempted by a palette statistic to reach 1:1 sprites the cliff ratio misses | §29.12 (three tried; the best one is a size proxy — falsified, do not re-derive) |
 | A new measure scores perfectly and you cannot find its failure population | §29.12 (build it; the corpus had ONE antialiased asset at sprite scale) |
 | An output has fewer opaque pixels than its source and no flag explains it | §29.13 (count the FRAMES — a duplicate frame coalesced away is not art loss) |
+| A guard stopped firing and nothing in the diff looks like logic | §29.15 (it was armed by a string; a doc-pass reword disarms it) |
+| Wondering whether the cleanup ring is safe on a given animation | §29.15 (`band_applied` is a value now, not a sentence to parse) |
 | A rendered image looks static and you are about to file an animation defect | §29.14 (test a known-animating file first — the preview pane animates nothing) |
 | An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
 | Pixel art with 1-px shading at its edges reads as antialiased | §28.11 (hand-antialiased art; no edge-local measure can separate it) |
@@ -1825,6 +1827,18 @@ Both P3 items the render baseline flagged and nobody had explained are closed, a
 * **`f2ea31a625….gif` at 87.3% of its source figure.** The suspicion that the comparison was invalid turns out to be wrong in a useful way — `load_animation_rgba_frames` and a per-`seek` count agree exactly at 912,486, so the numbers did describe the same pixels. The real answer is the frame count: the source's frames 0 and 1 are **identical duplicates** at 116,007 opaque each, the output coalesces them, and 912,486 − 116,007 = **796,479**, the output total to the pixel. Zero art loss.
 
 **The transferable part:** an unexplained residual is worth chasing even when both directions are harmless, and the answer twice was in the denominator rather than in the pipeline. Establish what the source figure actually counts before treating a ratio as loss.
+
+### 29.15 A guard armed by a sentence is disarmed by an edit that looks like documentation
+
+The source-alpha work in §28.14 rests on one decision: is the 2px cleanup ring safe on this animation, or does it eat the artwork? Getting that wrong is measured at 100.0% survival against 68.1% on real sprite packs, because pixel art's outline sits directly against its padding, so the ring IS the outline.
+
+**That decision was being made by matching a prose message.** `build_source_alpha_scope` returned `(mask, reason)`, and the policy asked `reason.startswith(f'the {band}px cleanup band was DROPPED')`. Every part of that is ordinary-looking, and the failure is invisible: reword the sentence — capitalise it, change "was" to "is", add a clause — and `veto_frames` stays 0, the band is allowed on every animation, and the destructive path re-opens while the log still prints `SOURCE ALPHA HONOURED`. No test fails, because the message is not what any test asserts on.
+
+This is not hypothetical wording risk. That message is in a file whose comments are rewritten constantly, by sessions whose whole task is often to improve the prose. A doc pass is exactly the change that would have done it.
+
+The function now returns `(mask, band_applied, reason)` and the policy reads the boolean. **The general rule: a guard's trigger must be a value the program computes, never text a human is expected to keep stable.** If a caller has to parse a message to learn what happened, the callee is returning the wrong thing.
+
+Verified on BOTH branches, which matters because a change here can easily fix one and break the other: a veto asset renders 17,305/17,305 (100.0%) and a band-allowed asset 3,667/3,667 (100.0%). The same pass removed a duplicated `binary_dilation` — the policy dilates every engaged frame to answer the veto question and used to discard the mask, so the render recomputed it — checked by equality rather than by outcome: 147 cached frame-scopes across 60 engaged assets, 0 mismatches.
 
 ### 29.14 A control turned a damning result into a vacuous one
 
