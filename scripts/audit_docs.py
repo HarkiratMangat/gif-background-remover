@@ -102,11 +102,17 @@ def main():
     # references/lessons.md, naming scripts the package does not contain, while this
     # gate reported clean. Same defect class as the closure-marker gate: matching the
     # SPELLING in front of you rather than the thing you mean.
+    # os.path.dirname(__file__)/.. -- NOT '.'. A CWD-relative walk finds nothing when the
+    # gate is invoked by absolute path from another directory, and this half then passes
+    # VACUOUSLY: no basenames known, so no pointer can ever be flagged. The sibling paths
+    # above are CWD-relative too, but those fail LOUDLY with file-not-found; a silent pass
+    # is the shape that ships a defect.
+    _repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     repo_basename = {}
-    for dp, dn, fn in os.walk('.'):
+    for dp, dn, fn in os.walk(_repo):
         dn[:] = [d for d in dn if d not in ('.git', 'local', '__pycache__', 'node_modules')]
         for fl in fn:
-            repo_basename.setdefault(fl, os.path.normpath(os.path.join(dp, fl)))
+            repo_basename.setdefault(fl, os.path.relpath(os.path.join(dp, fl), _repo))
     packaged_basenames = {os.path.basename(x) for x in packaged}
     for f in sorted(packaged):
         for tok in sorted(set(re.findall(r'`([^`\n]{2,80})`', open(f).read()))):
@@ -236,11 +242,14 @@ class CLOSED_MARK:
     """Drop-in for the old compiled pattern: `.search(body)` -> match or None."""
 
     @staticmethod
+    def finditer(body):
+        """Every marker-position match, so a caller that needs to COUNT them has one."""
+        return (m for m in _CLOSED_WORD.finditer(body)
+                if _at_marker_position(body, m.start()))
+
+    @staticmethod
     def search(body):
-        for m in _CLOSED_WORD.finditer(body):
-            if _at_marker_position(body, m.start()):
-                return m
-        return None
+        return next(CLOSED_MARK.finditer(body), None)
 
 
 # The gate's own falsifier suite, run on EVERY invocation rather than kept in a

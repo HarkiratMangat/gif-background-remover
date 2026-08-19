@@ -643,7 +643,7 @@ def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band, re
     Returns (scope_mask, reason).
     """
     if band <= 0:
-        return source_trans_mask, ('removal confined to exactly the pixels the source already '
+        return source_trans_mask, False, ('removal confined to exactly the pixels the source already '
                                    'declared transparent (--source-alpha-band 0)')
     # ⚠️ `reach` is the colour distance the REMOVAL path can actually act at, which is
     # NOT `tolerance` when feathering is on: estimate_alpha_and_defringe works in a band
@@ -660,12 +660,12 @@ def build_source_alpha_scope(source_trans_mask, rgb, bg_rgb, tolerance, band, re
     # color_mask is a pure per-channel comparison (checked: no neighbourhood term), so a
     # flat pixel list is a valid argument -- but spell it as one rather than as a fake image.
     if interior.any() and color_mask(rgb[interior], bg_rgb, reach).any():
-        return source_trans_mask, (f'the {band}px cleanup band was DROPPED: '
+        return source_trans_mask, False, (f'the {band}px cleanup band was DROPPED: '
                                    f'{rgb_to_hex(tuple(bg_rgb))} also occurs in the artwork away '
                                    f'from the transparent boundary, so the band would delete design '
                                    f'-- measured at 2px on a real sprite, it recovered 184 pixels '
                                    f'and destroyed 2,271')
-    return (source_trans_mask | ring), (f'a {band}px cleanup band is included: '
+    return (source_trans_mask | ring), True, (f'a {band}px cleanup band is included: '
                                         f'{rgb_to_hex(tuple(bg_rgb))} occurs nowhere in the artwork '
                                         f'except hugging the transparent boundary, which is what a '
                                         f'leftover matte fringe looks like')
@@ -698,8 +698,14 @@ def decide_source_alpha_policy(source_trans_masks, rgb_frames, bg_rgb, tolerance
         if first_why is None:
             first_why = why
         if band > 0:
-            _, band_why = build_source_alpha_scope(st, rgb, bg_rgb, tolerance, band, reach)
-            if band_why.startswith(f'the {band}px cleanup band was DROPPED'):
+            # ⚠️ Read the BOOLEAN, never the message. This used to test
+            # `band_why.startswith('the Npx cleanup band was DROPPED')`, so the guard was
+            # armed by prose: rewording that sentence -- an ordinary doc-pass edit in this
+            # repo -- would have left `veto_frames` at 0 and silently re-enabled the ring on
+            # exactly the sprites it was measured to destroy (survival 100.0% -> 68.1%).
+            _, band_applied, band_why = build_source_alpha_scope(
+                st, rgb, bg_rgb, tolerance, band, reach)
+            if not band_applied:
                 veto_frames += 1
                 if first_veto is None:
                     first_veto = band_why

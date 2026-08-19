@@ -52,7 +52,11 @@ for i, (k, path, pop, lab) in enumerate(assets):
         rec.update({f: eh.get(f) for f in FIELDS})
         rec['pred'] = eh.get('appears_hard_edged')
         rec['frames'] = r.get('frame_count')
-    except Exception as e:
+    # SystemExit, not just Exception: the script under test raises it in several places
+    # (_refuse_empty_render, populations.check_corpora, argparse errors) and it derives from
+    # BaseException, so one bad asset would kill a 45-minute run and never write <out> --
+    # leaving only <out>.partial, which this file's own docstring defines as "still running".
+    except (Exception, SystemExit) as e:
         rec['error'] = f"{type(e).__name__}: {e}"
     out[k] = rec
     if i % 25 == 0:

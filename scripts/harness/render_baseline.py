@@ -53,7 +53,16 @@ SETS = {
 def fingerprint(path):
     from PIL import Image
     import numpy as np
-    im = Image.open(path)
+    # Context-managed: the caller deletes this path immediately afterwards, and an
+    # un-closed handle leaks one descriptor per asset (212 over a `standard` run with
+    # the resize pass) and blocks the delete outright on Windows.
+    with Image.open(path) as im:
+        return _fingerprint_open(im, path)
+
+
+def _fingerprint_open(im, path):
+    from PIL import Image
+    import numpy as np
     n = getattr(im, 'n_frames', 1)
     h = hashlib.sha256(); counts = []; size = None
     for i in range(n):
@@ -66,6 +75,43 @@ def fingerprint(path):
     return {'alpha_sha256': h.hexdigest(), 'opaque_per_frame': counts,
             'opaque_total': sum(counts), 'size': size, 'frames': n,
             'bytes': os.path.getsize(path)}
+
+
+def render_once(script, src, dst, extra=()):
+    """Render `src` -> `dst` through the real CLI and fingerprint the result.
+
+    ⚠️ `dst` is DELETED FIRST, and that is the load-bearing line. Both passes share one
+    output path, and the native pass used to remove the file only AFTER fingerprinting it
+    -- so a fingerprint that raised (Pillow errors on a mid-sequence seek for some
+    sources; see references/lessons.md §9) left the native output in place, and if the
+    resize subprocess then wrote nothing, `os.path.exists(dst)` was True and the NATIVE
+    alpha plane was recorded under the ` [resize]` key. A release gate reporting a pass
+    for a render that never ran. Written once, for both passes, so the guarantee cannot
+    hold in one and not the other.
+    """
+    rec = {}
+    if os.path.exists(dst):
+        os.remove(dst)
+    try:
+        r = subprocess.run([sys.executable, script, src, dst, '--auto'] + list(extra),
+                           capture_output=True, text=True, timeout=600)
+        rec['returncode'] = r.returncode
+        rec['signal_lines'] = [l for l in (r.stdout + r.stderr).splitlines()
+                               if any(t in l for t in ('ART LOSS', 'survival', 'not applicable',
+                                                       'output_is_empty', 'refus', 'Error',
+                                                       'error'))][-6:]
+        if os.path.exists(dst):
+            try:
+                rec.update(fingerprint(dst))
+            finally:
+                os.remove(dst)
+        else:
+            rec['no_output'] = True
+    except subprocess.TimeoutExpired:
+        rec['error'] = 'timeout'
+    except Exception as e:
+        rec['error'] = f"{type(e).__name__}: {e}"
+    return rec
 
 
 def resize_target(path):
@@ -136,23 +182,7 @@ def run(a):
         ext = os.path.splitext(path)[1].lower()
         dst = os.path.join(tmp, f"{i:04d}{ext if ext in ('.gif','.png','.webp','.avif') else '.gif'}")
         rec = {'pop': pop, 'label': lab, 'path': os.path.relpath(path, ROOT)}
-        try:
-            r = subprocess.run([sys.executable, a.script, path, dst, '--auto'],
-                               capture_output=True, text=True, timeout=600)
-            rec['returncode'] = r.returncode
-            tail = [l for l in (r.stdout + r.stderr).splitlines()
-                    if any(t in l for t in ('ART LOSS', 'survival', 'not applicable',
-                                            'output_is_empty', 'refus', 'Error', 'error'))]
-            rec['signal_lines'] = tail[-6:]
-            if os.path.exists(dst):
-                rec.update(fingerprint(dst))
-                os.remove(dst)
-            else:
-                rec['no_output'] = True
-        except subprocess.TimeoutExpired:
-            rec['error'] = 'timeout'
-        except Exception as e:
-            rec['error'] = f"{type(e).__name__}: {e}"
+        rec.update(render_once(a.script, path, dst))
         out[key] = rec
         # Second pass, same asset, through --resize-max-dim. Recorded under its own
         # key rather than as extra fields on the first record so the schema stays
@@ -164,24 +194,8 @@ def run(a):
             if dim is None:
                 rrec['skipped'] = 'source smaller than 64px'
             else:
-                try:
-                    r = subprocess.run([sys.executable, a.script, path, dst, '--auto',
-                                        '--resize-max-dim', str(dim)],
-                                       capture_output=True, text=True, timeout=600)
-                    rrec['returncode'] = r.returncode
-                    rrec['signal_lines'] = [l for l in (r.stdout + r.stderr).splitlines()
-                                            if any(t in l for t in ('ART LOSS', 'survival',
-                                                                    'not applicable', 'output_is_empty',
-                                                                    'refus', 'Error', 'error'))][-6:]
-                    if os.path.exists(dst):
-                        rrec.update(fingerprint(dst))
-                        os.remove(dst)
-                    else:
-                        rrec['no_output'] = True
-                except subprocess.TimeoutExpired:
-                    rrec['error'] = 'timeout'
-                except Exception as e:
-                    rrec['error'] = f"{type(e).__name__}: {e}"
+                rrec.update(render_once(a.script, path, dst,
+                                        ['--resize-max-dim', str(dim)]))
             out[key + ' [resize]'] = rrec
         # Written EVERY asset, not every tenth: the partial file is the only
         # honest progress signal, and a cadence of 10 made a 24-asset run look
