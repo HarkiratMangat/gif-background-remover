@@ -64,6 +64,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 28. [The fifth pixel-art discriminator, and what the first four never tested](#28-the-fifth-pixel-art-discriminator-and-what-the-first-four-never-tested)
 29. [A sixth discriminator, and a measure that had been reading a plane blank by construction](#29-a-sixth-discriminator-and-a-measure-that-had-been-reading-a-plane-blank-by-construction)
 30. [Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background](#30-two-defaults-judged-by-the-wrong-measurement-the-gifsicle-dither-and-the-leak-gates-background)
+31. [The source's own alpha was thrown away before the mask was computed](#31-the-sources-own-alpha-was-thrown-away-before-the-mask-was-computed)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -117,6 +118,9 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | An outline colour is rejected as a background leak and you cannot see the leak | §30.3 (the gate tested the largest bg component, which can be INTERIOR) |
 | An outline colour passes the leak gate but visibly swallows background | §30.3 (background that is not the biggest piece was invisible to it) |
 | A default was chosen on a measurement that cannot see what the feature is for | §30.2 (measure the thing the feature exists to do, then price it) |
+| A faded/glowing source comes out fully opaque | §31 (the source alpha never reached the output; now clamped) |
+| Partial transparency in a PNG/WebP source disappears after `--auto` | §31 |
+| `SOURCE ALPHA HONOURED` printed, and the fade died anyway | §31 (the scope covers alpha==0 only) |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
 | An already-background-removed file reads as hard-edged / pixel art | §29.1 (its empty transition band is guaranteed by the cutout, not by the art) |
@@ -1900,15 +1904,39 @@ Colour error and file size both favour "no dither" almost by construction: dithe
 
 With the corrected measure, Floyd-Steinberg does win the banding axis: plateau runs of **3.32 px** against **3.52 px** with no dither, on an unquantized reference of 3.72 px. Real, in the expected direction, and roughly an order of magnitude smaller than the costs. **A number that comes out plausible is not a number that measured the right thing**; the tell was the magnitude — a 129/765 "quantization step" from a 128-colour palette is arithmetically impossible.
 
-### 30.3 The leak gate tested the LARGEST background component, which is not the same as the background
-`detect_outline_background_leak` decides "does this outline colour's filled shape swallow real background?" by intersecting the filled shape with `largest_bg_component_mask`. Measured over **117 outline-colour tests, 3 differ and 2 flip the verdict — and the two flip in opposite directions**, each fixing a real error:
+### 30.3 The leak gate tested the LARGEST background component — and the probe that "proved" it was measuring my own inputs
+`detect_outline_background_leak` decides "does this outline colour's filled shape swallow real background?" by intersecting the filled shape with `largest_bg_component_mask`. That is a category error: the largest bg-COLOURED component need not be background at all. On `DMZRecon_Gamemode_Icon_CoDM (1).webp` the largest such component — 6,834 px of 143 — **does not touch the canvas border**; it is an interior black region of the artwork. The gate is structurally asking the wrong question, and it now tests the union of every bg-coloured component that DOES touch the border, using the same border-label technique `analyze()` already uses for `enclosed_by_frame`.
 
-- **`DMZRecon_Gamemode_Icon_CoDM (1).webp`** — the largest bg-coloured component (6,834 px of 143) **does not touch the canvas border at all**. It is an interior black region of the artwork. The gate scored a 6,834 px "leak" into it and rejected a good outline colour, costing protection over an area that is not background. Testing the border-touching union scores **0**.
-- **`gaming.jpeg`** — 5 border-touching components total 71,390 px while the largest is 23,999. The gate saw **14 px** and passed the colour; the union sees **207** and rejects it. That is the blind spot the finding was filed for: removable background that simply is not the biggest piece.
+⚠️ **The honest measured effect is ZERO, and the first version of this section said otherwise.** A standalone probe reported "117 outline-colour tests, 3 differ, 2 flip the verdict" and named two assets flipping in opposite directions. Both figures came from a probe that **reconstructed the background colour, the tolerance and the frame sampling itself** instead of asking the product. Run through `analyze()` PRE and POST across 153 assets, **exactly one changes and it changes nothing that matters**: `gaming.jpeg`'s `leaked_pixel_count` goes 1 → 6, `over_protects_background` stays False on both, and the recommended outline colours are identical. A PRE/POST render of the supposedly-flipped assets is byte-identical on the alpha plane.
 
-Now tested against the union of every bg-coloured component that touches the canvas border, using the same border-label technique `analyze()` already uses for `enclosed_by_frame`.
+So the change is kept on structural grounds — the old gate could reject a good outline colour over a region that is not background — with **no demonstrated effect on any recommendation in this corpus**. That is a materially weaker claim than the one this section originally carried, and the reason is worth more than the fix: [[feedback_validate_through_the_product_entry_point]] exists in this project's memory precisely for this, and it was violated while writing a lesson about measuring the right thing.
 
 ⚠️ **`largest_bg_component_mask` stays correct where it is used for REMOVAL.** It exists because border-touch is unsafe for deciding what to DELETE: a tumbling design that grazes the canvas edge gets flood-filled away. Here the question is the opposite one — "what is genuinely outside the design?" — and border contact answers it. The residual cost, stated rather than hidden: artwork that touches the border and matches the background colour is counted as background by this gate.
 
 ### 30.4 The transferable rule
-Before trusting a default, ask two questions in order. **What is this feature FOR, and does my measurement move when that thing changes?** A dither judged on flat art, and a leak gate judged on whichever component happens to be biggest, both produce confident numbers that are about something else. And when the corrected measurement arrives, **check its magnitude against what the mechanism could physically produce** — a 128-colour palette cannot make a 129/765 step, and noticing that is what separated the artwork from the banding.
+Before trusting a default, ask three questions in order. **Does my measurement come from the PRODUCT, or from inputs I rebuilt myself?** — §30.3's probe rebuilt three of them and manufactured two flips that do not exist. **What is this feature FOR, and does my measurement move when that thing changes?** A dither judged on flat art, and a leak gate judged on whichever component happens to be biggest, both produce confident numbers that are about something else. And when the corrected measurement arrives, **check its magnitude against what the mechanism could physically produce** — a 128-colour palette cannot make a 129/765 step, and noticing that is what separated the artwork from the banding.
+
+
+## 31. The source's own alpha was thrown away before the mask was computed
+**Also searched as:** fade lost · glow flattened · soft shadow solid · translucency gone · semi-transparent became opaque · alpha promoted · 8-bit alpha not preserved · partial alpha zero
+
+`process()` builds its working frames with a bare `convert('RGB')`. From that point on, a pixel the source drew at 35% opacity is byte-identical to a solid one: its alpha is gone, and `estimate_alpha_and_defringe` re-derives alpha from RGB alone. Any such pixel whose flattened colour is not near the background therefore comes out at **255**. Only `alpha == 0` survived the trip, via `source_trans_masks`.
+
+**Measured 2026-08-19 over every corpus source carrying at least 50 partial-alpha pixels: 218 of 249 came out with under 10% of that partial alpha left.** 199 of the 218 had source-alpha scoping engaged, where `np.where(removal_scope, alpha, 255)` is the loudest expression of the promotion — but 19 lost the fade with no scope at all, which is what shows the scope is a symptom and the discarded plane is the cause. `love_emoji_128.webp` went in with 913 partial-alpha pixels and out with **0**, its 5,509 opaque pixels becoming 6,422: every faded pixel promoted to solid.
+
+**The control that had to be run first.** `--pixel-art` implies `--no-feather`, which produces a binary alpha BY DESIGN, so a destroyed fade under that verdict is documented behaviour and not a defect. Of the 45 largest cases, **20 were binary by design and 25 had feathering ON and lost the fade anyway**. Without that split the headline number would have been half artefact.
+
+**The fix is a minimum, not an assignment:** `alpha = np.minimum(alpha, source_alpha_plane)`. The colour path may still make a pixel more transparent — that is its job — it may never invent opacity the source did not have. Guarded by a once-per-file check for any partial alpha at all, so a 1-bit source (every GIF, every hard cutout) does not pay for it. After the change, **207 of 249 keep 90% or more of their partial alpha**, and the 28 still at zero are dominated by the binary-by-design group. An opaque source is untouched: `love.gif --auto` is still `2fd526b6fb3b191c`.
+
+### 31.1 The fix moved a number the erosion calibrator was reading, and that cost 6,844 pixels
+`--auto` auto-calibrates `--edge-cleanup-erosion` by measuring each asset against itself: the outer opaque ring's background-coloured fraction at erosion 0, 1, 2, 3, picking the smallest level already at that asset's own floor. **A restored antialiasing ramp IS pale near-background pixels in the outer ring.** On `CODM BP Icon.png` the curve moved from `(0:0.0885, 1:0.0, 2:0.0, 3:0.0)` to `(0:0.2549, 1:0.1852, 2:0.0296, 3:0.0)`, the calibrator duly chose erosion **3 instead of 1**, and 6,844 real pixels were shaved off the artwork — a bigger loss than the bug being fixed.
+
+A skip-guard for exactly this already existed, and it did not fire: it was keyed on the source-alpha SCOPE engaging, while its own stated reasoning is about **the source carrying its own antialiasing**. Those are different sets — this asset has 2,917 partial-alpha pixels and the scope does not engage on it. The guard now reads `_sa_engaged or _src_has_partial_alpha`. Afterwards: four failing assets became two, and 6,844 lost pixels became 105.
+
+**Those last 105 are not a regression, and checking rather than assuming is the point.** Every one of them has a source alpha of **1 to 3 out of 255** — under 1.2% opacity — and PRE was rendering them at a mean alpha of 254.7, i.e. fully opaque. The clamp correctly drops them to 1–3 and the AVIF encoder rounds that to 0. The acceptance criterion as originally written ("no asset loses opaque pixels") predates knowing this failure mode; the criterion that survives contact with it is **no asset loses a pixel the SOURCE declared meaningfully visible**.
+
+⚠️ **This is release gate 8's own lesson recurring:** a correctness fix reached one code path while a *calibrator* downstream read the changed values and made a worse decision. `analyze()`-level numbers all said the fix had landed. Only rendering found it.
+
+⚠️ **Deliberately NOT applied to the `--recover-fade-alpha` branch.** That feature exists to RECONSTRUCT a fade the source already flattened, so there the source alpha is 255 by definition — clamping to it would be a no-op at best and would delete the feature at worst.
+
+**The transferable part:** this is `--pixel-art`'s inverse-spelling failure one level down. `get_source_transparency_mask` was carefully written to run BEFORE `convert('RGB')` because flattening destroys information — and then the very next line threw away the rest of the same channel. **A guard that protects one value of a field is not a guard on the field.** `alpha == 0` was handled with a docstring's worth of care; `alpha == 137` was not handled at all.

@@ -5518,16 +5518,28 @@ def process(input_path, output_path, args, diagnostics=None):
 
     rgb_frames_raw = []
     source_trans_masks = []
+    # The source's FULL alpha plane, not just its fully-transparent pixels. `alpha == 0`
+    # is what source_trans_masks carries; everything between 1 and 254 -- a fade, a glow,
+    # a soft shadow -- was invisible to this whole function, which is how a source could
+    # go in with partial alpha and come out fully opaque. See the clamp below.
+    source_alpha_planes = []
     durations = []
 
     for i in range(n_frames):
         im0.seek(i)
         durations.append(frame_duration_ms(im0, 100))
         source_trans_mask = get_source_transparency_mask(im0)  # BEFORE convert('RGB')
-        frame = im0.convert('RGB')
-        rgb = np.array(frame)
+        _rgba = np.array(im0.convert('RGBA'))                  # also BEFORE convert('RGB')
+        rgb = _rgba[..., :3].copy()
+        source_alpha_planes.append(_rgba[..., 3])
         rgb_frames_raw.append(rgb)
         source_trans_masks.append(source_trans_mask)
+
+    # Does ANY frame carry real partial alpha? A 1-bit source (GIF, or a hard cutout) has
+    # only 0 and 255, where the clamp below is a no-op; computing this once keeps it that
+    # way instead of paying a per-frame minimum on every ordinary asset.
+    _src_has_partial_alpha = any(
+        bool(((a > 0) & (a < 255)).any()) for a in source_alpha_planes)
 
     if getattr(args, 'tumble_safe', False):
         bg_rgb = hex_to_rgb(args.bg_color)
@@ -5681,6 +5693,34 @@ def process(input_path, output_path, args, diagnostics=None):
             # get_source_transparency_mask's docstring).
             alpha = np.where(source_trans_mask, 0, alpha)
 
+        if _src_has_partial_alpha:
+            # ⚠️ NEVER MORE OPAQUE THAN THE SOURCE. `rgb_frames_raw` is built with a bare
+            # convert('RGB'), so by the time the colour path runs, a pixel the source drew
+            # at 35% opacity is indistinguishable from a solid one -- its alpha was thrown
+            # away, and estimate_alpha_and_defringe re-derives alpha from RGB alone. Any
+            # such pixel whose flattened colour is not near the background therefore comes
+            # out at 255. `removal_scope`'s `np.where(removal_scope, alpha, 255)` is the
+            # loudest expression of it, but the promotion happens with or without a scope.
+            #
+            # Measured 2026-08-19 over every corpus source carrying >=50 partial-alpha px:
+            # 218 of 249 came out with under 10% of that partial alpha left, 199 of them
+            # with source-alpha scoping engaged. Twenty of the 45 largest are binary BY
+            # DESIGN (--pixel-art implies --no-feather), which is why that control was run
+            # -- the other 25 had feathering ON and lost the fade anyway. `love_emoji_128`
+            # went in with 913 partial-alpha pixels and out with 0, its 5,509 opaque
+            # becoming 6,422: every faded pixel promoted to solid.
+            #
+            # A minimum, not an assignment: the colour path may still make a pixel MORE
+            # transparent (that is its job), it may never invent opacity the source did
+            # not have. On a 1-bit source this is exactly a no-op, which `_src_has_partial
+            # _alpha` already guarantees by not running it at all.
+            #
+            # Deliberately NOT applied to the `recovered_rgb` branch above:
+            # --recover-fade-alpha exists to reconstruct a fade the source FLATTENED, so
+            # there the source alpha is 255 by definition and clamping to it would be
+            # either a no-op or a way to delete the feature.
+            alpha = np.minimum(alpha, source_alpha_planes[i])
+
         rgb_frames.append(rgb_out)
         alpha_frames.append(alpha)
 
@@ -5750,14 +5790,29 @@ def process(input_path, output_path, args, diagnostics=None):
         # 3:0.2064) and chose 3, and 3px of erosion left 1,226 of 3,167 opaque pixels
         # (38.7%). The metric cannot succeed here -- it is measuring art and calling it
         # fringe -- so the honest move is to not run it, exactly as for --pixel-art.
-        if _sa_engaged and getattr(args, 'auto_erosion', False) and not args.pixel_art:
-            print("erosion auto-calibration SKIPPED: the source's own alpha defines the "
-                  "silhouette, so the fringe metric would be measuring artwork. Its curve is "
+        # ⚠️ `_src_has_partial_alpha` belongs in this guard too, and leaving it out cost
+        # 6,844 pixels. The guard was keyed on the SCOPE engaging, but its own reasoning is
+        # about the SOURCE carrying its own antialiasing -- and those are different sets.
+        # `CODM BP Icon.png` has 2,917 partial-alpha pixels and the scope does NOT engage on
+        # it. Once the source-alpha clamp stopped promoting that antialiasing to 255, the
+        # calibration curve moved from (0:0.0885, 1:0.0, 2:0.0, 3:0.0) to
+        # (0:0.2549, 1:0.1852, 2:0.0296, 3:0.0) -- because the metric counts pale
+        # near-background pixels in the outer ring, and a restored antialiasing ramp IS pale
+        # near-background pixels. It duly picked erosion 3 instead of 1 and shaved 6,844 real
+        # pixels off the artwork. The metric was measuring the source's own soft edge and
+        # calling it fringe, which is precisely the failure the message below describes.
+        _erosion_metric_blind = _sa_engaged or _src_has_partial_alpha
+        if _erosion_metric_blind and getattr(args, 'auto_erosion', False) and not args.pixel_art:
+            print("erosion auto-calibration SKIPPED: "
+                  + ("the source's own alpha defines the silhouette" if _sa_engaged
+                     else "the source carries its own partial alpha (antialiasing, a fade or "
+                          "a glow)")
+                  + ", so the fringe metric would be measuring artwork. Its curve is "
                   "monotone in the wrong direction on such a source -- it improves as the "
                   "outline is eroded away. Pass --edge-cleanup-erosion explicitly to force a "
                   "level.", file=sys.stderr)
         if (getattr(args, 'auto_erosion', False) and not args.pixel_art
-                and not _sa_engaged):
+                and not _erosion_metric_blind):
             _cal_pal = build_art_palette(
                 rgb_frames[::max(1, len(rgb_frames) // 8)], hex_to_rgb(args.bg_color))
             _cal_log = []

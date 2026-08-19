@@ -85,7 +85,7 @@ def main():
     # produced three data-loss classes. Parallelism costs nothing in the product at all.
     # maxtasksperchild is not tuning: a worker that has decoded a 3840x2160 sheet holds that
     # memory, and 8 of them at once is how a machine starts swapping.
-    ap.add_argument('--jobs', '-j', type=int, default=1,
+    ap.add_argument('--jobs', '-j', type=int, default=min(8, os.cpu_count() or 1),
                     help='parallel worker processes (default 1). Results are identical either '
                          'way -- each asset is scored independently -- but ordering in the output '
                          'dict follows completion, so compare by KEY, never by position.')
