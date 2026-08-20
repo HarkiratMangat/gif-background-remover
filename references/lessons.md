@@ -70,6 +70,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 34. [What three fresh sessions on five real assets found that every automated gate missed](#34-what-three-fresh-sessions-on-five-real-assets-found-that-every-automated-gate-missed)
 35. [A cheap screen recommended a flag the renderer's own detector disagreed with](#35-a-cheap-screen-recommended-a-flag-the-renderers-own-detector-disagreed-with)
 36. [The background changed colour mid-animation, and every check said the render was fine](#36-the-background-changed-colour-mid-animation-and-every-check-said-the-render-was-fine)
+37. [The calibrator optimised the fringe and had no term for what erosion destroys](#37-the-calibrator-optimised-the-fringe-and-had-no-term-for-what-erosion-destroys)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -153,6 +154,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Background removed cleanly on the first frames, left solid on later ones | §36 |
 | `refusing to process ... BACKGROUND CHANGES COLOUR` | §36 (split the animation, or `--allow-changing-background`) |
 | `background_color_stability.changes` is `null` rather than true or false | §36 (UNVERIFIED — there was no reference plane to measure against) |
+| A thin stroke, wisp, antenna or whisker disappears from the output | §37 (edge-cleanup erosion; OPEN — try `--edge-cleanup-erosion 0`) |
+| `edge-cleanup erosion may have erased or badly shrunk N real detail(s)` | §37 (a real warning; nothing acts on it yet, so act on it yourself) |
+| The output silhouette is clean but a detail is missing | §37 (the fringe metric has no term for what erosion costs) |
+| The output silhouette looks gnawed or nibbled rather than trimmed | §37 |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
 | An already-background-removed file reads as hard-edged / pixel art | §29.1 (its empty transition band is guaranteed by the cutout, not by the art) |
@@ -2260,3 +2265,32 @@ All five defects live in the space between *"the measurement is correct"* and *"
 **The fall-through is UNVERIFIED, never PASS.** When the detected background colour covers essentially none of frame 0 there is no reference plane for a collapse to be measured against, so the rule would silently never fire — a vacuous pass dressed as a clean bill of health. `background_color_stability.changes` is `null` in that case, with an `unverified_reason`; `--recommend` says so in its evidence and `process()` warns on stderr. §13, §16 and §17 are the precedent: a check that cannot run has to say so rather than return the answer that happens to be convenient.
 
 **What to do when you see it.** Split the animation at the colour change and process each run with its own `--bg-color`, or re-export the source with a constant background. `--allow-changing-background` keys the frame-0 colour anyway, and is only right when the recoloured frames genuinely do not matter — it does not fix them, it accepts them.
+
+## 37. Erosion damage measured and attributed, and two fixes that failed their own acceptance
+
+**Also searched as:** antenna · whisker · tendril · spark · hairline · one-pixel stroke · detail eaten · feature vanished · nibbled edge · over-trimmed · shaved too far · single objective · tried and backed out · dead end
+
+⚠️ **This section records a measurement and TWO REJECTED FIXES. The defect is real and OPEN.** It is written down so the next attempt starts from the evidence rather than from the same two ideas.
+
+**The defect.** Edge-cleanup erosion removes real artwork, not fringe. On the motivating asset a flame wisp came out with **24.0% of the animation's artwork surviving on its worst frame**, and `art_lost_over_perimeter` read **1.977** — nearly two full perimeter rings, against 0.70–0.97 across the white-background assets. `calibrate_edge_cleanup_erosion` picks the smallest erosion whose outer-ring fringe fraction is within a tolerance of the asset's own floor: a good rule for the thing it measures, with **no term at all** for what erosion costs.
+
+**How broad, measured.** 149 assets rendered through the real `--auto` CLI and scored: **47 of 148 exceed `art_lost_over_perimeter` 1.1** — 42% of the dark corpus against 10% of the labelled set and 0% of the trial and WebP-original sets.
+
+⚠️ **That metric counts art lost for ANY reason, so it had to be attributed before it could drive a change.** Every asset over 1.1 was re-rendered with erosion explicitly off: **36 of 46 fall back under 1.1, and 10 do not**. Those ten are a different defect — the keyer removing artwork that matches the background — and no erosion change would touch them. A single metric that looks like it names a cause usually does not.
+
+⚠️ **And "just erode less" is refused by its own control.** Of 41 assets already under 1.1, turning erosion off made `edge_cleanliness` **worse on 9** — `for-you.gif` 1.000 → 0.688, `explosion` 1.000 → 0.831, `rocket` 0.999 → 0.891 — and left background behind on 7. Erosion earns its place on that population.
+
+### 37.1 Rejected fix 1: reuse `check_erosion_damage` as a gate
+`check_erosion_damage` detects exactly this failure — it labels components before erosion and reports any that lose most of their pixels — and it only WARNS, which an autonomous run cannot act on. Wiring it into the calibrator so a damaging level is rejected outright is the obvious fix, and it **fails its own acceptance**: across 147 rendered assets it made `edge_cleanliness` **worse on 40 and better on 2**, trading one asset family for another.
+
+**Why:** its 25px floor and 30%-survival bar were tuned for a warning, and a warning may be noisy. As a gate they fire on exactly the dither speckle erosion is *supposed* to remove. **A warning's threshold is not a gate's threshold**, and reusing one as the other is a silent change of contract.
+
+### 37.2 Rejected fix 2: a scale-free perimeter-overreach measure
+Eroding *n* rings should not cost much more than *n* perimeters, so `lost / perimeter` at the worst frame looked like a tuning-free statement of "it ate features, not fringe". Derived from 87 render pairs it separates cleanly — the FINE population never exceeds **1.00**, the DESTROYED population reaches **2.98**, and a cut at 1.2 catches 16 of 36 with **zero** false positives.
+
+⛔ **It is arithmetically incapable of firing, and the separation was a proxy.** For one iteration, the pixels erosion removes *are* the boundary ring, so `lost` and `perimeter` are the same set and the ratio is **exactly 1.000 on every possible input** — verified directly on four constructed masks. The clean split was therefore not measuring damage at all: it was separating assets that had used erosion 2 or 3 from assets that had used erosion 1. **A perfect separation on a derived quantity is a reason to check what the quantity actually varies with**, and a synthetic unit test caught this where the 87-asset corpus had endorsed it.
+
+### 37.3 What the next attempt should know
+The cost term has to compare erosion's loss against something that is **not** a function of erosion itself. Candidates not yet tried: loss measured against the frame's own artwork AREA rather than its boundary; per-component survival with a floor derived from the asset's own component-size distribution rather than a constant 25px; or accepting that this is a per-asset judgement and having `--recommend` say so. Whatever is tried, the acceptance is fixed and both halves are required: the 36 erosion-caused assets must improve, and `edge_cleanliness` must not fall on the 41 controls.
+
+**The transferable part.** A calibrator that optimises one objective will spend everything the other objectives were worth — that much is real, and the measurement above is the evidence. But two plausible cost terms both failed, one on a population and one on arithmetic, and the second had passed an 87-asset corpus check first. **When a fix and its measurement are built by the same reasoning, the corpus can only tell you they agree.**

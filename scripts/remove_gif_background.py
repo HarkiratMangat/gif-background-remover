@@ -402,8 +402,46 @@ def describe_changing_background(stability, bg_hex, n_frames):
         f"{stability['min_reference_coverage_frame_index']}. Keying one colour leaves every "
         f"recoloured frame's background fully opaque, and NOTHING downstream reports it: the "
         f"output is a valid file with plenty of opaque pixels, so the empty-render guard and "
-        f"every quality check pass. Split the animation at the colour change and process each "
-        f"run with its own --bg-color, or re-export it with a constant background.")
+        f"every quality check pass. "
+        # ⚠️ "Split the animation at the colour change" was the ONLY advice until 2026-08-20,
+        # and it is actionable for barely any real asset. What decides it is not how many
+        # frames were recoloured but whether splitting would yield usable SEGMENTS: long runs
+        # of ONE alternative background. Measured on the two real cases here, neither
+        # qualifies -- `Pixel Saber.gif` flashes full-canvas white for 3 frames twice in 213
+        # (a true positive found OUTSIDE the 65-asset control this rule was built against:
+        # those six frames rendered fully opaque, the worst art_lost_over_perimeter in a
+        # 149-asset render set at 68.263), and `Pew Pew Pew.gif` cycles through four
+        # different colours in five frames, so splitting it gives one-frame segments. A first
+        # attempt keyed on the FRACTION of recoloured frames and put the colour cycle in a
+        # "brief flash" branch, which is the wrong description of it; run length and
+        # distinct-colour count say what a proportion cannot.
+        + _changing_background_remedy(idx, stability['recolored_colors'], n_frames))
+
+
+def _changing_background_remedy(idx, colors, n_frames):
+    """The actionable half of the refusal: what to actually DO about it."""
+    runs, run = [], []
+    for i in sorted(idx):
+        if run and i == run[-1] + 1:
+            run.append(i)
+        else:
+            if run:
+                runs.append(run)
+            run = [i]
+    if run:
+        runs.append(run)
+    longest = max((len(r) for r in runs), default=0)
+    # Splitting needs segments worth processing: a sustained stretch, of ONE other colour.
+    if longest >= 10 and len(colors) <= 3:
+        return (f"The recoloured frames form {len(runs)} run(s), the longest {longest} frames "
+                f"of {n_frames}, over {len(colors)} colour(s) -- long enough to SPLIT the "
+                f"animation at each colour change and process each segment with its own "
+                f"--bg-color. Re-exporting with a constant background also works.")
+    return (f"The recoloured frames form {len(runs)} run(s), the longest only {longest} frame(s) "
+            f"of {n_frames}, over {len(colors)} colour(s), so SPLITTING WOULD NOT HELP -- the "
+            f"segments would be too short to be worth processing separately. Either drop or "
+            f"replace those frames in the source, or pass --allow-changing-background and "
+            f"accept that they come out with an opaque background.")
 
 
 def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):

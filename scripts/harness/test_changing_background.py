@@ -279,3 +279,61 @@ def test_analyze_json_carries_the_field(recoloured):
     st = payload['background_color_stability']
     assert st['changes'] is True
     assert st['recolored_colors']
+
+
+def _script():
+    """The module under test, loaded once."""
+    import importlib.util
+    global _MOD
+    try:
+        if _MOD is not None:
+            return _MOD
+    except NameError:
+        pass
+    spec = importlib.util.spec_from_file_location('under_test_cb', SCRIPT)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    _MOD = m
+    return m
+
+
+_MOD = None
+
+
+# ------------------------------------------------ the REMEDY half of the message (2026-08-20)
+#
+# "Split the animation at the colour change" was the only advice until a real labelled asset
+# outside the 65-asset control tripped the detector: `Pixel Saber.gif` flashes full-canvas
+# white on frames 58-60 and 153-155 of 213. A true positive -- those six frames rendered with
+# a fully opaque background and it was the worst art_lost_over_perimeter in a 149-asset render
+# set at 68.263 -- but splitting three frames is not an instruction anyone can follow.
+#
+# The discriminator is NOT the fraction of frames recoloured. A first attempt used one and put
+# a four-colour cycle in the "brief flash" branch. What decides whether splitting helps is
+# whether it yields usable segments: a long run, of few colours.
+
+
+def _remedy(idx, colors, n):
+    return _script()._changing_background_remedy(idx, colors, n)
+
+
+def test_a_short_flash_is_not_told_to_split():
+    """Pixel Saber: two 3-frame runs of one colour in 213 frames."""
+    m = _remedy([58, 59, 60, 153, 154, 155], ['ffffff'], 213)
+    assert 'SPLITTING WOULD NOT HELP' in m
+    assert '--allow-changing-background' in m
+
+
+def test_a_short_colour_CYCLE_is_not_told_to_split_either():
+    """Pew Pew Pew: four different colours across five frames of 30. The fraction-based
+    first attempt called this a 'brief flash', which is the wrong description of a cycle."""
+    m = _remedy([11, 12, 13, 15], ['ff0abf', 'ff005d', 'ff5a13', '14f739'], 30)
+    assert 'SPLITTING WOULD NOT HELP' in m
+    assert '4 colour(s)' in m
+
+
+def test_a_SUSTAINED_recolour_IS_told_to_split():
+    """The negative half. A remedy that never recommends splitting is not a decision --
+    and no asset in the corpus exercises this branch, so it is asserted directly."""
+    m = _remedy(list(range(100, 200)), ['00ff00'], 200)
+    assert 'long enough to SPLIT' in m
+    assert 'SPLITTING WOULD NOT HELP' not in m
