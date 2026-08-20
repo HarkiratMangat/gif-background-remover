@@ -152,6 +152,20 @@ Do not re-derive the fade ladder; it is measured in `references/lessons.md` §34
 
 ---
 
+## Executed 2026-08-20 — outcome of each task
+
+| # | item | outcome |
+|---|---|---|
+| 1 | dark-background fade misfire | **DONE** — the plan's hypothesis was FALSIFIED. `detect_fading_colors` does not over-flag on dark backgrounds; on the three worst assets it flagged nothing, and background luminance does not separate the recommendation (61% dark vs 55% white). The real fault was that `--recommend` gated on a cheap SCREEN the renderer never reads; they disagree on 16 of 34 assets and that half held every catastrophic output. `references/lessons.md` §35 |
+| 2 | mid-band "verified" wording | **DONE** — distribution measured first: 168 of 269 regions at exactly 1.000, 6 at 0.000, 95 (35%) between. Three bands. §38 |
+| 3 | changing-background detection | **DONE** — built in an isolated worktree and merged. §36. ⚠️ Its 71-asset control could not contain already-background-removed sources, and a render diff later caught it refusing 9 of 37 of them; fixed, 0 of 37 now. |
+| 4 | erosion on thin features | **MEASURED, NOT FIXED.** Reach and attribution are now known (47 of 148 over 1.1; 36 of 46 attributable to erosion, 10 to the keyer), and TWO cost terms were built, measured and reverted — one failed on a population, one on arithmetic. §37 records both dead ends. Still open. |
+| 5 | the escalation pass | not started — its own session, as specified |
+| 6 | the fade cliff | not started — research, as specified |
+| 7 | `CatPackFree` 0.250 | not scheduled, as specified |
+
+**What the plan got right:** ordering by measured frequency put the highest-yield item first, and Task 1 did have the ratio claimed for it. **What it got wrong:** Task 1's stated hypothesis was the wrong mechanism, and Task 4's decision rule ("a handful → refuse; broad → a cost term") assumed `art_lost_over_perimeter` names a cause. It does not — attributing it was a step the plan did not contain and without which either branch would have been taken on a confounded number.
+
 ## Self-Review
 
 **Ordering.** Every position is backed by a frequency measured today on a real population, and two items moved *down* from their tracker tags on that evidence: the escalation pass (two of its three motivating cases already pass) and the fade cliff (needs an idea, not a slot). The one item that moved *up* — the mid-band wording — did so because it costs almost nothing and makes every other item's failures auditable.
