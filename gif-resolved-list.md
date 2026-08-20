@@ -13,6 +13,30 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ---
 
+## ✅ A background that CHANGES COLOUR mid-animation is now detected, reported and refused — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
+
+**Original entry, struck through:**
+
+> ~~### `[P2 · M · Opus5-High]` A background that CHANGES COLOUR mid-animation is unprocessable, and nothing detects it *(filed 2026-08-20)*~~
+>
+> ~~`--bg-color` is one value and `detect_bg_color` reads frame 0, so an animation whose background changes colour cannot be processed at all — and no check anywhere reports that. Measured on `Pew Pew Pew.gif`: the background cycles magenta → pink → red → orange → yellow → green across frames 11–15 of 30, and on frame 12 the frame-0 colour covers **0.0%** of the canvas. Six such assets are now isolated in `local/corpus dark/_changing_bg/` with their worst frame and colour transition recorded.~~
+>
+> ~~⚠️ **It was found by eye, by Harkirat, after passing an automated filter that never looked at the background across frames** — and then my first attempt to measure it SAMPLED 10 frames across 30 and missed the 5-frame window, reading 78.6% at frame 10 while frame 12 was 0.0%. A consecutive per-frame scan of all 65 remaining animated assets then found **zero further cases**, so the six are the complete set. **A spread cannot see a transient; on a 309-frame file a 12-sample scan would step straight over it.**~~
+>
+> ~~**Do:** detect it in `analyze()` — scan every frame's detected background colour, and if it moves beyond a tolerance, say so and refuse rather than silently keying frame 0's colour across an animation where it means nothing. Whether a per-frame background colour is worth supporting after that is a separate and larger question. Start from `_changing_bg/`, which is the only place in the corpus that demonstrates this.~~
+
+**What happened.** Implemented in an isolated worktree and merged. The three-place pattern the truncating-GIF fix established: `analyze()` reports `background_color_stability`, `recommend()` returns `not_applicable_reason` with a null command so `--auto` refuses, and `process()` refuses independently for a run that never called `--recommend`. `--allow-changing-background` is the escape hatch and reaches all three paths. The scan runs on EVERY frame, riding the per-frame loop `analyze()` already runs and reusing the background mask it already computes — a spread cannot see a transient, and the first attempt at this measurement read 78.6% coverage at frame 10 while frame 12 was 0.0%.
+
+**The rule needs both halves, and that is measured rather than assumed.** A frame counts as recoloured when its corner-majority colour moves more than 40 units AND the reference colour's coverage collapses below 15% of its frame-0 share. Each half alone has a real false positive in the 65-asset animated control: a corner move alone fires wherever art sweeps a corner (`Ghost.gif` reads 11 distinct corner colours with a constant background), and a coverage collapse alone fires wherever art fills the canvas (two controls bottom out at 0.0% and 0.65% with corners that never move).
+
+**Verified:** 6 of 6 positives fire, 0 of 65 negatives do; one negative reports `null`/unverified rather than a quiet pass, which is the intended fall-through. The verdict is invariant across all 30 cells of distance ∈ {24,32,40,60,90,120} × collapse ∈ {0.05,0.10,0.15,0.25,0.50} — every negative produces zero qualifying frames, so this is a threshold the control never reaches rather than one it clears. Value spread proving the measure is measuring: `min_reference_coverage` takes 67 distinct values across 0.0000–0.9876. `analyze()` timing delta is inside run-to-run noise (−3.0%, +6.5%, −1.3% on three long assets, against a 61.6–82.8s spread on one of them). 55 tests pass, 15 of them new with all fixtures synthesised in-test; `love.gif --auto` still `2fd526b6fb3b191c`; `audit_docs.py` exits 0. Full write-up: `references/lessons.md` §36.
+
+**Two extra defects found while verifying, both fixed here:** a `process()` refusal is `raise SystemExit`, which is not an `Exception`, so ONE refused asset aborted a whole batch and the next good file produced no output. And Pillow's animated-WebP writer collapses identical consecutive frames, which silently turned three 10-frame fixtures into 2-frame files — a falsifier that passed for the wrong reason. Both are now structurally guarded rather than remembered.
+
+**One finding rolled forward:** `Ying and Yang Koi Fish.gif` crashes `analyze()` on a frame one pixel wider than the canvas. Pre-existing and unrelated; filed as a P3 on the active list.
+
+---
+
 ## ✅ `--recover-fade-alpha` was recommended where the renderer's own detector disagreed — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
 
 **Original entry, struck through:**

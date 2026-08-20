@@ -153,12 +153,13 @@ Five modes replace "run it and hope":
 | `--verify` | Leftover background, protected-region coverage, edge fringe, small-region inflation, timing. |
 
 <details>
-<summary><b>Background &amp; protection</b> — 8 flags</summary><br>
+<summary><b>Background &amp; protection</b> — 9 flags</summary><br>
 
 | flag | |
 |:--|:--|
 | `--bg-color <hex>` | Background to remove. Auto-detected from frame 0's corners if omitted. |
 | `--tolerance <n>` | Per-channel match tolerance (default 15). |
+| `--allow-changing-background` | Process an animation whose background CHANGES COLOUR partway through, which is otherwise refused. One `--bg-color` cannot key two backgrounds, so every recoloured frame keeps its own — measured **0.00% coverage** of the frame-0 colour on 4 of 30 frames of a real asset, with the render passing every quality check. |
 | `--protect-outline-color <hex[,hex…]>` | **The default choice.** Everything enclosed by a closed outline is protected; accepts several independently-outlined regions. |
 | `--outline-tolerance <n>` | Tolerance for the outline colour (default 40). |
 | `--protect-region circle:cx,cy,r \| rect:x,y,w,h` | Manual region, `;`-separated for several. **A last resort** — a fixed circle rarely matches a real interior's irregular shape. |

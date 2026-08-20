@@ -61,13 +61,11 @@ Each yields FRAME INDICES, so escalation adds a handful of frames to the spread 
 
 **Do:** treat mid-band values as UNSURE in the wording, not just in the number. Below some floor say it plainly failed, above some ceiling say verified, and in between say it is a coin-flip and name what to check. Needs no new analysis pass — every value involved is already computed. This is the half of the escalation item that can land on its own.
 
-### `[P2 · M · Opus5-High]` A background that CHANGES COLOUR mid-animation is unprocessable, and nothing detects it *(filed 2026-08-20)*
+### `[P3 · S · Sonnet5-High]` `analyze()` crashes on a GIF whose later frames are a different canvas size *(filed 2026-08-20, found twice independently)*
 
-`--bg-color` is one value and `detect_bg_color` reads frame 0, so an animation whose background changes colour cannot be processed at all — and no check anywhere reports that. Measured on `Pew Pew Pew.gif`: the background cycles magenta → pink → red → orange → yellow → green across frames 11–15 of 30, and on frame 12 the frame-0 colour covers **0.0%** of the canvas. Six such assets are now isolated in `local/corpus dark/_changing_bg/` with their worst frame and colour transition recorded.
+`local/corpus dark/Ying and Yang Koi Fish.gif` raises `ValueError: operands could not be broadcast together with shapes (650,500) (650,501) (650,500)` at `analyze()`'s `union_mask |= enclosed`. The file's later frames are one pixel wider than frame 0, and the enclosed-background union assumes every frame shares frame 0's shape. Pre-existing and unrelated to the 2026-08-20 work — reproduced identically on unmodified `HEAD` — and hit independently by two separate measurement passes the same day, which is why it is filed rather than left as noise.
 
-⚠️ **It was found by eye, by Harkirat, after passing an automated filter that never looked at the background across frames** — and then my first attempt to measure it SAMPLED 10 frames across 30 and missed the 5-frame window, reading 78.6% at frame 10 while frame 12 was 0.0%. A consecutive per-frame scan of all 65 remaining animated assets then found **zero further cases**, so the six are the complete set. **A spread cannot see a transient; on a 309-frame file a 12-sample scan would step straight over it.**
-
-**Do:** detect it in `analyze()` — scan every frame's detected background colour, and if it moves beyond a tolerance, say so and refuse rather than silently keying frame 0's colour across an animation where it means nothing. Whether a per-frame background colour is worth supporting after that is a separate and larger question. Start from `_changing_bg/`, which is the only place in the corpus that demonstrates this.
+**Do:** decide whether to pad/crop later frames to the canvas or to refuse with a clear message. ⚠️ A crash is not the worst outcome here and a silent mis-align would be; whatever is chosen must not quietly reshape artwork. 1 of 105 dark-corpus assets, so the frequency is low — but it is a hard `rc=1` with a traceback rather than an actionable refusal, which is the same "warning versus gate" distinction the truncating-GIF item turned on.
 
 ### `[P1 · S · Opus5-High]` `--recover-fade-alpha` maps colour-distance to alpha as a CLIFF, not a ramp *(filed 2026-08-19)*
 
