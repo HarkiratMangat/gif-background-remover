@@ -1962,6 +1962,53 @@ def analyze(input_path, max_samples=40, tolerance=15):
 _FORMAT_RANK_EMITTED = False
 
 
+def _enclosure_verdict(rid, outline_hex, all_frames):
+    """Three bands, three sentences -- because `verified` was being printed over a number
+    that said otherwise, and an autonomous run reads the word, not the number.
+
+    ⚠️ THE BAND EDGES ARE THE DISTRIBUTION'S OWN, NOT A CHOICE. Measured 2026-08-20 over 269
+    verified-outline regions across five populations: **168 (62.5%) sit at exactly 1.000**,
+    6 at exactly 0.000, and the remaining 95 are spread almost evenly between with no
+    internal cluster to justify subdividing them. So the ceiling is 1.000 -- every frame,
+    which is the only thing "verified" can honestly mean -- the floor is 0.000, and
+    everything else is explicitly a coin-flip. Picking an edge before seeing this is how
+    SS34.3's wrong figure got published.
+
+    ⚠️ The mid band is not small: 95 of 269 regions, 35%, were being reported as "verified".
+    """
+    ratio = all_frames['enclosure_ratio_all_frames']
+    checked = all_frames['frames_checked']
+    enclosed = all_frames.get('frames_enclosed')
+    head = f"Region {rid}: outline {outline_hex}"
+    if ratio >= 1.0:
+        return (f"{head} VERIFIED -- it encloses this region on all {checked} frames. "
+                f"Recommending --protect-outline-color.")
+    if ratio <= 0.0:
+        # The contradiction filed separately: `anomalous_frame_count: 0` beside a 0.0 ratio
+        # read as one claim, and printing "verified across 177 frames (0% enclosed)" is
+        # nonsense. They are different questions -- the colour DOES form a closed shape on
+        # the sampled frame, it just never closes around THIS region. Measured on 6 real
+        # regions including rocket.gif (0 of 177) and satellite.gif (0 of 120), where the
+        # recommendation is nonetheless correct (protected coverage 0.999/1.0), so this
+        # states what is known rather than withdrawing the advice.
+        return (f"{head} is a closed shape on the sampled frame, but across all {checked} "
+                f"frames it NEVER fully encloses this region (0 of {checked}). Recommending "
+                f"--protect-outline-color anyway, because fill-based protection does not "
+                f"require full enclosure to cover the region -- but this is the weakest "
+                f"evidence the check produces. VERIFY THE OUTPUT: if the region comes out "
+                f"transparent, the outline is not the right protection here and "
+                f"--protect-region is the fallback.")
+    return (f"{head} is a COIN FLIP, not verified: it encloses this region on "
+            f"{enclosed} of {checked} frames ({ratio * 100:.0f}%). Recommending "
+            f"--protect-outline-color because partial enclosure still protects the frames it "
+            f"covers, and the per-frame mask substitution carries the rest -- but do not read "
+            f"this as confirmation. CHECK: whether the region stays opaque on the "
+            f"{checked - (enclosed or 0)} frames it is not enclosed on, and whether anything "
+            f"else in the animation crosses the outline there. Measured 2026-08-20, 95 of 269 "
+            f"regions (35%) land in this band and every one of them used to print the word "
+            f"\"verified\".")
+
+
 def recommend(input_path, tolerance=15, allow_changing_background=False):
     """
     Run analyze() and translate its report into a suggested command line
@@ -2066,7 +2113,19 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                       f"{INTENTIONAL_ENCLOSURE_RATIO} enclosure at any size, or "
                       f"{LARGE_REGION_ENCLOSURE_RATIO} enclosure at "
                       f"{LARGE_REGION_CANVAS_FRACTION:.1%}+ of the canvas. "
-                      f"⚠️ If this region is visibly part of the ARTWORK, protect it by hand "
+                    # A NARROW miss is a coin flip and was being reported as a dismissal, in
+                    # the same voice as a region that missed by a mile. 0.85 enclosure at
+                    # 2.4% of canvas misses both bars by a hair and is exactly the case the
+                    # warning below was written for.
+                    + (f"⚠️ IT IS A NARROW MISS on both, so treat this as UNSURE rather than "
+                       f"as a decision: {region['enclosure_ratio']} against "
+                       f"{INTENTIONAL_ENCLOSURE_RATIO}, and "
+                       f"{_frac:.1%} of the canvas against {LARGE_REGION_CANVAS_FRACTION:.1%}. "
+                       if _frac is not None
+                       and region['enclosure_ratio'] >= INTENTIONAL_ENCLOSURE_RATIO - 0.1
+                       and _frac >= LARGE_REGION_CANVAS_FRACTION * 0.8
+                       else "")
+                    + f"⚠️ If this region is visibly part of the ARTWORK, protect it by hand "
                       f"(--protect-outline-color / --protect-region) -- this verdict has been "
                       f"wrong on a large pale region before.")
                 continue
@@ -2093,10 +2152,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                 outline_colors.append(region['candidate_outline_color'])
                 anom = all_frames['anomalous_frame_count']
                 region_notes.append(
-                    f"Region {rid}: outline {region['candidate_outline_color']} verified "
-                    f"across {all_frames['frames_checked']} frames "
-                    f"({all_frames['enclosure_ratio_all_frames'] * 100:.0f}% enclosed) -- "
-                    f"recommending --protect-outline-color."
+                    _enclosure_verdict(rid, region['candidate_outline_color'], all_frames)
                     + ("" if anom == 0 else
                        f" Enclosure breaks on {anom}/{all_frames['frames_checked']} frames "
                        f"(another element crossing the outline); the per-frame mask "

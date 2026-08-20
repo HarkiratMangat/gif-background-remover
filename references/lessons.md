@@ -70,7 +70,8 @@ If you are about to re-diagnose something that smells like a past case — a fri
 34. [What three fresh sessions on five real assets found that every automated gate missed](#34-what-three-fresh-sessions-on-five-real-assets-found-that-every-automated-gate-missed)
 35. [A cheap screen recommended a flag the renderer's own detector disagreed with](#35-a-cheap-screen-recommended-a-flag-the-renderers-own-detector-disagreed-with)
 36. [The background changed colour mid-animation, and every check said the render was fine](#36-the-background-changed-colour-mid-animation-and-every-check-said-the-render-was-fine)
-37. [The calibrator optimised the fringe and had no term for what erosion destroys](#37-the-calibrator-optimised-the-fringe-and-had-no-term-for-what-erosion-destroys)
+37. [Erosion damage measured and attributed, and two fixes that failed their own acceptance](#37-erosion-damage-measured-and-attributed-and-two-fixes-that-failed-their-own-acceptance)
+38. [The word `verified` was printed over a number that said otherwise](#38-the-word-verified-was-printed-over-a-number-that-said-otherwise)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -157,6 +158,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A thin stroke, wisp, antenna or whisker disappears from the output | §37 (edge-cleanup erosion; OPEN — try `--edge-cleanup-erosion 0`) |
 | `edge-cleanup erosion may have erased or badly shrunk N real detail(s)` | §37 (a real warning; nothing acts on it yet, so act on it yourself) |
 | The output silhouette is clean but a detail is missing | §37 (the fringe metric has no term for what erosion costs) |
+| `--recommend` says an outline is VERIFIED and the region still comes out transparent | §38 (check the band — 35% of regions used to say "verified" at partial enclosure) |
+| `outline … verified across N frames (0% enclosed)` | §38 (two fields reading as one claim; fixed) |
+| An outline is called a COIN FLIP and you want to know what to do | §38 (it names what to check; partial enclosure still protects the frames it covers) |
+| A design region was dismissed as background on a value close to the bar | §38 (a narrow miss now reads as unsure, not as a decision) |
 | The output silhouette looks gnawed or nibbled rather than trimmed | §37 |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
@@ -2294,3 +2299,19 @@ Eroding *n* rings should not cost much more than *n* perimeters, so `lost / peri
 The cost term has to compare erosion's loss against something that is **not** a function of erosion itself. Candidates not yet tried: loss measured against the frame's own artwork AREA rather than its boundary; per-component survival with a floor derived from the asset's own component-size distribution rather than a constant 25px; or accepting that this is a per-asset judgement and having `--recommend` say so. Whatever is tried, the acceptance is fixed and both halves are required: the 36 erosion-caused assets must improve, and `edge_cleanliness` must not fall on the 41 controls.
 
 **The transferable part.** A calibrator that optimises one objective will spend everything the other objectives were worth — that much is real, and the measurement above is the evidence. But two plausible cost terms both failed, one on a population and one on arithmetic, and the second had passed an 87-asset corpus check first. **When a fix and its measurement are built by the same reasoning, the corpus can only tell you they agree.**
+
+## 38. The word `verified` was printed over a number that said otherwise
+
+**Also searched as:** overconfident · weasel wording · overstated · says one thing shows another · partial enclosure · sometimes enclosed · two thirds of frames · trust the sentence · gibberish evidence · self-contradictory · misleading report
+
+**The symptom.** `--recommend` printed `Region 1: outline c83c78 verified across 144 frames (68% enclosed)`. The number is honest; the sentence is not. An autonomous run acts on flags and a human auditing the run reads the word — and the word said the check had passed when the number said it passed two frames in three. Separately, two assets printed `verified across 177 frames (0% enclosed)`, which reads as nonsense because it is **two different fields presented as one claim**: `anomalous_frame_count` (does the outline's own size behave oddly?) and `enclosure_ratio_all_frames` (does it actually close around this region?) answer different questions.
+
+**How big the mid band is, measured before any edge was picked.** 269 verified-outline regions across five populations: **168 (62.5%) sit at exactly 1.000**, 6 at exactly 0.000, and the remaining **95 — 35% of all regions — are spread almost evenly between**, with no cluster anywhere to justify subdividing them further. Every one of those 95 used to print "verified".
+
+⚠️ **The band edges are the distribution's, not a choice.** The ceiling is 1.000 because that is where 62.5% of the mass sits and because it is the only thing the word can honestly mean. The floor is 0.000 for the same reason. Picking an edge before looking is how a wrong figure got published once already (§34.3) — and note that the strict reading puts the 11 regions in 0.9–1.0 into the mid band, which is the intended outcome rather than a rounding accident.
+
+**Three bands, three sentences.** At 1.000: *verified, it encloses this region on all N frames*. Strictly between: *a COIN FLIP, not verified — it encloses this region on X of N frames*, plus **what to check** (whether the region stays opaque on the frames it is not enclosed on, and whether something else crosses the outline there). At 0.000: *it is a closed shape on the sampled frame but NEVER fully encloses this region* — and the recommendation still stands, because fill-based protection does not require full enclosure, with the output flagged for checking. That last one matters: on `rocket.gif` (0 of 177) and `satellite.gif` (0 of 120) the advice is correct in the end, protected coverage 0.999 and 1.0, so the fix is to state what is known rather than to withdraw the advice.
+
+**The same shape, one level up.** A region that misses the intentional-design bars *narrowly* — 0.85 enclosure at 2.4% of canvas against bars of 0.9 and 2.5% — was dismissed in exactly the same voice as one that missed by a mile. A near miss now says it is unsure and quotes both margins.
+
+**The transferable part.** This changed no output pixel and cost no new analysis; every value involved was already computed. What it changes is whether a wrong recommendation is **auditable** — and confident wording over a hedged number is the one defect that makes every other defect harder to find. **When a sentence and the number beside it disagree, the sentence is the bug**, because the number is what you would have had to read to notice.

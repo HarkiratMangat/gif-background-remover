@@ -59,12 +59,6 @@ Each yields FRAME INDICES, so escalation adds a handful of frames to the spread 
 
 **First slice (M):** the cheap pass plus nomination (1) only — the changing-background item — with its cost measured on the longest asset in the corpus and the nomination shown to fire on `Pew Pew Pew.gif`. ⚠️ **A nomination that cannot flag its own motivating asset is not a signal**, and **the dense pass must be MEASURED cheap, not assumed cheap by analogy** with the blank-frame scan, which reused a mask that already existed. Changing `sample_idxs` feeds the hardness measures, so this forces a full 797-asset re-score.
 
-### `[P2 · S · Sonnet5-High]` A mid-band `enclosure_ratio_all_frames` is reported with the word "verified" *(filed 2026-08-20, the cheap half of the item above)*
-
-`for-you.gif`'s outline works on two frames in three, and `--recommend` says `Region 1: outline c83c78 verified across 144 frames (68% enclosed) -- recommending --protect-outline-color.` The number is honest and the sentence is not: an autonomous run reads "verified". The same applies to a region that fails one of the `is_intentional_design` bars narrowly — 0.85 ratio at 2.4% of canvas is a coin-flip reported as a dismissal.
-
-**Do:** treat mid-band values as UNSURE in the wording, not just in the number. Below some floor say it plainly failed, above some ceiling say verified, and in between say it is a coin-flip and name what to check. Needs no new analysis pass — every value involved is already computed. This is the half of the escalation item that can land on its own.
-
 ### `[P3 · S · Sonnet5-High]` `analyze()` crashes on a GIF whose later frames are a different canvas size *(filed 2026-08-20, found twice independently)*
 
 `local/corpus dark/Ying and Yang Koi Fish.gif` raises `ValueError: operands could not be broadcast together with shapes (650,500) (650,501) (650,500)` at `analyze()`'s `union_mask |= enclosed`. The file's later frames are one pixel wider than frame 0, and the enclosed-background union assumes every frame shares frame 0's shape. Pre-existing and unrelated to the 2026-08-20 work — reproduced identically on unmodified `HEAD` — and hit independently by two separate measurement passes the same day, which is why it is filed rather than left as noise.
@@ -88,11 +82,6 @@ The source colour moves smoothly; alpha holds flat at 255 through frame 12 then 
 ⚠️ **UPDATED 2026-08-20 — the mechanism was FOUND and the obvious fix was BUILT, MEASURED and REJECTED. Do not re-derive it.** The palette is a fade LADDER: `protect_parents` exempts every detected fading colour from `build_art_palette`'s blend rejection, and on this asset the detector flags **8 of 10** colours, so the exemption inverts and the fade's own stages survive as palette entries — one navy at distances **356.2, 316.5, 267.3, 223.5, 195.7, 155.6 and 105.8** from the background, each within cosine 0.97–0.999 of a farther rung, against 0.55 and 0.69 for the two unrelated art colours. Every faded pixel unmixes against its OWN rung at t≈1.0 and renders opaque. Collapsing the ladder dropped four rungs correctly and moved fade coherence **0.688 → 0.477**, with background (0.390) and edge (0.000) unchanged — worse on the axis it targeted, no gain anywhere else. The acceptance criterion was set at >0.90 *before* any tuning, so it was reverted. **A fix that removes a genuine defect can still leave the output further from correct than it started.** Full write-up: `references/lessons.md` §34.2. The ladder is real and is not the whole cause; whatever closes this needs a different mechanism.
 
 ⚠️ **The deeper error, and it may not be fixable by tuning:** `--recover-fade-alpha` treats *pale* as *translucent*. Hurricane's badge is a solid pale shape the animator drew getting lighter, not a see-through one. Reconstructing alpha from paleness composites identically over white and wrongly over anything else. **For a fade drawn against the background colour, alpha recovery and colour fidelity are different goals**, and the tool currently assumes they are the same. `references/lessons.md` §16 is the existing evidence trail.
-
-### `[P3 · XS · Sonnet5-Medium]` `--recommend` prints self-contradictory enclosure evidence *(filed 2026-08-19)*
-
-On rocket and satellite it emits `outline … verified across 177 frames (0% enclosed)` — `anomalous_frame_count: 0` beside `enclosure_ratio_all_frames: 0.0`. The recommendation is correct in the end (coverage 0.999/1.0) but the evidence reads as nonsense, and an autonomous run is supposed to be auditable from exactly this string.
-
 
 ### `[P3 · S · Sonnet5-High]` `CatPackFree` sits at 0.250 (1/4) — four assets *(filed 2026-08-19)*
 

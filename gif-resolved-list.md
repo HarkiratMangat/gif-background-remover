@@ -13,6 +13,32 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ---
 
+## ✅ `--recommend`'s enclosure evidence now says "unsure" where the numbers already said unsure — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
+
+*Two filed items, same shape, closed together.*
+
+**Original entries, struck through:**
+
+> ~~### `[P2 · S · Sonnet5-High]` A mid-band `enclosure_ratio_all_frames` is reported with the word "verified" *(filed 2026-08-20, the cheap half of the item above)*~~
+>
+> ~~`for-you.gif`'s outline works on two frames in three, and `--recommend` says `Region 1: outline c83c78 verified across 144 frames (68% enclosed) -- recommending --protect-outline-color.` The number is honest and the sentence is not: an autonomous run reads "verified". The same applies to a region that fails one of the `is_intentional_design` bars narrowly — 0.85 ratio at 2.4% of canvas is a coin-flip reported as a dismissal.~~
+>
+> ~~**Do:** treat mid-band values as UNSURE in the wording, not just in the number. Below some floor say it plainly failed, above some ceiling say verified, and in between say it is a coin-flip and name what to check. Needs no new analysis pass — every value involved is already computed. This is the half of the escalation item that can land on its own.~~
+>
+> ~~### `[P3 · XS · Sonnet5-Medium]` `--recommend` prints self-contradictory enclosure evidence *(filed 2026-08-19)*~~
+>
+> ~~On rocket and satellite it emits `outline … verified across 177 frames (0% enclosed)` — `anomalous_frame_count: 0` beside `enclosure_ratio_all_frames: 0.0`. The recommendation is correct in the end (coverage 0.999/1.0) but the evidence reads as nonsense, and an autonomous run is supposed to be auditable from exactly this string.~~
+
+**What happened.** The distribution was measured BEFORE any band edge was picked, which is the whole discipline of the item: 269 verified-outline regions across five populations (labelled, trial, corpus, emoji, small_aa). It is strongly bimodal — **168 (62.5%) at exactly 1.000, 6 at exactly 0.000, and 95 spread almost evenly between with no internal cluster**. So the edges are the distribution's own rather than a choice: the ceiling is 1.000 because that is where the mass sits and because it is the only thing "verified" can honestly mean, and the floor is 0.000 for the same reason. **The mid band is 35% of all regions, and every one of them used to print the word "verified".**
+
+Three bands, three sentences: at 1.000 *VERIFIED — encloses this region on all N frames*; strictly between, *a COIN FLIP, not verified — X of N frames*, followed by what to check; at 0.000, *a closed shape on the sampled frame but it NEVER fully encloses this region*, with the recommendation still standing because fill-based protection does not need full enclosure, and the output flagged for checking. That last band is the `0% enclosed` contradiction, which was `anomalous_frame_count` and `enclosure_ratio_all_frames` — two different questions — printed as one claim.
+
+The same shape one level up: a region that misses the intentional-design bars NARROWLY (0.85 enclosure at 2.4% of canvas, against 0.9 and 2.5%) was dismissed in the same voice as one that missed by a mile, and now reads as unsure and quotes both margins.
+
+**Verified:** `for-you.gif` reads `COIN FLIP, not verified: it encloses this region on 98 of 144 frames (68%)`; `rocket.gif` and `satellite.gif` read `NEVER fully encloses this region (0 of 177 / 0 of 120)` instead of `verified across 177 frames (0% enclosed)`; `love_ORIGINAL.gif` Region 22 still reads `VERIFIED -- on all 124 frames`. Seven falsifiers in `scripts/harness/test_enclosure_wording.py`, five of them needing no render at all, proven non-vacuous: widening the verified band back to 0.5 fails four of them. No output pixel changes and no new analysis pass is needed — every value involved was already computed. Full write-up: `references/lessons.md` §38.
+
+---
+
 ## ✅ A background that CHANGES COLOUR mid-animation is now detected, reported and refused — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
 
 **Original entry, struck through:**
