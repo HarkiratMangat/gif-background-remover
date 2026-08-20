@@ -25,7 +25,7 @@
 - **Read gate exit codes.** Never pipe a gate to `tail`; that shipped a red gate once already.
 - **Report the WORST frame, never a mean.** A defect on 16 consecutive frames averaged to 99.9% and vanished.
 - **Before using any scorer to validate a fix, check it can FAIL on the defect that fix targets.**
-- **`--jobs` now defaults to `min(8, cpu_count)`** in `render_baseline.py`, `run_populations.py` and `candidates.py`. Full corpus ≈ 7 min; the standard render set ≈ 10 min.
+- ~~**`--jobs` now defaults to `min(8, cpu_count)`**~~ ⚠️ **SUPERSEDED the same day** — it is `machine.default_jobs()`, measured per call from performance cores and free memory, because `os.cpu_count()` reports 8 on this machine and only 6 are performance cores. Run `python3 scripts/harness/machine.py`. Full corpus ≈ 7 min warm; the standard render set ≈ 10 min.
 - **`love.gif --auto` must stay `2fd526b6fb3b191c`.** It is the byte-level control for "nothing else moved".
 - **Seven pixel-art discriminators are dead.** Do not re-derive them — `references/lessons.md` §29.2, §29.12, and `candidates.py`'s banner.
 - **A derived population cannot falsify a change to the thing it was derived from.** That check is what stopped the 16-colour floor from being moved on an artefact.
@@ -45,3 +45,5 @@
 - Trial outputs and per-agent step logs: `local/Corpus Trial Gifs/agent-{1-vague,2-detailed,3-expert}/`
 - The built package: `local/gif-background-remover-v6.0.0.skill` (previous versions in `local/skills-archive/`)
 - Latest corpus score: `local/pixelart-probe/analyze-2026-08-19-v34.json`
+
+⚠️ **This handoff is SUPERSEDED by `docs/handoffs/2026-08-20-v6-backlog-session.md`.** Kept because its five trial defects and their evidence are still the reason half the tracker looks the way it does.
