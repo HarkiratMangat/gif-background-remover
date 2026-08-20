@@ -496,7 +496,7 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
 
 **Measured 2026-08-20** on `local/corpus dark/` (119 files, supplied by Harkirat): **all 119 have opaque backgrounds**, 59 dark (<80 luminance), 63 saturated (chroma ≥60), 76 animated. **107 of 119 are genuinely keyable** — ≥30% of the frame is border-connected background colour. That takes dark backgrounds from 5 to ~60, across two independent sources instead of one.
 
-⚠️ **The 12 that are not keyable must be excluded explicitly, not quietly.** They are full-bleed illustrations with no background field at all (0.1–6.9% border-connected: `Malika Favre portrait…`, `Animated Loops - José Pistilli.gif`, `By Rafahu #art #illustration #gif #Batman.gif`, `Art gif.gif`, `Wallpaper and Illustration 《LADY AGNES》(5).jpeg`, `Bits - Giacomo D'Ancona.jpeg`, plus the six marginal ones between 10% and 30%). Scoring them would produce a vacuous pass, which this corpus has already recorded twice.
+✅ **The 12 non-keyable files were MOVED OUT on 2026-08-20**, to `local/corpus dark/_excluded/` with a README recording the measurement and the condition for putting one back. Six are full-bleed illustrations with essentially no background field (0.1–6.9% border-connected — Malika Favre, José Pistilli, a Batman piece, `Art gif.gif`, `LADY AGNES`, `Bits - Giacomo D'Ancona`); six more sit between 20.0% and 27.4%. **Moved rather than name-listed, because a name list is a discipline and a moved file is a control** — no scoring run can pick these up by accident. **107 remain in the scoring folder**, which is the count to expect from `--only dark_bg`.
 
 - [ ] **Step 1: Register the population as `ambiguous`**
 
@@ -504,7 +504,7 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
     'dark_bg': dict(
         dir=os.path.join(ROOT, 'local/corpus dark'), labels=None, recurse=False,
         default_label='ambiguous',
-        what='107 keyable assets on FLAT OPAQUE NON-WHITE backgrounds -- 59 dark (<80 luminance), '
+        what='107 keyable assets on FLAT OPAQUE NON-WHITE backgrounds (12 non-keyable already moved to _excluded/) -- 59 dark (<80 luminance), '
              '63 saturated (chroma >=60), 76 animated. Supplied 2026-08-20 to close the one gap the '
              'rest of the corpus could not test around: before this, 76 of 97 opaque-background '
              'assets were white-ish, only 5 were dark, and all 18 non-white ones came from a single '
@@ -516,21 +516,19 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
                  'would cost hours and buy nothing this population is for.'),
 ```
 
-- [ ] **Step 2: Exclude the 12 non-keyable files by name, with the reason in the entry**
-
-- [ ] **Step 3: Confirm the population scores and that its figures are excluded**
+- [ ] **Step 2: Confirm the population scores 107 assets and that its figures are excluded**
 
 ```bash
 python3 scripts/harness/run_populations.py --only dark_bg --out /tmp/dark.json
 python3 -c "
 import json; d=json.load(open('/tmp/dark.json'))['records']
-print(len(d),'scored'); import collections
+print(len(d),'scored — expect 107'); import collections
 print(collections.Counter(v['label'] for v in d.values()))
 assert all(v['label']=='ambiguous' for v in d.values())
 print('OK — excluded from recall/specificity by construction')"
 ```
 
-- [ ] **Step 4: Measure the ring metric and the fringe constants on a non-white background**
+- [ ] **Step 3: Measure the ring metric and the fringe constants on a non-white background**
 
 ```bash
 cd scripts/harness && python3 -c "
@@ -545,7 +543,7 @@ for p in sorted(glob.glob('../../local/corpus dark/*'))[:20]:
 
 **Acceptance:** a constant moves **only if the dark population shows it failing**, and the change is then re-checked against the white-background assets so it does not trade one family for another. **"The numbers look fine on dark backgrounds too" is a valid and likely outcome** — record it and close the item.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add -A && git commit -m "test(harness): register the dark-background corpus, and settle the narrow constants against it"
