@@ -4,6 +4,25 @@
 
 **Goal:** Fix the seven defects the 2026-08-19 three-agent package trial found, starting with the output scorer that would otherwise certify a fade fix as working.
 
+---
+
+## ✅ EXECUTED 2026-08-20 — outcome per task
+
+| task | outcome | commit |
+|---|---|---|
+| 1 · a scorer that can fail | **shipped.** The specified `fade_correlation` returned exactly 1.000 on all seven trial outputs *including the broken one* and was discarded; replaced by a model-neutral measure proven against two synthetic controls. | `97c9ae9` |
+| 2 · refuse a truncating GIF | **shipped.** `--analyze` predicts it, `--recommend` steers to WebP/APNG, the render refuses. | `5e6c508` |
+| 3 · incidental over a large region | **shipped.** Area-conditioned, both constants measured into a gap over 26 assets. Corrected a wrong figure this repo had already published. | `cb79615`'s parent `9532df0` |
+| 4 · the erosion contradiction | **settled — both filed items were wrong.** The calibrator is correct 5 of 5; SKILL.md's sentence was the bug; the P3 artefacting item is a preference, not a defect. | `cb79615` |
+| 5 · fade recovery drops protection | **shipped** as a refusal, not a composition. | `27464ce` |
+| 6 · the fade cliff | **BOUNDED, not fixed.** The mechanism was found (a six-rung fade ladder), the fix was built and measured at **0.688 → 0.477**, and it was reverted against the criterion set before tuning. Recorded in §34.2 so it is not re-derived. | `c909a04` |
+| 7 · delivery convention + boilerplate | **shipped.** One convention in SKILL.md; the ~150-word FORMAT ranking now prints once per run (3 blocks → 1 over three assets). | `cb79615`, `27464ce` |
+| 8 · the dark corpus | **registered, and it did NOT come back clean.** 105 assets; but only 13 of a 24-asset falsifier sample are flat-keyable, and two of those fail badly. Both failures filed as mechanism-level items rather than moving a constant on two assets. | `aa0d1b2` |
+
+**Three assets arrived from Harkirat mid-execution and are now permanent test cases** — `paper-plane` (reproduces the truncation bug across three major versions), `for-you` (outline recoloured for 37 consecutive frames), `in-love` (two-colour fading hearts). All three are in the new `trial` population, which is in **both** render sets: until 2026-08-20 the render gate contained not one asset a human had complained about.
+
+---
+
 **Architecture:** Six of the seven are independent changes to `scripts/remove_gif_background.py`. The seventh is the measurement harness, and it comes FIRST because every downstream acceptance test depends on a grader that can currently report a broken fade as perfect. Two filed items (erosion default, WebP outline artefacting) contradict each other and are deliberately fused into one task.
 
 **Tech Stack:** Python 3.11, numpy, scipy.ndimage, Pillow 12.3.0, gifsicle. No new dependencies.
