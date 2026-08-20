@@ -175,3 +175,25 @@ def test_growth_interior_survives_a_real_render():
     assert r.returncode == 0, r.stderr[-3000:]
     s = S.score(_p('growth.gif'), out)
     assert s['interior_kept_worst'] > 0.95, s
+
+
+# ------------------------------------ a worst-frame FRACTION needs its denominator
+
+def test_worst_frame_fraction_reports_its_own_denominator():
+    """growth's rocket leaves the canvas, so its worst art frame holds almost nothing and a
+    1px erosion reads as "21% of the artwork destroyed". Harkirat caught that number on its
+    way into a release decision. The scorer must make the artifact visible on its face:
+    a collapsed denominator, and a loss no bigger than one perimeter ring."""
+    r = S.score(_p('growth.gif'), '/tmp/growth_e1.webp')
+    assert r['art_kept_worst'] < 0.90, r          # the alarming fraction is real...
+    assert r['art_frame_share_at_worst'] < 0.05, r  # ...on a frame holding <5% of the art
+    assert r['art_lost_over_perimeter'] <= 1.1, r   # ...and the loss is one perimeter ring
+
+
+def test_a_full_size_frame_is_not_explained_away():
+    """The negative half. On assets whose worst frame is full-size the share must be HIGH,
+    or the new field would excuse every result instead of discriminating."""
+    for f in ('rocket', 'satellite'):
+        r = S.score(_p(f'{f}.gif'), f'/tmp/{f}_e1.webp')
+        assert r['art_frame_share_at_worst'] > 0.9, (f, r)
+        assert r['art_lost_over_perimeter'] <= 1.1, (f, r)

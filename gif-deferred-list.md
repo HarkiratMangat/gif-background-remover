@@ -43,17 +43,9 @@ The source colour moves smoothly; alpha holds flat at 255 through frame 12 then 
 
 ⚠️ **The deeper error, and it may not be fixable by tuning:** `--recover-fade-alpha` treats *pale* as *translucent*. Hurricane's badge is a solid pale shape the animator drew getting lighter, not a see-through one. Reconstructing alpha from paleness composites identically over white and wrongly over anything else. **For a fade drawn against the background colour, alpha recovery and colour fidelity are different goals**, and the tool currently assumes they are the same. `references/lessons.md` §16 is the existing evidence trail.
 
-### `[P2 · S · Sonnet5-High]` `--auto` calibrates erosion by default, while SKILL.md says `--auto-erosion` is what enables it *(filed 2026-08-19)*
-
-SKILL.md: "Add `--auto-erosion` to have `--edge-cleanup-erosion` calibrated against the asset's own fringe curve rather than a global default." The code: `args.auto_erosion = 'edge_cleanup_erosion' not in _typed` — it is ON unless you pass an explicit erosion. Measured cost on `growth.gif` → WebP: the default loses **2,878 art pixels** against explicit `--edge-cleanup-erosion 0`, and it overrides the documented WebP default of 0 to do it. A documentation/behaviour contradiction in the direction that damages artwork. **Do:** decide which is right and make both agree; if default-on is right, SKILL.md's sentence is the bug.
-
 ### `[P2 · S · Sonnet5-High]` `--recover-fade-alpha` silently disables `--tumble-safe` and every other protection flag *(filed 2026-08-19)*
 
 The render loop takes the `recovered_rgb` branch and skips `protected_masks` entirely, so a run combining fade recovery with tumble-safe protection gets only the former, with no warning. Found by the expert-prompt agent on `growth.gif`, where fade recovery deletes the rocket body on ~25 frames because its flood starts from the canvas border — and `--tumble-safe` is exactly the fix that cannot be combined with it. **Do:** either make them composable or refuse the combination out loud.
-
-### `[P3 · S · Sonnet5-High]` WebP's erosion-0 default leaves visible outline artefacts on some assets *(filed 2026-08-19 from visual review)*
-
-Human review of the trial outputs: galaxy's WebP and GIF at erosion 0 carry "anti-aliasing outline effect across its entire outer navy outline… not a clean polish", while the same asset at erosion 1 scored 9.5/10 with only minor speckles. The documented rule is that 8-bit alpha needs no fringe trim — true for the alpha, but the RGB fringe from colour unmixing is still visible. ⚠️ Interacts with the erosion-calibration item above: they disagree about which default is right. **Do:** measure outline cleanliness directly rather than inferring it from the alpha depth.
 
 ### `[P3 · XS · Sonnet5-Medium]` `--recommend` prints self-contradictory enclosure evidence *(filed 2026-08-19)*
 

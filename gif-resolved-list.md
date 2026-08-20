@@ -24,6 +24,27 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### ✅ CLOSED — the two erosion items, which contradicted each other and were both wrong
+**Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.5; plan task 4 of `docs/plans/2026-08-20-post-trial-defects.md`.
+
+**Outcome: the CODE was right on all five assets and SKILL.md's sentence was the bug.** Measured on the calibrator's own fringe metric (pale-near-background share of the outer opaque ring) at erosion 0/1/2 — galaxy 0.0000/0.0000/0.0000 → picks 0; satellite 0.0000/0.0000/0.0000 → picks 0; hurricane 0.0521/0.0362/0.0358 → picks 0; growth 0.1548/0.0219/0.0219 → picks 1; rocket 0.1462/0.0371/0.0373 → picks 1. Five of five correct, and it genuinely ran on all five — the two flat-zero curves were checked for vacuity rather than assumed (11/11 and 10/10 frames measured, exactly 0.0000 on every individual frame). The "2,878 art pixels" is 0.27% of that asset's opaque pixels and buys a 7× fringe reduction: the price of a correct decision.
+
+**The P3 artefacting item is a PREFERENCE, not a defect.** On the two assets whose outlines the reviewer disliked there is no fringe at any level; erosion 1 improves the look only by deleting the antialiasing ramp, which is what the 8-bit-alpha rule exists to preserve. Now documented in SKILL.md as an explicit style choice (`--edge-cleanup-erosion 1`), with the measurement, rather than being made a default.
+
+⚠️ **Two metric traps were walked into and caught, and they are the transferable half.** (1) An ALPHA-based edge score said erosion 1 was a big win on the two zero-fringe assets — but a soft antialiased edge legitimately carries partial alpha, so a metric counting partial alpha as "unclean" rewards destroying antialiasing. (2) A worst-frame FRACTION said erosion 1 destroyed 21% of one asset's artwork. **Harkirat challenged that number directly and was right**: erosion removes a perimeter (O(r)) while "art present" is an area (O(r²)), so the fraction grows without bound as the subject shrinks. That asset's worst frame is one where the rocket has nearly left the canvas — 5,232 art pixels against 84,672 on frame 0 — losing 695, the smallest absolute loss of any worst frame measured, and its total loss (2.70%) is the lowest of the four assets. The cheap discriminator: `lost / perimeter` ran 0.70–0.95 across five worst-frame cases, always under one full ring, so nothing thin was bitten. **A defect's absolute magnitude stays large as the denominator shrinks; a geometric cost shrinks with it.**
+
+<details><summary>Original items, kept verbatim</summary>
+
+### ~~`[P2 · S · Sonnet5-High]` `--auto` calibrates erosion by default, while SKILL.md says `--auto-erosion` is what enables it *(filed 2026-08-19)*~~
+
+SKILL.md: "Add `--auto-erosion` to have `--edge-cleanup-erosion` calibrated against the asset's own fringe curve rather than a global default." The code: `args.auto_erosion = 'edge_cleanup_erosion' not in _typed` — it is ON unless you pass an explicit erosion. Measured cost on `growth.gif` → WebP: the default loses **2,878 art pixels** against explicit `--edge-cleanup-erosion 0`, and it overrides the documented WebP default of 0 to do it. A documentation/behaviour contradiction in the direction that damages artwork. **Do:** decide which is right and make both agree; if default-on is right, SKILL.md's sentence is the bug.
+
+### ~~`[P3 · S · Sonnet5-High]` WebP's erosion-0 default leaves visible outline artefacts on some assets *(filed 2026-08-19 from visual review)*~~
+
+Human review of the trial outputs: galaxy's WebP and GIF at erosion 0 carry "anti-aliasing outline effect across its entire outer navy outline… not a clean polish", while the same asset at erosion 1 scored 9.5/10 with only minor speckles. The documented rule is that 8-bit alpha needs no fringe trim — true for the alpha, but the RGB fringe from colour unmixing is still visible. ⚠️ Interacts with the erosion-calibration item above: they disagree about which default is right. **Do:** measure outline cleanliness directly rather than inferring it from the alpha depth.
+
+</details>
+
 ### ✅ SHIPPED — `--recommend` called a large interior design region "incidental background"
 **Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.3; plan task 3 of `docs/plans/2026-08-20-post-trial-defects.md`.
 

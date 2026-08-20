@@ -113,6 +113,11 @@ def _fade(series):
     return 1.0 - err, ('ramp' if ramp_err <= opaque_err else 'opaque'), ramp
 
 
+def _perimeter(mask):
+    """The one-pixel boundary ring of a mask. Erosion removes exactly this."""
+    return int((mask & ~ndimage.binary_erosion(mask, structure=ST)).sum())
+
+
 def score(src_path, out_path=None, samples=24, alpha_override=None):
     """Grade `out_path` against `src_path`. Every figure is a WORST over sampled frames.
 
@@ -135,6 +140,25 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     comps = [i + 1 for i, ar in enumerate(areas) if ar >= 0.01 * art0.size]
 
     bg, inter, art, edge = [], [], [], []
+    # ⚠️ `art_kept_worst` is a FRACTION, and a fraction is only as meaningful as its
+    # denominator. Erosion removes a PERIMETER (O(r)) while "art pixels present" is an
+    # AREA (O(r^2)), so a fixed 1px trim costs a share that grows without bound as the
+    # subject shrinks or leaves the canvas. Measured 2026-08-20 on a rocket that exits
+    # frame: the worst frame held 5,232 art pixels against 84,672 on frame 0 and lost 695
+    # -- the SMALLEST absolute loss of any worst frame in the set -- yet read as 13-21%
+    # "destroyed", and that number was on its way into a release decision until Harkirat
+    # challenged it. So the worst frame is reported WITH the two things needed to judge it:
+    #   art_frame_share_at_worst -- how much of this animation's peak artwork was even
+    #                               present on that frame. A low value means the
+    #                               denominator collapsed, not that artwork was destroyed.
+    #   art_lost_over_perimeter  -- the scale-free version. Erosion of n px cannot cost
+    #                               more than ~n perimeter rings, so <=1.1 is geometry and
+    #                               >1.1 means something THIN was bitten from both sides.
+    #                               Measured across five worst-frame cases: 0.70-0.95.
+    # Keep reporting the worst frame -- a 16-frame background wedge averaged to 99.9% and
+    # vanished, which is why the rule exists. Just never read a worst-frame FRACTION as
+    # damage without its denominator.
+    art_px, art_lost, art_perim = [], [], []
     fade_series = {c: [] for c in comps}
     for i in idxs:
         src.seek(i)
@@ -153,6 +177,9 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
         bg.append(float((al[outside] == 0).mean()) if outside.any() else 1.0)
         inter.append(float((al[interior] > 0).mean()) if interior.any() else 1.0)
         art.append(float((al[arts] > 0).mean()) if arts.any() else 1.0)
+        art_px.append(int(arts.sum()))
+        art_lost.append(int((al[arts] == 0).sum()) if arts.any() else 0)
+        art_perim.append(_perimeter(arts) if arts.any() else 0)
         edge.append(_edge_cleanliness(o))
         for c in comps:
             live = (lab == c) & (d > TOL)
@@ -167,9 +194,18 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
         (coh, model, _), _ = min(graded, key=lambda t: t[0][0])   # WORST component
 
     worst = int(np.argmin(bg)) if bg else 0
+    aw = int(np.argmin(art)) if art else 0
+    peak = max(art_px) if art_px else 0
+    ratios = [l / p for l, p in zip(art_lost, art_perim) if p > 0]
     return {'bg_removed_worst': min(bg) if bg else 1.0,
             'interior_kept_worst': min(inter) if inter else 1.0,
             'art_kept_worst': min(art) if art else 1.0,
+            'art_kept_worst_frame': idxs[aw] if idxs else 0,
+            'art_px_at_worst': art_px[aw] if art_px else 0,
+            'art_px_peak': peak,
+            'art_frame_share_at_worst': (round(art_px[aw] / peak, 4)
+                                         if peak else None),
+            'art_lost_over_perimeter': (round(max(ratios), 3) if ratios else None),
             'edge_cleanliness': min(edge) if edge else 1.0,
             'fade_coherence': coh,
             'fade_model': model,

@@ -134,6 +134,9 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--recommend` called a real design region "incidental" background | §34.3 (check it before trusting it) |
 | An interior area of the design came out transparent | §34.3 |
 | `--tumble-safe` seems to do nothing | §34.4 (`--recover-fade-alpha` disables it) |
+| The outline looks soft or "not a clean polish" on a WebP/AVIF | §34.5 (that is the antialiasing, not a fringe) |
+| A measurement says erosion destroyed a huge share of the artwork | §34.5 (a perimeter cost over a shrinking area) |
+| `--auto` changed my erosion level and the docs said it would not | §34.5 (the docs were wrong, not the code) |
 | `--remove-region` hits the right spot on frame 0 and nowhere else | §33 |
 | Two identical same-coloured features, opposite treatment | §33 (seed one; identity is carried by continuity) |
 | A whole sprite pack detected at 20-25% while others are at 100% | §32.7 |
@@ -2112,7 +2115,7 @@ One of thirty of our own files clears a 0.02 threshold. The medians are indistin
 
 
 ## 34. What three fresh sessions on five real assets found that every automated gate missed
-**Also searched as:** truncated animation · stops halfway · plays partially · pops instead of fading · sudden jump in opacity · design region deleted · flag ignored · flags conflict · unattended run shipped a broken file
+**Also searched as:** truncated animation · stops halfway · plays partially · pops instead of fading · sudden jump in opacity · design region deleted · flag ignored · flags conflict · unattended run shipped a broken file · soft outline · not a clean polish · perimeter versus area · shrinking subject · denominator collapsed · metric artefact · style choice not a defect
 
 Three simulated fresh sessions were each handed this package and five real animated icons, under three tiers of user request. **Five defects, three of them severe, on a build that had just passed a 797-asset corpus score, an xhigh code review and a full PRE/POST render gate.** The full write-up, methodology and caveats live in the development repo; what follows is what a live session needs in order to recognise and route around each one.
 
@@ -2160,10 +2163,32 @@ When a region IS dismissed, the message now names its pixel count, its share of 
 ### 34.4 `--recover-fade-alpha` silently disables every protection flag
 The render path for recovered alpha takes its own branch and never applies `protected_masks`, so `--tumble-safe`, `--protect-outline-color` and `--protect-region` are ignored with no warning when combined with it. Measured on an asset that needs fade recovery AND tumble protection: only the first happens. **If you need both, you cannot currently have both** — pick the one the asset needs more, and say which in the delivery note.
 
-### 34.5 Two erosion settings disagree, and neither is settled
-`--auto` calibrates `--edge-cleanup-erosion` against the asset's own fringe curve **by default** — SKILL.md's sentence saying `--auto-erosion` is what enables it is stale, the code enables it whenever you do not pass an explicit erosion. On an 8-bit-alpha output that calibration **overrides the documented WebP default of 0**, and measured on a real asset it cost **2,878 art pixels**.
+### 34.5 Two erosion settings disagreed — and both filed items were wrong about which
+Two findings from the trial contradicted each other. One: `--auto` calibrates `--edge-cleanup-erosion` by default while SKILL.md said `--auto-erosion` was what enabled it, and the calibration costs 2,878 art pixels on one asset by overriding the documented WebP default of 0. The other: erosion 0 leaves visible outline artefacting a reviewer noticed on three of five assets. Settled together 2026-08-20, and **neither said what it appeared to say.**
 
-⚠️ **And the opposite complaint is also true and also measured.** Human review of the same trial found that erosion 0 leaves visible antialiasing artefacting along the outline on several assets, where erosion 1 looked clean. **So the two known problems point in opposite directions and neither has been settled by measurement.** Until they are: if artwork loss matters more than a slightly soft outline, pass `--edge-cleanup-erosion 0` explicitly; if outline cleanliness matters more, pass `1`. **Passing it explicitly is the point** — it is the only way to stop the calibration deciding for you.
+**Measured on the calibrator's own fringe metric — the pale-near-background share of the outer opaque ring, an RGB measure — at erosion 0 / 1 / 2, with what the calibrator actually picked:**
+
+| asset | 0 | 1 | 2 | picked | correct? |
+|---|---|---|---|---|---|
+| galaxy | 0.0000 | 0.0000 | 0.0000 | 0 | ✅ no fringe exists |
+| satellite | 0.0000 | 0.0000 | 0.0000 | 0 | ✅ no fringe exists |
+| hurricane | 0.0521 | 0.0362 | 0.0358 | 0 | ✅ gain within tolerance |
+| growth | 0.1548 | 0.0219 | 0.0219 | 1 | ✅ real fringe, 7× reduction |
+| rocket | 0.1462 | 0.0371 | 0.0373 | 1 | ✅ real fringe, 4× reduction |
+
+**Five out of five, and it genuinely ran on all five** — the two flat-zero curves were checked for vacuity rather than assumed: 11/11 and 10/10 frames measured, exactly 0.0000 on every individual frame. So **the code is right and the SKILL.md sentence was the bug**, which is the opposite of how the first item reads.
+
+**The 2,878 pixels are the price of a correct decision** — 0.27% of that asset's opaque pixels, buying a 0.155 → 0.022 fringe reduction.
+
+⚠️ **The second item is a PREFERENCE, not a defect.** On the two assets whose outlines the reviewer disliked, the fringe metric is a hard zero at every level: there is nothing to trim. Erosion 1 improves the *look* only by deleting the antialiasing ramp — which is exactly what the 8-bit-alpha rule exists to preserve. It stays available as `--edge-cleanup-erosion 1` and is documented in SKILL.md as a style choice.
+
+⚠️ **The trap this section really exists for: "report the WORST frame, never the mean" has a boundary, and it is easy to walk straight into.** An alpha-based edge score said erosion 1 was a large win on the two zero-fringe assets — because a soft antialiased edge legitimately carries partial alpha, so a metric counting partial alpha as "unclean" *rewards destroying antialiasing*. And a worst-frame **fraction** said erosion 1 destroyed 21% of one asset's artwork. Both were artefacts:
+
+**Erosion removes a PERIMETER (O(r)) while "art pixels present" is an AREA (O(r²)), so a fixed 1px trim costs a fraction that grows without bound as the subject shrinks.** That asset's worst frame is one where the rocket has nearly left the canvas: it holds **1,149 art pixels against a 90,004-pixel peak — 1.3% of the animation's own artwork** — and loses 695 of them. The largest fraction in the set sits on the frame with almost nothing in it.
+
+**The discriminator is cheap and decisive: compare the lost pixels to the object's PERIMETER at that frame.** A 1px erosion cannot cost more than about one perimeter ring; anything beyond that means something THIN was bitten from both sides. Measured across the trial assets, `lost / perimeter` ran **0.70–0.97** — always under one full ring. **A defect's absolute magnitude stays large as the denominator shrinks; a geometric cost shrinks with it.**
+
+✅ **This is fixed in the measurement, not just written down here.** The output grader used during development (it lives in the development repo's measurement harness and is not part of this package, like the corpora in §23) now reports, alongside the worst-frame kept-fraction, **how much of the animation's peak artwork was present on that frame** — 0.013 for the case above against 0.789–0.993 for every other asset in the set — and **the loss divided by that frame's perimeter**, which is the scale-free version. Reading a worst-frame fraction as damage without its denominator is no longer possible by accident. Keep reporting the worst frame — a 16-frame background wedge averaging to 99.9% is why that rule exists — just never read a worst-frame FRACTION as damage without checking what it is a fraction OF.
 
 ### 34.6 The transferable part
 All five defects live in the space between *"the measurement is correct"* and *"the output is what the user wanted"*, and every automated gate here inspects only the first. A corpus tells you the classifier is right; a render diff tells you nothing changed; neither tells you the product is right. **When something looks wrong to a human and every number says clean, the numbers are answering a different question.**
