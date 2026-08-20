@@ -1956,6 +1956,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # fired and the detector found nothing, None = not run, which is never read as a pass.
     fade_colors_confirmed = None
     fade_colors_detected = None
+    fade_ladder = None
     if any(_r['classification'] == 'gradient_fade' for _r in band_interior_regions):
         try:
             _prov = build_art_palette(all_rgb_frames, bg_rgb)
@@ -1963,6 +1964,12 @@ def analyze(input_path, max_samples=40, tolerance=15):
                 _fi = sorted(detect_fading_colors(all_rgb_frames, bg_rgb, _prov))
                 fade_colors_detected = [rgb_to_hex(tuple(int(v) for v in _prov[i])) for i in _fi]
                 fade_colors_confirmed = bool(_fi)
+                # A LADDER means the detector is looking at one colour painted at several
+                # lightnesses, not at a flattened translucent element -- see
+                # detect_fade_ladder. It is reported here and read by recommend() AND by
+                # recover_fade_alpha_frames(), because a prediction that the renderer does
+                # not share is exactly the split SS35/SS36 were.
+                fade_ladder = detect_fade_ladder(bg_rgb, [_prov[i] for i in _fi])
             else:
                 # An empty provisional palette is the photographic/gradient case
                 # recover_fade_alpha_frames refuses outright -- not a fade either.
@@ -1992,6 +1999,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'detected_bg_color': rgb_to_hex(bg_rgb),
         'fade_colors_confirmed': fade_colors_confirmed,
         'fade_colors_detected': fade_colors_detected,
+        'fade_palette_is_ladder': fade_ladder,
         'has_fully_transparent_frame': bool(blank_frames),
         'fully_transparent_frames': blank_frames,
         'background_color_stability': background_color_stability,
@@ -2267,6 +2275,39 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             "(measured 2026-08-20: bg_removed_worst 0.0000 on the worst case). If you can "
             "see a fade the detector missed, name its colour with --fade-color, which "
             "bypasses detection entirely.")
+    elif (any(r['classification'] == 'gradient_fade' for r in band_regions)
+          and report.get('fade_palette_is_ladder')):
+        # The detector found translucency, and it found TOO MUCH of it in one direction:
+        # a fade LADDER, i.e. one colour painted at several lightnesses rather than a
+        # translucent element the export flattened (see detect_fade_ladder). Reconstructing
+        # alpha from paleness is the wrong model for a painted fade -- it composites
+        # identically over the original background and visibly wrongly over anything else --
+        # and the ladder makes it fail in the specific way SS34.2 filed: `protect_parents`
+        # exempts every rung from blend rejection, so each faded pixel unmixes against its
+        # OWN rung at t~=1.0 and comes out opaque. Measured 2026-08-20 on hurricane.gif,
+        # the filed defect, scored through the real CLI:
+        #   with --recover-fade-alpha    fade_coherence 0.688, bg_removed_worst 0.3902,
+        #                                edge_cleanliness 0.0000  (a translucent ghost)
+        #   without it, same flags       fade_coherence 0.962-0.998, bg_removed 1.0000,
+        #                                edge_cleanliness 0.9262-1.0000
+        # Better on every axis, not just the one this rule targets. Collapsing the ladder
+        # instead was built, measured at 0.688 -> 0.477 and REVERTED (SS34.2) -- do not
+        # re-derive it.
+        _lad = report['fade_palette_is_ladder']
+        evidence.append(
+            f"NOT recommending --recover-fade-alpha: the {_lad['total_fading_colors']} "
+            f"'fading' colours include {_lad['members']} that are the SAME colour at "
+            f"different lightnesses (cosine >= {_lad['min_pairwise_cosine']}, at distances "
+            f"{_lad['distances_from_bg']} from the background). That is a fade the artist "
+            f"PAINTED, not one the export flattened: a flattened fade lies exactly on the "
+            f"background-to-colour line and contributes ONE palette colour, and these do "
+            f"not. Reconstructing alpha from paleness would make solid pale artwork "
+            f"see-through -- it composites correctly over this background and wrongly over "
+            f"any other -- and the ladder makes every faded pixel unmix against its own "
+            f"rung and come out opaque anyway (references/lessons.md SS34.2). Keep the art "
+            f"opaque with its own pale colours: plain background removal is the right "
+            f"answer here. If you can see a genuinely translucent element the detector "
+            f"mis-grouped, name its colour with --fade-color, which bypasses detection.")
     elif any(r['classification'] == 'gradient_fade' for r in band_regions):
         # A fade means the FORMAT decision is already made: GIF structurally
         # cannot carry it. So recommend the flag that RECONSTRUCTS the alpha,
@@ -2436,6 +2477,20 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             f"gradient-fade screen, but the fade detector found no translucent colour in "
             f"the art palette, so there is no partial transparency for WebP/AVIF to carry "
             f"that GIF cannot. WebP/AVIF are still the better containers on edge quality. "
+            f"Ranking:\n" + _rank)
+    elif _fades and report.get('fade_palette_is_ladder'):
+        # A PAINTED fade is opaque artwork in pale colours, so GIF can carry it faithfully.
+        # Saying "webp-or-avif, with --recover-fade-alpha" here would tell an autonomous run
+        # to reach for the flag this report just declined -- the same screen/detector split
+        # SS35 closed, one level up in the same function.
+        report['recommended_format'] = 'gif-ok'
+        evidence.insert(0,
+            f"FORMAT: GIF is acceptable. {len(_fades)} region(s) show a gradient fade, but "
+            f"the palette says it was PAINTED rather than flattened "
+            f"({report['fade_palette_is_ladder']['members']} rungs of one colour at "
+            f"cosine >= {report['fade_palette_is_ladder']['min_pairwise_cosine']}), so the "
+            f"art is opaque and there is no partial transparency for WebP/AVIF to carry that "
+            f"GIF cannot. WebP/AVIF are still the better containers on edge quality. "
             f"Ranking:\n" + _rank)
     elif _fades:
         report['recommended_format'] = 'webp-or-avif'
@@ -4934,6 +4989,66 @@ def detect_fading_colors(rgb_frames, bg_rgb, palette, min_px=2000, partial_fract
     return fading
 
 
+def detect_fade_ladder(bg_rgb, colors, min_members=3, min_cos=0.95):
+    """
+    Is this set of "fading" colours actually one colour PAINTED at several
+    lightnesses -- a fade LADDER -- rather than translucent elements the export
+    flattened?
+
+    The distinction is what decides whether --recover-fade-alpha is the right
+    answer at all, and it falls straight out of build_art_palette's own
+    arithmetic. A FLATTENED fade is `bg*(1-a) + c*a` by construction, so every
+    intermediate stage lies EXACTLY on the bg->colour line and pass 1's blend
+    rejection (residual < FADE_RESIDUAL_TOLERANCE) removes all of them: one
+    element contributes exactly ONE detected colour. A PAINTED fade carries the
+    artist's own hue drift, so its stages sit just off that line, survive pass 1,
+    and show up as a chain of near-collinear colours at descending distances.
+
+    Measured 2026-08-20 on the four assets --recover-fade-alpha exists for --
+    crystal, gift, love and heart -- ONE detected fading colour each, zero ladder
+    members. On hurricane.gif, the filed cliff defect (references/lessons.md
+    SS34.2): EIGHT detected, FIVE of them mutually collinear at cosine 0.968,
+    sitting at distances 316.5, 267.3, 223.5, 195.7 and 105.8 from the
+    background. That is a categorical gap, not a tuned threshold.
+
+    Why it matters: `protect_parents` exempts every detected fading colour from
+    blend rejection in pass 2, so when the detector flags a ladder the exemption
+    INVERTS and the rungs survive into the final palette. Every faded pixel then
+    unmixes against its OWN rung at t~=1.0 and renders fully opaque -- the cliff.
+    Collapsing the ladder was tried and made the asset worse (SS34.2); not
+    reaching for the flag in the first place is the answer that measures better.
+
+    A ladder is anchored on its FARTHEST member -- rungs run inward along one ray
+    from the background -- so this counts, for each colour, how many others lie
+    within `min_cos` of it and no further from the background, and keeps the best
+    group. Returns None when there is nothing to judge.
+    """
+    if colors is None or len(colors) < min_members:
+        return None
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    vs = [np.asarray(c, dtype=np.float32) - bg for c in colors]
+    ds = [float(np.linalg.norm(v)) for v in vs]
+    best = []
+    for i, (vi, di) in enumerate(zip(vs, ds)):
+        if di <= 0:
+            continue
+        group = [j for j, (vj, dj) in enumerate(zip(vs, ds))
+                 if dj > 0 and dj <= di + 1e-6
+                 and float(vi @ vj) / (di * dj) >= min_cos]
+        if len(group) > len(best):
+            best = group
+    if len(best) < min_members:
+        return None
+    gd = sorted((ds[j] for j in best), reverse=True)
+    pair_cos = [float(vs[a] @ vs[b]) / (ds[a] * ds[b])
+                for ai, a in enumerate(best) for b in best[ai + 1:]]
+    return {'members': len(best),
+            'total_fading_colors': len(colors),
+            'min_pairwise_cosine': round(min(pair_cos), 4) if pair_cos else None,
+            'distances_from_bg': [round(d, 1) for d in gd],
+            'distance_span_ratio': round(gd[0] / max(gd[-1], 1e-6), 2)}
+
+
 def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
     """
     Full alpha for every frame by palette unmixing, recovering translucency that
@@ -4985,8 +5100,29 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                 provisional = np.vstack([provisional, w[None, :]])
                 parents.append(w)
     else:
-        parents = [provisional[i] for i in
-                   sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))]
+        _auto_fi = sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))
+        parents = [provisional[i] for i in _auto_fi]
+        # PREVENTION, paired with the prediction in analyze()/recommend() -- the same
+        # three-place split SS35 and SS36 both turned on. A run that never called
+        # --recommend must still be stopped, and stopped by the SAME function, so the two
+        # cannot drift apart.
+        _ladder = detect_fade_ladder(bg_rgb, parents)
+        if _ladder:
+            raise SystemExit(
+                f"--recover-fade-alpha found a fade LADDER, not a flattened translucent "
+                f"element: {_ladder['members']} of the {_ladder['total_fading_colors']} "
+                f"detected 'fading' colours are the same colour at different lightnesses "
+                f"(cosine >= {_ladder['min_pairwise_cosine']}, distances "
+                f"{_ladder['distances_from_bg']} from the background). A fade the export "
+                f"FLATTENED lies exactly on the background-to-colour line and contributes "
+                f"one palette colour; a fade the artist PAINTED does not. Recovering alpha "
+                f"here makes solid pale artwork see-through, and every faded pixel unmixes "
+                f"against its own rung and renders opaque anyway -- measured on the "
+                f"motivating asset as a translucent ghost of the background "
+                f"(bg_removed_worst 0.3902) against 1.0000 without the flag "
+                f"(references/lessons.md SS34.2). Drop the flag and run normal background "
+                f"removal, or name the genuinely translucent colour with --fade-color, "
+                f"which bypasses detection entirely.")
     palette = build_art_palette(rgb_frames, bg_rgb, protect_parents=parents,
                                 force_include=parents if fade_hexes else None)
     if len(palette) == 0:

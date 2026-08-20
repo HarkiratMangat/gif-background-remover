@@ -2173,6 +2173,34 @@ The source colour moves smoothly while alpha holds flat at full opacity and then
 
 **The standing advice is therefore unchanged and is a boundary, not a workaround:** for a PAINTED fade, prefer keeping the art opaque with its own pale colours (a plain cutout) over reconstructing alpha from paleness. Reach for `--recover-fade-alpha` when the source genuinely once had alpha.
 
+✅ **RESOLVED 2026-08-20 — and not by fixing the ramp. The tool can now TELL THE TWO APART, so it declines the flag instead.** The advice above was a boundary a human had to apply; an autonomous run cannot apply advice. The discriminator falls straight out of `build_art_palette`'s own arithmetic, and once seen it needs no threshold tuning:
+
+> A **flattened** fade is `bg*(1-a) + c*a` **by construction**, so every intermediate stage lies EXACTLY on the background-to-colour line and pass 1's blend rejection (`residual < FADE_RESIDUAL_TOLERANCE`, 10.0) deletes all of them. One flattened element therefore contributes **exactly one** colour to `fade_colors_detected`. A **painted** fade carries the artist's own hue drift, so its stages sit just OFF that line, survive pass 1, and appear as a chain of near-collinear colours at descending distances — a LADDER.
+
+Measured through `analyze()` on the four assets `--recover-fade-alpha` exists for and on the filed defect:
+
+| asset | fading colours detected | ladder members |
+|---|---|---|
+| `crystal_ORIGINAL.gif` | 1 (`fdcb50`) | 0 |
+| `gift_ORIGINAL.gif` | 1 (`fd6050`) | 0 |
+| `love_ORIGINAL.gif` | 1 (`fdcb50`) | 0 |
+| `heart_ORIGINAL.gif` | 1 (`384998`) | 0 |
+| `hurricane.gif` | **8** | **5**, cosine ≥ 0.968, at distances 316.5 / 267.3 / 223.5 / 195.7 / 105.8 |
+
+That is a categorical gap, not a tuned constant. The measured residual that produces it is visible by hand: hurricane's `5a4f8c` sits **13.8** off the white→`2f377d` line, against a 10.0 tolerance — just far enough to survive, which is exactly what a hand-picked tint looks like and exactly what an arithmetic blend never is.
+
+**What declining the flag is worth, scored through the real CLI on hurricane** (same other flags each time, `--tumble-safe --erosion-exempt-max-size 28`):
+
+| | `fade_coherence` | `bg_removed_worst` | `edge_cleanliness` | `art_kept_worst` |
+|---|---|---|---|---|
+| with `--recover-fade-alpha` (.webp) | **0.688** | **0.3902** | **0.0000** | 1.0000 |
+| without, .gif | 0.962 | 1.0000 | 1.0000 | 0.9487 |
+| without, .webp | **0.998** | 0.9983 | 0.9262 | 1.0000 |
+
+⚠️ **Better on EVERY axis, not just the one the rule targets — and `bg_removed_worst` 0.3902 says the filed "glitchy fade" was also keeping 61% of the background as a translucent ghost**, the same failure §35 measured on `_ (7).gif`. The defect was never only a cliff. The acceptance was fixed in advance at `fade_coherence` ≥ 0.90 (the same bar §34.2's reverted ladder-collapse failed at 0.477) and both no-flag variants clear it.
+
+`detect_fade_ladder()` has **three call sites and one implementation**, because the two-consumer split is what §35 and §36 both were: `analyze()` reports `fade_palette_is_ladder`, `recommend()` declines the flag and stops calling the format `webp-or-avif *with* --recover-fade-alpha`, and `recover_fade_alpha_frames()` REFUSES outright so a run that never called `--recommend` is stopped too. `--fade-color` still bypasses all of it — naming the colour is the user overriding detection, not asking detection to try harder.
+
 ### 34.3 `--recommend` can name a real design region as background — check it before trusting it
 Observed verbatim on a rocket whose white body sits inside a navy outline: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region was the artwork.** Two of the three sessions followed the recommendation and deleted **83% of the body**; both reported success afterwards, because every mechanical check they ran agreed.
 

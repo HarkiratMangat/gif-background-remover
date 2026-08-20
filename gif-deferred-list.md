@@ -67,24 +67,6 @@ Each yields FRAME INDICES, so escalation adds a handful of frames to the spread 
 
 **Do:** decide whether to pad/crop later frames to the canvas or to refuse with a clear message. ⚠️ A crash is not the worst outcome here and a silent mis-align would be; whatever is chosen must not quietly reshape artwork. 1 of 105 dark-corpus assets, so the frequency is low — but it is a hard `rc=1` with a traceback rather than an actionable refusal, which is the same "warning versus gate" distinction the truncating-GIF item turned on.
 
-### `[P1 · S · Opus5-High]` `--recover-fade-alpha` maps colour-distance to alpha as a CLIFF, not a ramp *(filed 2026-08-19)*
-
-Measured on `hurricane.gif`, sampling the octagon fill between the shuriken and the edge:
-
-| frame | source distance from white | output alpha |
-|---|---|---|
-| 0 | 347.8 | 255 |
-| 12 | 258.7 | **255** |
-| 20 | 197.8 | 140.5 |
-| 32 | 105.1 | 70.5 |
-| 40 | 44.3 | 24.2 |
-
-The source colour moves smoothly; alpha holds flat at 255 through frame 12 then drops to 140 within eight frames. Reviewed by eye as "super glitchy and buggy… despite it being a gradual smooth fadeout in the original". **All three trial agents produced BYTE-IDENTICAL output here** (same SHA over every frame), so this is one product behaviour, not a usage difference.
-
-⚠️ **UPDATED 2026-08-20 — the mechanism was FOUND and the obvious fix was BUILT, MEASURED and REJECTED. Do not re-derive it.** The palette is a fade LADDER: `protect_parents` exempts every detected fading colour from `build_art_palette`'s blend rejection, and on this asset the detector flags **8 of 10** colours, so the exemption inverts and the fade's own stages survive as palette entries — one navy at distances **356.2, 316.5, 267.3, 223.5, 195.7, 155.6 and 105.8** from the background, each within cosine 0.97–0.999 of a farther rung, against 0.55 and 0.69 for the two unrelated art colours. Every faded pixel unmixes against its OWN rung at t≈1.0 and renders opaque. Collapsing the ladder dropped four rungs correctly and moved fade coherence **0.688 → 0.477**, with background (0.390) and edge (0.000) unchanged — worse on the axis it targeted, no gain anywhere else. The acceptance criterion was set at >0.90 *before* any tuning, so it was reverted. **A fix that removes a genuine defect can still leave the output further from correct than it started.** Full write-up: `references/lessons.md` §34.2. The ladder is real and is not the whole cause; whatever closes this needs a different mechanism.
-
-⚠️ **The deeper error, and it may not be fixable by tuning:** `--recover-fade-alpha` treats *pale* as *translucent*. Hurricane's badge is a solid pale shape the animator drew getting lighter, not a see-through one. Reconstructing alpha from paleness composites identically over white and wrongly over anything else. **For a fade drawn against the background colour, alpha recovery and colour fidelity are different goals**, and the tool currently assumes they are the same. `references/lessons.md` §16 is the existing evidence trail.
-
 ### `[P3 · S · Sonnet5-High]` `CatPackFree` sits at 0.250 (1/4) — four assets *(filed 2026-08-19)*
 
 The last sprite pack below 100%. The seventh discriminator (§32.7) took `Tiny RPG Character Asset Pack` from 0.235 to 0.941 and did not move this one. The three misses are `Box3.png` (cc 49, cliff 0.176, band 0.359), `Idle.png` (cc 52, cliff 0.114, band 1.192) and `drculacat.png` (cc 20, cliff 0.281, band 0.898) — note the BAND is wide on all three, which is why the narrow-band rule abstains and why they are not the same shape as the pack that was just fixed. ✅ **The four were inspected by eye at 5x on 2026-08-19, and all four labels are CORRECT** — a cat-in-box strip, an idle strip, a Dracula-cat strip and an isometric furniture sheet, all unmistakably drawn on a pixel grid. So these are three real misses, not label noise, and §32's nine-mislabels warning did not repeat here.

@@ -13,6 +13,30 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ---
 
+## ✅ `--recover-fade-alpha`'s CLIFF — closed by declining the flag, not by rebuilding the ramp — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
+
+**What happened.** The cliff was real and its mechanism (a fade LADDER surviving into the palette) had already been found and its obvious fix — collapsing the ladder — built, measured at `fade_coherence` 0.688 → 0.477, and REVERTED. The close came from asking the prior question instead: *is this fade one the export flattened, or one the artist painted?* `--recover-fade-alpha` only ever made sense for the first, and that had been standing advice a human had to apply rather than something the tool could decide.
+
+The discriminator needs no tuned constant. A flattened fade is `bg*(1-a)+c*a` **by construction**, so its stages lie exactly on the background-to-colour line and `build_art_palette`'s pass-1 blend rejection deletes them — **one** entry in `fade_colors_detected`. A painted fade carries hue drift, survives, and appears as a near-collinear LADDER. Measured through `analyze()`: `crystal`, `gift`, `love`, `heart` — the four assets the flag exists for — report **1 fading colour and 0 rungs each**; `hurricane.gif` reports **8 and a 5-rung ladder at cosine 0.968**, at distances 316.5 / 267.3 / 223.5 / 195.7 / 105.8.
+
+Scored through the real CLI on hurricane, same other flags: with the flag `fade_coherence` **0.688**, `bg_removed_worst` **0.3902**, `edge_cleanliness` **0.0000**; without it **0.962–0.998**, **0.9983–1.0000**, **0.9262–1.0000**. ⚠️ Better on every axis, and `bg_removed_worst` 0.3902 says the filed "glitchy fade" was *also* keeping 61% of the background as a translucent ghost — the defect was never only a cliff. The acceptance bar was fixed in advance at ≥0.90, the same bar the reverted ladder-collapse failed.
+
+`detect_fade_ladder()` has three call sites and one implementation — `analyze()` reports `fade_palette_is_ladder`, `recommend()` declines the flag and stops calling the format `webp-or-avif`, `recover_fade_alpha_frames()` refuses outright — because a prediction the renderer does not share is exactly what §35 and §36 were. `--fade-color` still bypasses detection entirely. Full story: `references/lessons.md` §34.2; falsifiers in `scripts/harness/test_fade_ladder.py`.
+
+**Original entry, struck through:**
+
+> ~~### `[P1 · S · Opus5-High]` `--recover-fade-alpha` maps colour-distance to alpha as a CLIFF, not a ramp *(filed 2026-08-19)*~~
+>
+> ~~Measured on `hurricane.gif`, sampling the octagon fill between the shuriken and the edge:~~
+>
+> ~~| frame | source distance from white | output alpha |~~ ~~|---|---|---|~~ ~~| 0 | 347.8 | 255 |~~ ~~| 12 | 258.7 | **255** |~~ ~~| 20 | 197.8 | 140.5 |~~ ~~| 32 | 105.1 | 70.5 |~~ ~~| 40 | 44.3 | 24.2 |~~
+>
+> ~~The source colour moves smoothly; alpha holds flat at 255 through frame 12 then drops to 140 within eight frames. Reviewed by eye as "super glitchy and buggy… despite it being a gradual smooth fadeout in the original". **All three trial agents produced BYTE-IDENTICAL output here** (same SHA over every frame), so this is one product behaviour, not a usage difference.~~
+>
+> ~~⚠️ **UPDATED 2026-08-20 — the mechanism was FOUND and the obvious fix was BUILT, MEASURED and REJECTED. Do not re-derive it.** The palette is a fade LADDER: `protect_parents` exempts every detected fading colour from `build_art_palette`'s blend rejection, and on this asset the detector flags **8 of 10** colours, so the exemption inverts and the fade's own stages survive as palette entries — one navy at distances **356.2, 316.5, 267.3, 223.5, 195.7, 155.6 and 105.8** from the background, each within cosine 0.97–0.999 of a farther rung, against 0.55 and 0.69 for the two unrelated art colours. Every faded pixel unmixes against its OWN rung at t≈1.0 and renders opaque. Collapsing the ladder dropped four rungs correctly and moved fade coherence **0.688 → 0.477**, with background (0.390) and edge (0.000) unchanged — worse on the axis it targeted, no gain anywhere else. The acceptance criterion was set at >0.90 *before* any tuning, so it was reverted. **A fix that removes a genuine defect can still leave the output further from correct than it started.** Full write-up: `references/lessons.md` §34.2. The ladder is real and is not the whole cause; whatever closes this needs a different mechanism.~~
+>
+> ~~⚠️ **The deeper error, and it may not be fixable by tuning:** `--recover-fade-alpha` treats *pale* as *translucent*. Hurricane's badge is a solid pale shape the animator drew getting lighter, not a see-through one. Reconstructing alpha from paleness composites identically over white and wrongly over anything else. **For a fade drawn against the background colour, alpha recovery and colour fidelity are different goals**, and the tool currently assumes they are the same. `references/lessons.md` §16 is the existing evidence trail.~~
+
 ## ✅ `--recommend`'s enclosure evidence now says "unsure" where the numbers already said unsure — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
 
 *Two filed items, same shape, closed together.*
