@@ -257,6 +257,155 @@ def detect_bg_color(rgb, warn=True):
     return max(set(corners), key=corners.count)
 
 
+# `--bg-color` is ONE colour and detect_bg_color reads ONE frame, so an animation whose
+# background is RECOLOURED partway through cannot be processed at all: every frame after the
+# change keys against a colour that is no longer on the canvas, and its whole background
+# survives into the output as opaque artwork. Nothing downstream reports it -- the file is
+# written, it has plenty of opaque pixels, so `_refuse_empty_render` is satisfied and every
+# quality check reads a healthy render. The output is silently and totally wrong.
+#
+# Measured on a 30-frame asset whose background cycles magenta -> pink -> red -> orange ->
+# yellow -> green across frames 11-15: the frame-0 colour covers 2.37% of the canvas on frame
+# 0 and 0.00% on frames 11, 12, 13 and 15.
+#
+# 40, and deliberately NOT the run's --tolerance: this is a margin of KIND, and the two
+# nearest real readings on that asset are 47 apart. Frames 1 and 3 read a corner 16 units from
+# the reference -- the identical magenta, re-quantized by the GIF's palette -- while the first
+# genuinely recoloured frame reads 63 and the rest 161-242. A threshold at --tolerance (15)
+# would call palette drift a background change.
+BG_RECOLOR_DISTANCE = 40
+# ...and the reference plane must have COLLAPSED, not merely shrunk. Both halves are
+# load-bearing, and each ALONE has a measured false positive in the 65-asset animated control:
+# a corner move alone fires wherever art sweeps across a corner (one control asset reads 11
+# distinct corner colours with a perfectly constant background), and a coverage collapse alone
+# fires wherever art briefly fills the canvas (two control assets bottom out at 0.0% and 0.7%
+# of the frame-0 colour while their corners never move at all).
+BG_RECOLOR_COLLAPSE = 0.15
+
+
+def probe_frame_background(rgb, bg_rgb, tolerance=15, bg_mask=None):
+    """One frame's background reading, for the dense scan below.
+
+    Returns this frame's own corner-majority colour, how far that sits from the reference
+    colour, and what fraction of the canvas each of the two covers.
+
+    Cheap by construction, because the scan this feeds has to run on EVERY frame of every
+    asset: four pixel reads, one `.mean()` over a mask the caller already computed, and a
+    second `color_mask` only on a frame whose corner colour has actually moved. Measured over
+    65 real animated assets with constant backgrounds, 52 never pay that second mask at all and
+    the other 13 pay it only on the handful of frames where art crosses a corner.
+    """
+    if bg_mask is None:
+        bg_mask = color_mask(rgb, bg_rgb, tolerance)
+    h, w, _ = rgb.shape
+    corners = [tuple(int(v) for v in c)
+               for c in (rgb[0, 0], rgb[0, w - 1], rgb[h - 1, 0], rgb[h - 1, w - 1])]
+    own = max(set(corners), key=corners.count)
+    dist = int(np.abs(np.asarray(own, dtype=int) - np.asarray(bg_rgb, dtype=int)).max())
+    cov_ref = float(bg_mask.mean())
+    cov_own = cov_ref if dist <= tolerance else float(color_mask(rgb, own, tolerance).mean())
+    return {
+        'corner_color': rgb_to_hex(own),
+        'distance_from_reference': dist,
+        'reference_coverage': round(cov_ref, 5),
+        'corner_color_coverage': round(cov_own, 5),
+    }
+
+
+def summarise_background_color_stability(probes):
+    """Does the background get RECOLOURED partway through the animation?
+
+    A frame counts as recoloured when BOTH halves hold: its corner-majority colour is more
+    than BG_RECOLOR_DISTANCE from the reference colour, AND the reference colour's coverage
+    has collapsed below BG_RECOLOR_COLLAPSE of what it held on frame 0.
+
+    Measured over 71 real animated assets -- 6 with a background that changes colour, 65
+    without. All 6 fire; all 65 have ZERO qualifying frames, so this is not a threshold the
+    control merely clears, it is one the control never reaches. The verdict is invariant over
+    BG_RECOLOR_DISTANCE 24-120 and BG_RECOLOR_COLLAPSE 0.05-0.50, i.e. the numbers are not
+    shaped around the six positives. The corpus lives in the development repo and is not
+    re-runnable from this package. references/lessons.md SS35
+
+    THE SCAN MUST BE DENSE. A spread cannot see a transient: a 10-frame sample of the
+    30-frame asset above read 78.6% coverage at frame 10 while frame 12 was 0.0%, and the
+    whole colour cycle lasts five frames. This is the same reason the blank-frame scan in
+    analyze() runs on every frame rather than on `sample_idxs`.
+
+    `changes` is None -- never False -- whenever the question could not be asked. A guard
+    whose fall-through is the PASS value reports "fine" for "unmeasured", which is the one
+    answer a refusal must never be built on.
+    """
+    n = len(probes)
+    base = {
+        'changes': None,
+        'unverified_reason': None,
+        'frames_scanned': n,
+        'reference_coverage_frame_0': None,
+        'min_reference_coverage': None,
+        'min_reference_coverage_frame_index': None,
+        'distinct_corner_colors': len({p['corner_color'] for p in probes}),
+        'recolored_frame_indexes': [],
+        'recolored_colors': [],
+        'peak_recolored_plane_coverage': 0.0,
+        'recolor_distance_threshold': BG_RECOLOR_DISTANCE,
+        'recolor_collapse_threshold': BG_RECOLOR_COLLAPSE,
+    }
+    if n == 0:
+        base['unverified_reason'] = 'no frames were scanned'
+        return base
+    cov0 = probes[0]['reference_coverage']
+    base['reference_coverage_frame_0'] = cov0
+    _mins = min(range(n), key=lambda i: probes[i]['reference_coverage'])
+    base['min_reference_coverage'] = probes[_mins]['reference_coverage']
+    base['min_reference_coverage_frame_index'] = _mins
+    if n == 1:
+        # A genuine determination, not a fall-through: one frame cannot change.
+        base['changes'] = False
+        return base
+    if cov0 <= 0.001:
+        # The reference colour is not a background PLANE even on the frame it was read from,
+        # so "the plane collapsed" has no baseline to collapse from and the rule below would
+        # silently never fire. That is a vacuous pass; say so instead.
+        base['unverified_reason'] = (
+            f"the detected background colour covers only {cov0:.4%} of frame 0, so there is no "
+            f"reference plane to measure a collapse against -- background stability is "
+            f"UNVERIFIED on this input, not confirmed")
+        return base
+    hits = [i for i, p in enumerate(probes)
+            if p['distance_from_reference'] > BG_RECOLOR_DISTANCE
+            and p['reference_coverage'] < BG_RECOLOR_COLLAPSE * cov0]
+    base['changes'] = bool(hits)
+    base['recolored_frame_indexes'] = hits
+    seen = []
+    for i in hits:
+        if probes[i]['corner_color'] not in seen:
+            seen.append(probes[i]['corner_color'])
+    base['recolored_colors'] = seen
+    base['peak_recolored_plane_coverage'] = round(
+        max((probes[i]['corner_color_coverage'] for i in hits), default=0.0), 5)
+    return base
+
+
+def describe_changing_background(stability, bg_hex, n_frames):
+    """The one shared sentence-set for a changing background, so the report, the
+    recommendation and the refusal cannot drift apart."""
+    idx = stability['recolored_frame_indexes']
+    shown = ', '.join(str(i) for i in idx[:8]) + (' ...' if len(idx) > 8 else '')
+    cols = ', '.join(stability['recolored_colors'][:6]) + (
+        ' ...' if len(stability['recolored_colors']) > 6 else '')
+    return (
+        f"This animation's BACKGROUND CHANGES COLOUR partway through, and --bg-color is a "
+        f"single value. Frame(s) {shown} of {n_frames} read a background of {cols} -- more "
+        f"than {BG_RECOLOR_DISTANCE} units from the {bg_hex} detected on frame 0, whose own "
+        f"coverage collapses from {stability['reference_coverage_frame_0']:.1%} on frame 0 to "
+        f"{stability['min_reference_coverage']:.1%} on frame "
+        f"{stability['min_reference_coverage_frame_index']}. Keying one colour leaves every "
+        f"recoloured frame's background fully opaque, and NOTHING downstream reports it: the "
+        f"output is a valid file with plenty of opaque pixels, so the empty-render guard and "
+        f"every quality check pass. Split the animation at the colour change and process each "
+        f"run with its own --bg-color, or re-export it with a constant background.")
+
+
 def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
     """
     Measure whether the boundary between background and foreground is a
@@ -922,10 +1071,16 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # does to a transient -- a 10-frame spread over 30 read 78.6% at frame 10 while frame 12
     # was 0.0%. This costs nothing extra: the loop already computes frame_bg_mask.
     blank_frames = []
+    # The background-colour scan rides the same loop and the same mask, for the same reason:
+    # a transient is invisible to a spread, and both of these ARE transients. See
+    # summarise_background_color_stability for the measured cost of sampling instead.
+    bg_probes = []
     for i in range(n_frames):
         frame_bg_mask = color_mask(all_rgb_frames[i], bg_rgb, tolerance)
         if frame_bg_mask.all():
             blank_frames.append(i)
+        bg_probes.append(probe_frame_background(
+            all_rgb_frames[i], bg_rgb, tolerance, bg_mask=frame_bg_mask))
         m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
             worst_margin = m['margin_ratio']
@@ -1706,12 +1861,15 @@ def analyze(input_path, max_samples=40, tolerance=15):
             (int(_cid) for _cid, _fp in protected_footprints.items()
              if 0 <= _cy < H and 0 <= _cx < W and _fp[_cy, _cx]), None)
 
+    background_color_stability = summarise_background_color_stability(bg_probes)
+
     return {
         'n_frames_total': n_frames,
         'frames_sampled': len(sample_idxs),
         'detected_bg_color': rgb_to_hex(bg_rgb),
         'has_fully_transparent_frame': bool(blank_frames),
         'fully_transparent_frames': blank_frames,
+        'background_color_stability': background_color_stability,
         'source_has_pre_existing_transparency': 'transparency' in im.info,
         'edge_hardness': edge_hardness,
         'tumble_risk': tumble_risk,
@@ -1728,7 +1886,7 @@ def analyze(input_path, max_samples=40, tolerance=15):
 _FORMAT_RANK_EMITTED = False
 
 
-def recommend(input_path, tolerance=15):
+def recommend(input_path, tolerance=15, allow_changing_background=False):
     """
     Run analyze() and translate its report into a suggested command line
     plus the evidence behind each flag, per the decision tree SKILL.md's
@@ -2167,6 +2325,33 @@ def recommend(input_path, tolerance=15):
             f"If the goal is a smaller file, use --target-kb / --resize-max-dim on it directly; if "
             f"it is a recolour, that is outside what this skill does.")
         suggested = None
+
+    _bgs = report.get('background_color_stability') or {}
+    if _bgs.get('changes'):
+        # Prediction and prevention are different jobs, and this is the prediction half: an
+        # autonomous run pastes suggested_command verbatim, so on this input the field cannot
+        # hold a removal command. process() refuses independently, for the run that never
+        # asked. references/lessons.md SS35
+        _bg_msg = describe_changing_background(
+            _bgs, report['detected_bg_color'], report['n_frames_total'])
+        if allow_changing_background:
+            # The escape hatch has to reach THIS path too. --auto refuses on any
+            # not_applicable_reason, so leaving this branch unconditional made
+            # `--auto --allow-changing-background` fail while the flag's own help text said
+            # otherwise -- a documented override that does not work on the flagship
+            # autonomous path is the "fix every path, not the one you measured" failure.
+            evidence.insert(0, "--allow-changing-background WAS PASSED, so this is a WARNING "
+                               "and not a refusal. " + _bg_msg)
+            if suggested:
+                suggested += " --allow-changing-background"
+        elif _not_applicable is None:
+            _not_applicable = _bg_msg
+            suggested = None
+    elif _bgs.get('changes') is None and _bgs.get('unverified_reason'):
+        # UNVERIFIED, not clean. Said out loud rather than folded into silence, because the
+        # thing being reported is that a check could not run -- see SS13/SS16/SS17.
+        evidence.append("BACKGROUND STABILITY UNVERIFIED: " + _bgs['unverified_reason'] + ".")
+
     return {
         'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
@@ -5850,6 +6035,26 @@ def process(input_path, output_path, args, diagnostics=None):
             rgb_frames_key.append((_r.astype(np.float32) * _f + _bg_arr * (1.0 - _f)
                                    ).round().clip(0, 255).astype(np.uint8))
 
+    # The RENDER-side half of the changing-background guard. --recommend already refuses to
+    # emit a command for this input, but a run that never called --recommend (a hand-written
+    # command line, a batch manifest, a session that skipped straight to processing) would
+    # otherwise write a silently, totally wrong file. `_refuse_empty_render` is the model:
+    # prediction and prevention are separate jobs. references/lessons.md SS35
+    if n_frames > 1 and not getattr(args, 'allow_changing_background', False):
+        _bg_ref = hex_to_rgb(args.bg_color)
+        _stability = summarise_background_color_stability(
+            [probe_frame_background(_f, _bg_ref, args.tolerance) for _f in rgb_frames_key])
+        if _stability['changes']:
+            raise SystemExit(
+                f"ERROR: refusing to process {input_path!r} -- "
+                + describe_changing_background(_stability, args.bg_color, n_frames)
+                + f"\n  To key the frame-0 colour anyway and accept an opaque background on "
+                  f"{len(_stability['recolored_frame_indexes'])} of {n_frames} frames, pass "
+                  f"--allow-changing-background.\n  Nothing has been written.")
+        if _stability['changes'] is None and _stability['unverified_reason']:
+            print("WARNING: background stability is UNVERIFIED on this input -- "
+                  + _stability['unverified_reason'] + ".", file=sys.stderr)
+
     if getattr(args, 'tumble_safe', False):
         bg_rgb = hex_to_rgb(args.bg_color)
         keep_near = None
@@ -6609,7 +6814,15 @@ def run_batch(args, arg_parser):
             size_kb = os.path.getsize(job_output) / 1024
             results.append({'input': job_input, 'output': job_output,
                              'status': 'ok', 'size_kb': round(size_kb, 1)})
-        except Exception as e:
+        # SystemExit, not just Exception: every deliberate refusal inside process() -- the
+        # changing-background guard, _refuse_empty_render, the container/flag conflicts -- is a
+        # `raise SystemExit`, and SystemExit derives from BaseException, so `except Exception`
+        # never saw them. One refused asset therefore ABORTED THE WHOLE BATCH, and every job
+        # after it was silently never attempted: measured on a two-job manifest, the second and
+        # perfectly processable file produced no output at all. A batch already has a
+        # per-job 'error' status and a summary that counts it; a refusal belongs there.
+        # KeyboardInterrupt is deliberately still uncaught, so Ctrl-C still stops the run.
+        except (Exception, SystemExit) as e:
             print(f"  ERROR processing {job_input}: {e}", file=sys.stderr)
             results.append({'input': job_input, 'output': job_output,
                              'status': 'error', 'reason': str(e)})
@@ -6732,7 +6945,8 @@ def auto_run(input_path, output_path, args, parser):
     deliberate choice -- it fills in the ones nobody expressed an opinion about.
     """
     print("=== AUTO 1/3: analysing source ===", file=sys.stderr)
-    rec = recommend(input_path, tolerance=args.tolerance)
+    rec = recommend(input_path, tolerance=args.tolerance,
+                    allow_changing_background=getattr(args, 'allow_changing_background', False))
     if rec.get('not_applicable_reason'):
         raise SystemExit("ERROR: --auto has nothing to do here, and doing it anyway would "
                          "destroy the image.\n  " + rec['not_applicable_reason'])
@@ -6952,6 +7166,13 @@ def main():
                          'If omitted, auto-detected from the corner pixels of frame 0.')
     p.add_argument('--tolerance', type=int, default=15,
                     help='Per-channel tolerance for matching bg-color (default 15)')
+    p.add_argument('--allow-changing-background', action='store_true', default=False,
+                    help='Process an animation whose background CHANGES COLOUR partway '
+                         'through, which is otherwise refused. --bg-color is a single value, '
+                         'so every recoloured frame keeps its background fully opaque and no '
+                         'quality check can see it. Use this only when the recoloured frames '
+                         'do not matter; otherwise split the animation at the colour change '
+                         'and give each run its own --bg-color.')
     p.add_argument('--protect-outline-color', default=None,
                     help='Hex color of a closed outline; everything enclosed by it '
                          'is protected from removal, e.g. 002a75. Accepts a '

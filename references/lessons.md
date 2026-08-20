@@ -68,6 +68,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 32. [A blanket label is a measurement of nothing, and the quantized twin is not the artwork](#32-a-blanket-label-is-a-measurement-of-nothing-and-the-quantized-twin-is-not-the-artwork)
 33. [Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin](#33-following-a-moving-hole-identity-by-continuity-when-nothing-in-a-single-frame-can-tell-it-from-its-twin)
 34. [What three fresh sessions on five real assets found that every automated gate missed](#34-what-three-fresh-sessions-on-five-real-assets-found-that-every-automated-gate-missed)
+35. [The background changed colour mid-animation, and every check said the render was fine](#35-the-background-changed-colour-mid-animation-and-every-check-said-the-render-was-fine)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -143,6 +144,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Pixel art in a lossy WebP/JPEG read as antialiased | §32.3 (the encode fills the plateaus in) |
 | Partial transparency in a PNG/WebP source disappears after `--auto` | §31 |
 | `SOURCE ALPHA HONOURED` printed, and the fade died anyway | §31 (the scope covers alpha==0 only) |
+| The background is one colour at the start and a different one later | §35 (a single `--bg-color` cannot key both) |
+| Background removed cleanly on the first frames, left solid on later ones | §35 |
+| `refusing to process ... BACKGROUND CHANGES COLOUR` | §35 (split the animation, or `--allow-changing-background`) |
+| `background_color_stability.changes` is `null` rather than true or false | §35 (UNVERIFIED — there was no reference plane to measure against) |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
 | An already-background-removed file reads as hard-edged / pixel art | §29.1 (its empty transition band is guaranteed by the cutout, not by the art) |
@@ -2200,3 +2205,24 @@ Two findings from the trial contradicted each other. One: `--auto` calibrates `-
 
 ### 34.6 The transferable part
 All five defects live in the space between *"the measurement is correct"* and *"the output is what the user wanted"*, and every automated gate here inspects only the first. A corpus tells you the classifier is right; a render diff tells you nothing changed; neither tells you the product is right. **When something looks wrong to a human and every number says clean, the numbers are answering a different question.**
+
+## 35. The background changed colour mid-animation, and every check said the render was fine
+**Also searched as:** rainbow · strobe · flashing backdrop · hue shift · disco · party mode · alternating background · colour cycling · multicoloured backing · half the frames wrong · psychedelic
+
+**The defect.** `--bg-color` is a single value and `detect_bg_color` reads one frame, so an animation whose background is RECOLOURED partway through cannot be processed at all. Every frame after the change keys against a colour that is no longer on the canvas, so its entire background survives into the output as opaque artwork. Nothing reported it: the file is written, it has plenty of opaque pixels, `_refuse_empty_render` is satisfied, and `--verify` reads a healthy render. The output is silently and totally wrong, and the failure is invisible in every number the tool prints.
+
+**Measured on a 30-frame asset** whose background runs magenta, pink, red, orange, yellow and green across frames 11–15: the frame-0 colour covers **2.37% of the canvas on frame 0 and 0.00% on frames 11, 12, 13 and 15**. Half of the output frames would keep their background.
+
+⚠️ **A SPREAD CANNOT SEE A TRANSIENT.** The first attempt at this measurement sampled 10 frames of that 30-frame asset and read **78.6% coverage at frame 10 while frame 12 was 0.0%** — the whole colour change lasts five frames and the sample stepped straight over it. The scan therefore runs on EVERY frame, for the same reason the blank-frame scan does (§34.1). The cost is below the noise floor rather than literally zero, and it is worth stating which: the scan rides the per-frame loop `analyze()` already runs and reuses the background mask that loop already computed, so a frame costs four pixel reads and one `.mean()`, plus a second mask only where the corner colour has actually moved — 52 of the 65 constant-background control assets never pay that second mask at all, and the other 13 pay it on the handful of frames where art crosses a corner. Timed as min-of-3 whole-`analyze()` runs on three long assets (250, 309 and 123 frames), the change measured −3.0%, +6.5% and −1.3%, against a run-to-run spread on one of those assets of 61.6–82.8s. The +6.5% is the worst case by construction: it is the 309-frame asset whose background really does change, so the second mask runs on 220 of its frames — an asset that is about to be refused anyway.
+
+**The rule, and why it needs two halves.** A frame counts as recoloured when BOTH hold: its corner-majority colour is more than **40** units (max-channel) from the reference colour, AND the reference colour's coverage has collapsed below **15%** of what it held on frame 0. **Each half alone has a measured false positive** in the 65-asset animated control. A corner move alone fires wherever art sweeps across a corner — one control asset reads 11 distinct corner colours with a perfectly constant background. A coverage collapse alone fires wherever art briefly fills the canvas — two control assets bottom out at 0.0% and 0.7% of their frame-0 colour while their corners never move at all.
+
+**40 is a margin of KIND, and deliberately not the run's `--tolerance`.** On that same asset, frames 1 and 3 read a corner **16** units from the reference — the identical magenta, re-quantized by the GIF's palette — while the first genuinely recoloured frame reads **63** and the rest 161–242. A threshold at `--tolerance` (15) would call palette drift a background change, which is the trap §23 and §18 both record.
+
+**Scored on 71 real animated assets: 6 with a changing background, 65 without. All 6 fire; all 65 have ZERO qualifying frames** — not a threshold the control merely clears, one it never reaches. The verdict is invariant over a distance threshold of 24–120 and a collapse threshold of 0.05–0.50, so the numbers are not shaped around the six positives. Those corpora live in the development repo and are not re-runnable from this package, as in §23.
+
+**Three places, because prediction and prevention are different jobs.** `--analyze` reports `background_color_stability`; `--recommend` returns `not_applicable_reason` with `suggested_command: null`, so `--auto` refuses; and `process()` refuses independently, for the run that never called `--recommend` — a hand-written command line, a batch manifest, a session that went straight to processing. Same three-place shape §34.1 used for the truncating GIF, and the render-side half is the one that catches an autonomous run that skipped the recommendation.
+
+**The fall-through is UNVERIFIED, never PASS.** When the detected background colour covers essentially none of frame 0 there is no reference plane for a collapse to be measured against, so the rule would silently never fire — a vacuous pass dressed as a clean bill of health. `background_color_stability.changes` is `null` in that case, with an `unverified_reason`; `--recommend` says so in its evidence and `process()` warns on stderr. §13, §16 and §17 are the precedent: a check that cannot run has to say so rather than return the answer that happens to be convenient.
+
+**What to do when you see it.** Split the animation at the colour change and process each run with its own `--bg-color`, or re-export the source with a constant background. `--allow-changing-background` keys the frame-0 colour anyway, and is only right when the recoloured frames genuinely do not matter — it does not fix them, it accepts them.
