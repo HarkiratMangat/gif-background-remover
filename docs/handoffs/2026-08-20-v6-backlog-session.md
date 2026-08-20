@@ -4,6 +4,21 @@
 
 **Next, set by Harkirat at the end of this session: items 4 and 6 TOGETHER, then 5. Item 7 stays deferred.** Read "Where to start" below before opening any code — the two items are closer than their tracker tags suggest, and one of them has a blind spot in its acceptance criteria that must be closed first.
 
+## Recommended setup for the next session
+
+**`Opus5-XHigh`.** Ready-to-paste session title:
+
+```
+Opus5-XH · erosion + fade-cliff (items 4 & 6) · <session-start date>
+```
+
+Derived from the grid in dioreo's `reference_priority_tier_system.md`, not from a feeling:
+
+- **Premise risk: HIGH.** The task *is* working out whether the framing is right. Two cost terms for item 4 have already been built and reverted — one because a metric that looked like it named a cause did not, one because the measure was arithmetically incapable of firing while passing an 87-asset corpus. Item 6 is the same shape: "pale is not the same as translucent" is a premise question, not a tuning question.
+- **Deliberation load: HIGH.** Two items taken together, a third in the same family (AUTONOMY BACKLOG item 5), at least three code sites that independently choose or consume the same decision, and an acceptance that must span five populations.
+- Premise High × Deliberation High → `Opus5-XHigh`. ⚠️ The grid's own anti-over-spec rule says take the LOWER cell when torn, which would be `Opus5-High` — but the escalation trigger *"two hypotheses wrong → +1 effort"* has already fired on item 4, by name and in writing, so XHigh is reached by event rather than by cell wobble.
+- **Step DOWN to `Sonnet5-High` the moment the scope turns out mechanical** — if the third cost term is chosen quickly and the rest is plumbing plus re-scoring, that is the one direction this project's history has never moved in.
+
 ---
 
 ## What this session executed
