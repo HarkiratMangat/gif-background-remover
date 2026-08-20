@@ -19,7 +19,48 @@ TRIAL = os.path.join(ROOT, 'local', 'Corpus Trial Gifs')
 
 import score_outputs as S  # noqa: E402
 
+SCRIPT = os.path.join(ROOT, 'scripts', 'remove_gif_background.py')
+
 ASSETS = ('galaxy', 'growth', 'hurricane', 'rocket', 'satellite')
+
+# ⚠️ Six tests here USED to read fixed `/tmp/*.webp` paths that the suite never created.
+# They passed only because the session that wrote them happened to have rendered those files
+# by hand minutes earlier. On a fresh machine, after a reboot, or after /tmp is cleaned they
+# fail with FileNotFoundError -- which reads as a regression and is not one. That is the
+# "fixture that only works because of session state" trap, shipped by the very session that
+# spent the day catching that class of error.
+#
+# `rendered()` fixes it and is deliberately CACHED rather than re-rendering every run: a
+# render is 20-60s and six of them would put minutes on every invocation. The cache key is
+# the SHA of remove_gif_background.py, so any edit to the product -- which is what these
+# tests exist to police -- invalidates every entry automatically. A cache that a code change
+# cannot invalidate is worse than no cache; this one cannot serve a stale answer.
+_RENDER_CACHE = os.path.join(ROOT, 'local', '.test-renders')
+
+
+def _script_sha():
+    import hashlib
+    with open(SCRIPT, 'rb') as fh:
+        return hashlib.sha256(fh.read()).hexdigest()[:12]
+
+
+def rendered(asset, *flags):
+    """Path to `asset` rendered through the real CLI with `flags`, rendering on first use.
+
+    Keyed by script SHA, so it re-renders whenever the product changes and never otherwise.
+    """
+    import subprocess
+    slug = asset.replace('.gif', '') + ('_' + '_'.join(
+        f.lstrip('-').replace('-', '') for f in flags) if flags else '')
+    d = os.path.join(_RENDER_CACHE, _script_sha())
+    os.makedirs(d, exist_ok=True)
+    out = os.path.join(d, slug + '.webp')
+    if not os.path.exists(out):
+        r = subprocess.run([sys.executable, SCRIPT, _p(asset), out, '--auto', *flags],
+                           capture_output=True, text=True)
+        assert r.returncode == 0 and os.path.exists(out), \
+            f'rendering {asset} {flags} failed rc={r.returncode}\n{r.stderr[-2000:]}'
+    return out
 
 
 def _p(*parts):
@@ -97,9 +138,6 @@ def test_ungradeable_fade_reports_unverified_not_a_pass():
 
 # --------------------------------------------------------------- Task 2: truncating GIF
 
-SCRIPT = os.path.join(ROOT, 'scripts', 'remove_gif_background.py')
-
-
 def _analyze(path):
     import json
     import subprocess
@@ -169,7 +207,7 @@ def test_growth_interior_survives_a_real_render():
     """End to end through the real CLI, graded by the Task 1 scorer."""
     import subprocess
     import tempfile
-    out = os.path.join(tempfile.gettempdir(), 'task3_growth.webp')
+    out = os.path.join(tempfile.mkdtemp(), 'task3_growth.webp')
     r = subprocess.run([sys.executable, SCRIPT, _p('growth.gif'), out, '--auto'],
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-3000:]
@@ -184,7 +222,7 @@ def test_worst_frame_fraction_reports_its_own_denominator():
     1px erosion reads as "21% of the artwork destroyed". Harkirat caught that number on its
     way into a release decision. The scorer must make the artifact visible on its face:
     a collapsed denominator, and a loss no bigger than one perimeter ring."""
-    r = S.score(_p('growth.gif'), '/tmp/growth_e1.webp')
+    r = S.score(_p('growth.gif'), rendered('growth.gif', '--edge-cleanup-erosion', '1'))
     assert r['art_kept_worst'] < 0.90, r          # the alarming fraction is real...
     assert r['art_frame_share_at_worst'] < 0.05, r  # ...on a frame holding <5% of the art
     assert r['art_lost_over_perimeter'] <= 1.1, r   # ...and the loss is one perimeter ring
@@ -194,7 +232,7 @@ def test_a_full_size_frame_is_not_explained_away():
     """The negative half. On assets whose worst frame is full-size the share must be HIGH,
     or the new field would excuse every result instead of discriminating."""
     for f in ('rocket', 'satellite'):
-        r = S.score(_p(f'{f}.gif'), f'/tmp/{f}_e1.webp')
+        r = S.score(_p(f'{f}.gif'), rendered(f'{f}.gif', '--edge-cleanup-erosion', '1'))
         assert r['art_frame_share_at_worst'] > 0.9, (f, r)
         assert r['art_lost_over_perimeter'] <= 1.1, (f, r)
 
@@ -220,7 +258,7 @@ def test_interior_loss_reports_its_own_shape():
     """`interior_kept_worst` is a SCREEN, not a verdict. paper-plane reads 0.556 because the
     removed pixels are the COUNTER of a closed loop -- a hole a transparent sticker should
     see through. The fields must separate that from real destruction of a body."""
-    ok = S.score(_p('paper-plane.gif'), '/tmp/pp.webp')
+    ok = S.score(_p('paper-plane.gif'), rendered('paper-plane.gif'))
     bad = S.score(_p('growth.gif'), _p('agent-2-detailed', 'growth.webp'))
     assert ok['interior_lost_largest_component'] < 5000, ok
     assert bad['interior_lost_largest_component'] > 10000, bad
@@ -234,7 +272,7 @@ def test_a_preserved_fade_is_not_reported_as_leftover_background():
     carrying a darker outline AND a lighter interior that both fade. `bg_removed_worst`
     reads 0.931 -- which sounds like 7% of the background missed. Every one of those 13,622
     pixels is translucent and its alpha tracks the source's own paleness."""
-    r = S.score(_p('in-love.gif'), '/tmp/in-love_auto.webp')
+    r = S.score(_p('in-love.gif'), rendered('in-love.gif'))
     assert r['bg_removed_worst'] < 0.99                    # the strict figure fires...
     assert r['bg_not_opaque_worst'] > 0.99, r              # ...nothing is kept solid...
     assert r['bg_kept_fade_correlation'] > 0.80, r         # ...and it tracks the fade
@@ -256,7 +294,7 @@ def test_a_ghosted_output_is_still_condemned():
 def test_the_two_fades_are_separated_by_amount_not_by_shape():
     """Locks the falsified hypothesis in place so it is not re-derived: on the correct fade
     and the ghost, both supporting fields agree; only bg_removed_worst separates them."""
-    good = S.score(_p('in-love.gif'), '/tmp/in-love_auto.webp')
+    good = S.score(_p('in-love.gif'), rendered('in-love.gif'))
     ghost = S.score(_p('hurricane.gif'), _p('agent-3-expert', 'hurricane_transparent.webp'))
     assert good['bg_not_opaque_worst'] > 0.99 and ghost['bg_not_opaque_worst'] > 0.99
     assert good['bg_kept_fade_correlation'] > 0.80 and ghost['bg_kept_fade_correlation'] > 0.80
@@ -278,5 +316,5 @@ def test_for_you_survives_an_outline_that_is_recoloured_mid_animation():
                          capture_output=True, text=True)
     assert out.returncode == 0, out.stderr[-2000:]
     assert '--protect-outline-color c83c78' in out.stdout, out.stdout[:1500]
-    r = S.score(_p('for-you.gif'), '/tmp/for-you_auto.webp')
+    r = S.score(_p('for-you.gif'), rendered('for-you.gif'))
     assert r['interior_kept_worst'] > 0.99 and r['bg_removed_worst'] > 0.99, r
