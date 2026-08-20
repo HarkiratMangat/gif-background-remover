@@ -347,6 +347,59 @@ def measure_change_line_density(rgb):
     return max(_axis(rgb), _axis(np.ascontiguousarray(rgb.transpose(1, 0, 2))))
 
 
+# An enclosed background-coloured region is "intentional design" (a highlight inside a badge,
+# a rocket's white body) rather than "incidental background" (a pocket the artwork happens to
+# close off for a few frames). The original rule was a bare `enclosure_ratio >= 0.9`, with no
+# reference to how BIG the region is, and it is the single most damaging thing this tool has
+# been measured doing: on a real asset it called a rocket's white body
+# `enclosure_ratio 0.825 looks incidental, leaving as background`, and in a three-agent trial
+# the two agents that followed that advice deleted 83.1% and 83.3% of that asset's interior
+# white -- and 45.8% of another's -- while reporting success. Documentation cannot reach a
+# session that is being actively misadvised, so the fix has to be here.
+#
+# RATIO ALONE IS THE WRONG AXIS, and the measurement says so plainly. Over 26 real assets,
+# 22 regions at or above 0.5% of the canvas, every ambiguous one inspected by eye:
+#
+#   CONFIRMED DESIGN     growth id1   14.1% of canvas  ratio 0.825   rocket body
+#                        Best  id1    26.1%            ratio 0.800   rosette inner disc
+#                        Meta  id2    11.4%            ratio 0.750   trophy handle field
+#                        Meta  id1     8.3%            ratio 0.825   trophy handle field
+#                        rocket id2    4.4%            ratio 0.650   left wing panel
+#                        rocket id3    3.9%            ratio 0.650   right wing panel
+#   CONFIRMED BACKGROUND hurricane id1 41.8%           ratio 0.050   badge, only bg-coloured
+#                                                                    at the END of its fade
+#                        GIFfromGIFER id2  8.1%        ratio 0.286   pocket under a raised arm
+#                        GIFfromGIFER id34 1.9%        ratio 0.429   gap beside a hand
+#                        9a4177e8 id5  1.2%            ratio 0.625   gap between two legs
+#                        DFB2A5D7 id3   0.6%           ratio 0.500   gap between crown spikes
+#                        Cut loop id8/id12 0.007%      ratio 0.500   speckle
+#
+# The decisive pair is `9a4177e8 id5` (1.2%, ratio 0.625, BACKGROUND) against `rocket id3`
+# (3.9%, ratio 0.650, DESIGN): 0.025 apart in ratio and on opposite sides of the answer.
+# Nothing in the ratio separates them; the area does. Both constants sit in a measured GAP
+# rather than between neighbours -- area 1.2% -> 3.9%, ratio 0.286 -> 0.650 -- so neither was
+# fitted to a boundary case.
+#
+# ⚠️ hurricane id1 is the honest limit and is NOT covered here: it is real design that reads
+# as background only in the last frames of a fade, so its ratio is 0.05 and no area rule
+# should rescue it (an area-only rule would protect 41.8% of every canvas). That asset needs
+# --recover-fade-alpha, not region protection. See references/lessons.md SS34.2/SS34.3.
+LARGE_REGION_CANVAS_FRACTION = 0.025   # a region this share of the canvas is not "incidental"
+LARGE_REGION_ENCLOSURE_RATIO = 0.5     # ...provided it is enclosed at least half the time
+INTENTIONAL_ENCLOSURE_RATIO = 0.9      # the size-independent bar, unchanged
+
+
+def is_intentional_design(ratio, pixel_count, canvas_px):
+    """Is this enclosed background-coloured region part of the ARTWORK? See the block above
+    for the 26-asset measurement behind both constants and for the case they deliberately
+    do not cover."""
+    if ratio >= INTENTIONAL_ENCLOSURE_RATIO:
+        return True
+    return (canvas_px > 0
+            and pixel_count / canvas_px >= LARGE_REGION_CANVAS_FRACTION
+            and ratio >= LARGE_REGION_ENCLOSURE_RATIO)
+
+
 PLATEAU_CLIFF_STRONG_STEP = 40      # a colour step this big is an EDGE, not a ramp step
 PLATEAU_CLIFF_MIN_PLATEAU = 2       # px of flat colour required on each side
 PLATEAU_CLIFF_THRESHOLD = 0.30      # at or above this, the art is hard-edged
@@ -1245,8 +1298,13 @@ def analyze(input_path, max_samples=40, tolerance=15):
         # -- look for a colour that encloses part of it and never swallows
         # background. See find_partial_enclosure_outline_color for the measured
         # case this exists for.
+        # Gated on the SAME predicate as the verdict, not on a second copy of the 0.9
+        # constant. A region newly called design by the area rule and then denied the
+        # partial-outline search would be marked "protect this" with nothing to protect it
+        # WITH -- a worse outcome than either half alone.
         partial_outline = None
-        if outline_color is None and ratio >= 0.9:
+        if outline_color is None and is_intentional_design(
+                ratio, int(comp_footprint.sum()), H * W):
             partial_outline = find_partial_enclosure_outline_color(
                 all_rgb_frames, sample_idxs, bg_rgb, tolerance,
                 comp_footprint, core_bg_masks, fill_cache=outline_fill_cache)
@@ -1295,7 +1353,9 @@ def analyze(input_path, max_samples=40, tolerance=15):
             'frames_enclosed': frames_hit,
             'frames_sampled': len(sample_idxs),
             'enclosure_ratio': round(ratio, 3),
-            'likely_intentional_design': ratio >= 0.9,
+            'region_canvas_fraction': round(int(comp_footprint.sum()) / float(H * W), 4),
+            'likely_intentional_design': is_intentional_design(
+                ratio, int(comp_footprint.sum()), H * W),
             'candidate_outline_color': outline_color,
             'outline_color_verified': outline_color is not None,
             'outline_enclosure_all_frames': outline_enclosure_all_frames,
@@ -1756,9 +1816,18 @@ def recommend(input_path, tolerance=15):
         for region in report['candidate_regions']:
             rid = region['id']
             if not region['likely_intentional_design']:
+                _frac = region.get('region_canvas_fraction')
                 region_notes.append(
-                    f"Region {rid}: enclosure_ratio {region['enclosure_ratio']} looks "
-                    f"incidental, leaving as background.")
+                    f"Region {rid}: enclosure_ratio {region['enclosure_ratio']} over "
+                    f"{region['pixel_count']}px"
+                    + (f" ({_frac:.1%} of the canvas)" if _frac is not None else "")
+                    + f" -- left as background. It clears neither bar: "
+                      f"{INTENTIONAL_ENCLOSURE_RATIO} enclosure at any size, or "
+                      f"{LARGE_REGION_ENCLOSURE_RATIO} enclosure at "
+                      f"{LARGE_REGION_CANVAS_FRACTION:.1%}+ of the canvas. "
+                      f"⚠️ If this region is visibly part of the ARTWORK, protect it by hand "
+                      f"(--protect-outline-color / --protect-region) -- this verdict has been "
+                      f"wrong on a large pale region before.")
                 continue
 
             all_frames = region.get('outline_enclosure_all_frames')

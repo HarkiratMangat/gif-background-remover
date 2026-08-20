@@ -132,3 +132,46 @@ def test_recommend_steers_away_from_gif_on_a_blank_frame():
                        capture_output=True, text=True)
     assert r.returncode == 0, r.stderr[-2000:]
     assert 'NOT GIF' in r.stdout, r.stdout[:3000]
+
+
+# ------------------------------------------------- Task 3: "incidental" over a large region
+
+def test_large_enclosed_region_is_not_incidental():
+    """growth.gif: --recommend called the rocket's white BODY incidental background
+    at enclosure_ratio 0.825, and two of three trial agents deleted it."""
+    import subprocess
+    r = subprocess.run([sys.executable, SCRIPT, _p('growth.gif'), '--recommend'],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert 'looks incidental, leaving as background' not in r.stdout, \
+        'a large interior region is still being dismissed as incidental'
+    assert '--protect-outline-color' in r.stdout, \
+        'the region is called design but nothing was recommended to protect it with'
+
+
+def test_a_genuine_background_pocket_is_still_left_alone():
+    """The negative half, and it is the one that matters: 9a4177e8 id5 is the gap between a
+    character's two legs at ratio 0.625 -- 0.025 away in ratio from rocket's wing panel,
+    which IS design. Only the AREA separates them, which is the whole point of the change.
+    A rule that protects both has not fixed anything, it has moved the error."""
+    import json
+    import subprocess
+    src = os.path.join(ROOT, 'local', 'Diors-builds Emojis', 'others',
+                       '9a4177e82f1a333ef64066f7a7529eb2.gif')
+    a = json.loads(subprocess.run([sys.executable, SCRIPT, src, '--analyze'],
+                                  capture_output=True, text=True).stdout)
+    reg = next(r for r in a['candidate_regions'] if r['id'] == 5)
+    assert reg['enclosure_ratio'] >= 0.6, reg          # the ratio really is high
+    assert reg['likely_intentional_design'] is False, reg
+
+
+def test_growth_interior_survives_a_real_render():
+    """End to end through the real CLI, graded by the Task 1 scorer."""
+    import subprocess
+    import tempfile
+    out = os.path.join(tempfile.gettempdir(), 'task3_growth.webp')
+    r = subprocess.run([sys.executable, SCRIPT, _p('growth.gif'), out, '--auto'],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-3000:]
+    s = S.score(_p('growth.gif'), out)
+    assert s['interior_kept_worst'] > 0.95, s

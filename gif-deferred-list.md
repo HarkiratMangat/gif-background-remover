@@ -27,12 +27,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Do:** detect it in `analyze()` — scan every frame's detected background colour, and if it moves beyond a tolerance, say so and refuse rather than silently keying frame 0's colour across an animation where it means nothing. Whether a per-frame background colour is worth supporting after that is a separate and larger question. Start from `_changing_bg/`, which is the only place in the corpus that demonstrates this.
 
-### `[P1 · M · Opus5-High]` `--recommend` calls a large interior design region "incidental background", and two of three agents destroyed the asset because of it *(filed 2026-08-19)*
-
-On `growth.gif`, `--recommend` emits: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region is the rocket's white body.** In a three-agent trial on five real assets, the two agents that followed the recommendation deleted **83.1% and 83.3% of growth's interior white**, and **45.8% of rocket's**, in both cases while reporting success. Only the agent given an explicit hand-written list of regions to protect got all five right.
-
-⚠️ **The severity is in who it fools.** Agent 2 was told in plain language that interior light areas were artwork, ran the tool, read the evidence, followed it, and shipped a ruined file believing it was clean. This is not a missing lesson — no amount of documentation reaches a session that is being actively misadvised. **Do:** an enclosure ratio of 0.825 over a region of this size should not read as "incidental". Re-derive that threshold against region AREA, and check what the evidence string says when the region is large and the ratio is mid-range.
-
 ### `[P1 · S · Opus5-High]` `--recover-fade-alpha` maps colour-distance to alpha as a CLIFF, not a ramp *(filed 2026-08-19)*
 
 Measured on `hurricane.gif`, sampling the octagon fill between the shuriken and the edge:

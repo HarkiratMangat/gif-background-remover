@@ -24,6 +24,29 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### ✅ SHIPPED — `--recommend` called a large interior design region "incidental background"
+**Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.3; plan task 3 of `docs/plans/2026-08-20-post-trial-defects.md`.
+
+**What happened.** `likely_intentional_design` was a bare `enclosure_ratio >= 0.9`, size-blind. It is now a named predicate, `is_intentional_design(ratio, pixel_count, canvas_px)`: 90%+ enclosure at any size, OR 50%+ enclosure at 2.5%+ of the canvas. The **same** predicate now gates the partial-outline search, which previously carried its own copy of the 0.9 constant — without that, growth's region would have been relabelled design and then denied the only thing that could protect it, which is worse than either half alone. Measured effect: `growth.gif --recommend` goes from `Region 1: enclosure_ratio 0.825 looks incidental` to recommending `--protect-outline-color 002864` via the partial-outline path, and `interior_kept_worst` on a real `--auto` render is >0.95 where agents 1 and 2 scored **0.000**.
+
+**The measurement, over 26 assets and 22 regions at ≥0.5% of canvas, every ambiguous one inspected by eye.** The decisive pair is a leg-gap at 1.2% of canvas / ratio 0.625 (BACKGROUND) against a rocket wing panel at 3.9% / ratio 0.650 (DESIGN) — 0.025 apart in ratio, opposite answers, separated only by area. Both constants sit in gaps (area 1.2%→3.9%, ratio 0.286→0.650), not between neighbours.
+
+⚠️ **It also corrected a wrong number this repo had already published.** §34.3 previously advised that "a region above roughly 1% of the canvas is not incidental at any ratio". The leg-gap is 1.2% and is background; a pocket under a raised arm is 8.1% at ratio 0.286 and is also background. An area-only rule protects real background.
+
+⚠️ **One case is deliberately NOT covered and is documented as the limit:** a badge fading toward the background colour reads as background only at the end of its fade — ratio 0.050 at 41.8% of canvas. That needs `--recover-fade-alpha`, not region protection.
+
+**Verified:** three falsifier tests, including the negative half (the leg-gap must still come back `likely_intentional_design: False`) and an end-to-end `--auto` render graded by `scripts/harness/score_outputs.py`.
+
+<details><summary>Original item, kept verbatim</summary>
+
+### ~~`[P1 · M · Opus5-High]` `--recommend` calls a large interior design region "incidental background", and two of three agents destroyed the asset because of it *(filed 2026-08-19)*~~
+
+On `growth.gif`, `--recommend` emits: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region is the rocket's white body.** In a three-agent trial on five real assets, the two agents that followed the recommendation deleted **83.1% and 83.3% of growth's interior white**, and **45.8% of rocket's**, in both cases while reporting success. Only the agent given an explicit hand-written list of regions to protect got all five right.
+
+⚠️ **The severity is in who it fools.** Agent 2 was told in plain language that interior light areas were artwork, ran the tool, read the evidence, followed it, and shipped a ruined file believing it was clean. This is not a missing lesson — no amount of documentation reaches a session that is being actively misadvised. **Do:** an enclosure ratio of 0.825 over a region of this size should not read as "incidental". Re-derive that threshold against region AREA, and check what the evidence string says when the region is large and the ratio is mid-range.
+
+</details>
+
 ### ✅ SHIPPED — A fully-transparent frame makes Pillow's GIF writer truncate the file
 **Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.1; plan task 2 of `docs/plans/2026-08-20-post-trial-defects.md`.
 
