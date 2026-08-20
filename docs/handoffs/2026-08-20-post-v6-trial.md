@@ -36,9 +36,9 @@
 
 ## The one long-standing gap that just closed
 
-`local/corpus dark/` arrived 2026-08-20 and closes the narrow-constants item (autonomy backlog #13), which had been blocked on a corpus since 2026-08-17. **119 files, all opaque-background, 107 keyable, 59 dark and 63 saturated** — against a previous corpus that held **5 dark assets total**, all from one population.
+`local/corpus dark/` arrived 2026-08-20 and closes the narrow-constants item (autonomy backlog #13), which had been blocked on a corpus since 2026-08-17. **119 supplied, 105 usable after filtering — 53 dark, 55 saturated, 71 animated** — against a previous corpus that held **5 dark assets total**, all from one population.
 
-**Register it as `ambiguous`, like `gradient_beds`** — its job is the ring metric and the fringe constants on a non-white background, not classification. Do NOT blanket-label 119 assets; §32 is the record of why. The 12 non-keyable full-bleed illustrations are already moved to `_excluded/`, so the folder holds exactly the 107 that score. Task 8 of the plan has the entry, the exclusions and the acceptance criterion — including that **"the constants are fine on dark backgrounds too" is a valid outcome**, not a failure to find something.
+**Register it as `ambiguous`, like `gradient_beds`** — its job is the ring metric and the fringe constants on a non-white background, not classification. Do NOT blanket-label 119 assets; §32 is the record of why. The 12 non-keyable full-bleed illustrations are already moved to `_excluded/`, so the folder holds exactly the 105 that score. Task 8 of the plan has the entry, the exclusions and the acceptance criterion — including that **"the constants are fine on dark backgrounds too" is a valid outcome**, not a failure to find something.
 
 ## Artefacts
 
