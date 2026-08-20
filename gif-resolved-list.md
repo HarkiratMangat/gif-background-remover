@@ -13,6 +13,26 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ---
 
+## ✅ `--recover-fade-alpha` was recommended where the renderer's own detector disagreed — CLOSED 2026-08-20 (v6.0.0, branch `feat/v6-backlog`)
+
+**Original entry, struck through:**
+
+> ~~### `[P1 · S · Opus5-High]` `--recover-fade-alpha` GHOSTS the whole image on a flat dark background, and `--recommend` asks for it *(filed 2026-08-20 from the dark corpus)*~~
+>
+> ~~`local/corpus dark/_ (7).gif` — a flat BLACK background (border 93.7% within tolerance of `#000000`). `--recommend` emits `--tumble-safe --recover-fade-alpha`, and the render keeps **100% of the background**: `bg_removed_worst 0.0000`, `bg_not_opaque_worst 1.0000`, `bg_kept_fade_correlation 1.0000`. Every background pixel survives at low alpha tracking its own distance from black — the whole frame becomes a translucent ghost.~~
+>
+> ~~**This is the hurricane mechanism (`references/lessons.md` §34.2) on a dark background**, and it is worse here: against white, a ghosted output at least composites plausibly over white; against black, "distance from the background" is *brightness*, so every lit pixel in the image reads as a fade stage. **`detect_fading_colors` has never been measured on a non-white background** — the whole corpus was white-ish until 2026-08-20.~~
+>
+> ~~**Do:** find out whether the fade detector has any specificity at all on a dark background before trusting the recommendation. If it does not, `--recommend` must stop suggesting `--recover-fade-alpha` there. Start from this asset; the `dark_bg` population has 55 more dark ones. ⚠️ Note the recommendation ALSO pairs it with `--tumble-safe`, which fade recovery ignores — the warning added 2026-08-20 fires here, so the run now says so out loud, but saying so is not choosing correctly.~~
+
+**What happened.** The filed hypothesis — that `detect_fading_colors` over-flags on a dark background because "distance from the background" there is brightness — was measured and **falsified**: on the three worst assets the detector flagged nothing at all, and background luminance does not separate the recommendation (61% dark vs 55% white among flat-keyable assets whose screen fires). The real fault was that `--recommend` gated the flag on `band_interior_regions`' `gradient_fade` verdict, a cheap screen the renderer never reads; across the 34 assets where the flag fired, screen and detector disagree on 16, and that half holds every catastrophic output. Fixed in three places: `analyze()` confirms the screen with the detector when and only when the screen fires (tri-state, fall-through is *unverified*), `recommend()` emits the flag only on a confirmation and explains itself otherwise, and `recover_fade_alpha_frames()` refuses rather than writing a ghost.
+
+**Verified:** worst three dark assets `0.0000 → 0.5043`, `0.0004 → 0.7241`, `0.1759 → 0.9176`; `_ (15).jpeg` exit 1 → 0.9945. All 17 confirmed-fade assets byte-identical; white controls 9 of 10 byte-identical, the tenth improved 0.7258 → 0.9156. `love.gif --auto` still `2fd526b6fb3b191c`; `audit_docs.py` exits 0; 36 tests pass, four of them new falsifiers including the negative half (satellite.gif must STILL get the flag) and the unverified fall-through. Cost: `analyze()` +42-51% on assets whose screen fires (hurricane 15.3s → 23.0s), paid only there. Full write-up: `references/lessons.md` §35.
+
+**One finding rolled forward rather than closed:** a soft glow on a dark background has no single fading colour, so neither path handles it well — refiled as a P2 on the active list.
+
+---
+
 ## Where these came from
 
 *Two section preambles from the active list are kept here because the sections they described no longer exist.*

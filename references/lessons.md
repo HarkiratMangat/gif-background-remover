@@ -68,6 +68,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 32. [A blanket label is a measurement of nothing, and the quantized twin is not the artwork](#32-a-blanket-label-is-a-measurement-of-nothing-and-the-quantized-twin-is-not-the-artwork)
 33. [Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin](#33-following-a-moving-hole-identity-by-continuity-when-nothing-in-a-single-frame-can-tell-it-from-its-twin)
 34. [What three fresh sessions on five real assets found that every automated gate missed](#34-what-three-fresh-sessions-on-five-real-assets-found-that-every-automated-gate-missed)
+35. [A cheap screen recommended a flag the renderer's own detector disagreed with](#35-a-cheap-screen-recommended-a-flag-the-renderers-own-detector-disagreed-with)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -137,6 +138,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | The outline looks soft or "not a clean polish" on a WebP/AVIF | §34.5 (that is the antialiasing, not a fringe) |
 | A measurement says erosion destroyed a huge share of the artwork | §34.5 (a perimeter cost over a shrinking area) |
 | `--auto` changed my erosion level and the docs said it would not | §34.5 (the docs were wrong, not the code) |
+| The whole frame comes out faintly see-through instead of cut out | §35 (`--recover-fade-alpha` with nothing to recover) |
+| The background is "removed" but every background pixel is alpha 1-9 | §35 |
+| `--recover-fade-alpha` was recommended and the output looks worse than no flags | §35 (the recommendation used a screen, not the detector) |
+| `--recover-fade-alpha` refuses with "no translucent colour to recover" | §35 (that is the fix working; drop the flag or name the colour with `--fade-color`) |
 | `--remove-region` hits the right spot on frame 0 and nowhere else | §33 |
 | Two identical same-coloured features, opposite treatment | §33 (seed one; identity is carried by continuity) |
 | A whole sprite pack detected at 20-25% while others are at 100% | §32.7 |
@@ -2200,3 +2205,32 @@ Two findings from the trial contradicted each other. One: `--auto` calibrates `-
 
 ### 34.6 The transferable part
 All five defects live in the space between *"the measurement is correct"* and *"the output is what the user wanted"*, and every automated gate here inspects only the first. A corpus tells you the classifier is right; a render diff tells you nothing changed; neither tells you the product is right. **When something looks wrong to a human and every number says clean, the numbers are answering a different question.**
+
+## 35. A cheap screen recommended a flag the renderer's own detector disagreed with
+
+**Also searched as:** ghost image · everything translucent · washed out output · nothing was removed · faint background remains · alpha 1 to 9 · barely transparent · screen versus detector · necessary but not sufficient · second opinion · flag recommended for no reason · unmix found nothing · solid art only · no fade present · why was webp recommended
+
+**The symptom.** `--recommend` asked for `--recover-fade-alpha`, an autonomous run took it verbatim, and the output was a translucent ghost of the entire image: every background pixel alive at a low alpha tracking its own distance from the background colour. Measured 2026-08-20 on a flat black source, `bg_removed_worst` **0.0000** — 86.4% of true-background pixels came out at alpha 1-9 and 13.6% at 10-39, **none at 0**.
+
+**The cause was not the fade detector.** The obvious hypothesis was that `detect_fading_colors` over-flags against a dark background, because "distance from the background" there *is* brightness, so every lit pixel looks like a fade stage. That was measured and is **false**: on the three worst assets the detector flagged **nothing at all**. Background luminance does not separate the recommendation either — among flat-keyable assets whose screen fires, the flag was emitted on 61% of dark ones and 55% of white ones.
+
+**The cause was that the recommendation and the renderer consulted different things.** The recommendation keyed on `band_interior_regions`' `gradient_fade` verdict — a band-interior region whose colour distance from the background *moves* across the frames it appears in. That is a genuine **necessary** condition for a flattened fade and nowhere near a sufficient one. The renderer never reads it: it keys on `detect_fading_colors` over the art palette. Measured across the 34 assets where the flag was being emitted, the two **disagree on 16**, and that disagreeing half holds every catastrophic output in the set.
+
+**Why the disagreement is destructive rather than merely useless.** With no fading colour there is nothing to recover, so the flag ought to be a no-op. It is not, because fade recovery takes its own render path: it derives protection topologically and **ignores every protection flag** (§34.4), and it zeroes alpha only below 1/255 instead of at `--tolerance`. On any background carrying dither or JPEG noise, that leaves every background pixel alive at alpha 1-9 — visually a ghost, arithmetically "removed nothing".
+
+**The fix is a confirmation step, not a new measure.** The cheap screen is kept — it is cheap and it is a real necessary condition — and when it fires, the detector the renderer actually uses is run to confirm it. Three states, and the fall-through is deliberately the unverified one: confirmed, refuted, or *not run because the screen never fired*, which is never read as a pass. `--recommend` emits the flag only on `confirmed`, and says plainly what happened on `refuted`. Separately, the renderer now **refuses** rather than ghosting, because a run that never called `--recommend` must still be stopped — the same prediction/prevention split the truncating-GIF refusal uses.
+
+**Measured outcome**, on the two populations together, because a fix that trades one family for another is not a fix:
+
+| | before | after |
+|---|---|---|
+| worst dark asset | 0.0000 | 0.5043 |
+| second worst | 0.0004 | 0.7241 |
+| third worst | 0.1759 | 0.9176 |
+| one asset that would not render at all | exit 1 | 0.9945 |
+| assets with a CONFIRMED fade | — | **byte-identical, all 17** |
+| white-background controls | — | **9 of 10 byte-identical, 1 improved** |
+
+**The honest cost, which is real.** Suppressing the flag routes those assets onto the normal removal path, and on one of them — a soft neon glow on black — the harder cutout loses the glow's outer falloff (`art_kept_worst` 1.000 → 0.761, `art_lost_over_perimeter` 2.972). The old output preserved that falloff only because it preserved *everything*, at partial alpha, with `edge_cleanliness` 0.466. A glow spanning many colours is not one flat palette entry, so `detect_fading_colors` cannot see it; that is a real limit and it is the same "pale is not translucent" boundary §34.2 records. A second asset looked like a large interior loss (8,634 px) and turned out, on inspection of the actual frames, to be correct removal between strands of hair — a metric mis-grading, not damage.
+
+**The transferable part.** When a recommendation and the code it recommends key on **different signals**, the recommendation can be confidently wrong in a way no amount of tuning the signal it uses will fix. Check what the consumer actually reads before tuning what the advisor computes — and where the cheap signal is only a necessary condition, confirm it with the expensive one instead of promoting it to sufficient.

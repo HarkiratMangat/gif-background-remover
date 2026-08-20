@@ -1706,10 +1706,49 @@ def analyze(input_path, max_samples=40, tolerance=15):
             (int(_cid) for _cid, _fp in protected_footprints.items()
              if 0 <= _cy < H and 0 <= _cx < W and _fp[_cy, _cx]), None)
 
+    # CONFIRMATION STEP. `band_interior_regions`'s gradient_fade verdict is a CHEAP SCREEN
+    # -- a band-interior region whose colour distance from the background moves across the
+    # frames it appears in. That is a necessary condition for a flattened fade and nowhere
+    # near a sufficient one, and until 2026-08-20 it was the ONLY thing gating the
+    # --recover-fade-alpha recommendation. The renderer does not use it: it keys off
+    # detect_fading_colors over the art palette, and when THAT returns nothing there is no
+    # fade to recover, so the flag buys a render path that discards every protection flag
+    # (SS34.4) in exchange for doing nothing.
+    #
+    # Measured 2026-08-20 over the 34 assets where --recommend currently emits the flag
+    # (24 flat-keyable dark + 10 white): the screen and the detector DISAGREE on 16 of them,
+    # and that disagreeing half holds the three worst outputs in the whole set --
+    # `_ (7).gif` bg_removed_worst 0.0000, `_ (10).gif` 0.0004, `_ (16).gif` 0.1759, each a
+    # near-total translucent ghost of the background. So the screen is kept (it is cheap and
+    # it is a real necessary condition) and the detector is run to CONFIRM it.
+    #
+    # ⚠️ Run only when the screen has already fired, because detect_fading_colors unmixes
+    # every frame against the palette and that is the expensive path. Three states, and the
+    # fall-through is deliberately the UNVERIFIED one: True = confirmed, False = the screen
+    # fired and the detector found nothing, None = not run, which is never read as a pass.
+    fade_colors_confirmed = None
+    fade_colors_detected = None
+    if any(_r['classification'] == 'gradient_fade' for _r in band_interior_regions):
+        try:
+            _prov = build_art_palette(all_rgb_frames, bg_rgb)
+            if len(_prov):
+                _fi = sorted(detect_fading_colors(all_rgb_frames, bg_rgb, _prov))
+                fade_colors_detected = [rgb_to_hex(tuple(int(v) for v in _prov[i])) for i in _fi]
+                fade_colors_confirmed = bool(_fi)
+            else:
+                # An empty provisional palette is the photographic/gradient case
+                # recover_fade_alpha_frames refuses outright -- not a fade either.
+                fade_colors_detected = []
+                fade_colors_confirmed = False
+        except Exception:
+            fade_colors_confirmed = None      # unverified, never a pass
+
     return {
         'n_frames_total': n_frames,
         'frames_sampled': len(sample_idxs),
         'detected_bg_color': rgb_to_hex(bg_rgb),
+        'fade_colors_confirmed': fade_colors_confirmed,
+        'fade_colors_detected': fade_colors_detected,
         'has_fully_transparent_frame': bool(blank_frames),
         'fully_transparent_frames': blank_frames,
         'source_has_pre_existing_transparency': 'transparency' in im.info,
@@ -1913,7 +1952,22 @@ def recommend(input_path, tolerance=15):
         flags.append(f"--protect-outline-color {','.join(dict.fromkeys(outline_colors))}")
 
     band_regions = report.get('band_interior_regions', [])
-    if any(r['classification'] == 'gradient_fade' for r in band_regions):
+    _fade_ok = report.get('fade_colors_confirmed')
+    if any(r['classification'] == 'gradient_fade' for r in band_regions) and _fade_ok is False:
+        # The screen fired, the detector found no fading colour. Emitting the flag here is
+        # what steered an autonomous run into a translucent ghost of the whole background on
+        # 3 of 16 such assets. Say what happened; recommend nothing.
+        evidence.append(
+            "A band-interior region's colour distance from the background moves across "
+            "frames, which is the signature of a flattened fade -- but the fade detector "
+            "found NO translucent colour in the art palette, so there is nothing for "
+            "--recover-fade-alpha to reconstruct. NOT recommending it: it takes its own "
+            "render path, ignores every protection flag, and on this class of asset it "
+            "keys the background to a faint non-zero alpha instead of removing it "
+            "(measured 2026-08-20: bg_removed_worst 0.0000 on the worst case). If you can "
+            "see a fade the detector missed, name its colour with --fade-color, which "
+            "bypasses detection entirely.")
+    elif any(r['classification'] == 'gradient_fade' for r in band_regions):
         # A fade means the FORMAT decision is already made: GIF structurally
         # cannot carry it. So recommend the flag that RECONSTRUCTS the alpha,
         # not the one that makes the loss look tidier.
@@ -2073,6 +2127,16 @@ def recommend(input_path, tolerance=15):
             f"emits an unreadable block for such a frame and the file TRUNCATES there -- measured "
             f"85 of 123 frames written on a real asset whose subject leaves the canvas. WebP and "
             f"APNG use different encoders and keep every frame. Ranking:\n" + _rank)
+    elif _fades and report.get('fade_colors_confirmed') is False:
+        # Same disagreement as the flag branch above: screen yes, detector no. GIF is not
+        # disqualified by a fade that is not there, so do not tell an autonomous run it is.
+        report['recommended_format'] = 'gif-ok'
+        evidence.insert(0,
+            f"FORMAT: GIF is acceptable. {len(_fades)} region(s) tripped the cheap "
+            f"gradient-fade screen, but the fade detector found no translucent colour in "
+            f"the art palette, so there is no partial transparency for WebP/AVIF to carry "
+            f"that GIF cannot. WebP/AVIF are still the better containers on edge quality. "
+            f"Ranking:\n" + _rank)
     elif _fades:
         report['recommended_format'] = 'webp-or-avif'
         evidence.insert(0,
@@ -4625,6 +4689,26 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         say("fading colours (auto-detected): " +
             (', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i])
                        for i in sorted(fading)) or 'none'))
+        if not fading:
+            # PREVENTION, separate from the prediction in analyze()/recommend() -- a run
+            # that never called --recommend must still be stopped, which is the same
+            # three-place split the truncating-GIF refusal uses.
+            #
+            # With no fading colour there is nothing to recover, and this path is not
+            # neutral: it derives protection topologically, ignores every protection flag,
+            # and zeroes alpha only below 1/255 instead of at --tolerance. On a background
+            # carrying any dither or JPEG noise that leaves EVERY background pixel alive at
+            # alpha 1-9. Measured 2026-08-20 on `_ (7).gif`: 86.4% of true-background pixels
+            # came out at alpha 1-9 and 13.6% at 10-39, none at 0 -- a translucent ghost of
+            # the entire frame, scored bg_removed_worst 0.0000.
+            raise SystemExit(
+                "--recover-fade-alpha found no translucent colour to recover: every art "
+                "colour in this image is solid. This flag reconstructs alpha for an element "
+                "the source FLATTENED against the background; with nothing flattened it "
+                "cannot key the background cleanly and will leave it faintly visible instead "
+                "of removing it. Drop the flag and run normal background removal, or name "
+                "the fading colour explicitly with --fade-color if you can see one the "
+                "detector missed.")
 
     bg = np.asarray(bg_rgb, dtype=np.float32)
     solid_idx = [i for i in range(len(palette)) if i not in fading]

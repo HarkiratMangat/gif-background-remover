@@ -10,8 +10,11 @@ Paths are anchored to the repo root from __file__, never to the cwd -- the plan 
 specified these tests mixed root-relative and `../../`-relative paths in the same file,
 which resolves differently depending on where pytest is invoked from.
 """
+import json
 import os
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -56,15 +59,112 @@ def rendered(asset, *flags):
     os.makedirs(d, exist_ok=True)
     out = os.path.join(d, slug + '.webp')
     if not os.path.exists(out):
-        r = subprocess.run([sys.executable, SCRIPT, _p(asset), out, '--auto', *flags],
+        # ⚠️ Render to a PID-private path and os.replace() into place, exactly as
+        # analysis_cache does. Writing straight to `out` is what made this cache unsafe
+        # under `-n 6`: on a cold cache two workers both see the file missing, both render
+        # the same asset to the same path, and one reads the other's half-written bytes.
+        # Observed 2026-08-20 as `UnidentifiedImageError: cannot identify image file
+        # in-love.webp` -- which reads as a product regression and is a harness race.
+        # os.replace is atomic, so the loser's render is simply discarded.
+        # ...and the temp name keeps the .webp suffix: the script picks its output format
+        # FROM THE EXTENSION, so a bare `.tmp` fails with `unknown file extension`.
+        tmp = out + f'.{os.getpid()}.tmp.webp'
+        r = subprocess.run([sys.executable, SCRIPT, _p(asset), tmp, '--auto', *flags],
                            capture_output=True, text=True)
-        assert r.returncode == 0 and os.path.exists(out), \
+        assert r.returncode == 0 and os.path.exists(tmp), \
             f'rendering {asset} {flags} failed rc={r.returncode}\n{r.stderr[-2000:]}'
+        os.replace(tmp, out)
     return out
 
 
 def _p(*parts):
     return os.path.join(TRIAL, *parts)
+
+
+DARK = os.path.join(ROOT, 'local', 'corpus dark')
+# The dark corpus is gitignored third-party material, so a fresh clone has the labels and
+# none of the pictures. Skipping is right; silently passing would not be.
+needs_dark = pytest.mark.skipif(not os.path.isdir(DARK),
+                                reason='local/corpus dark/ is not present in this checkout')
+
+
+def _analyzed(path):
+    """analyze() for one asset, cached by script SHA -- same contract as rendered()."""
+    import analysis_cache as AC
+    import importlib.util
+    global _UNDER_TEST
+    try:
+        mod = _UNDER_TEST
+    except NameError:
+        mod = None
+    if mod is None:
+        spec = importlib.util.spec_from_file_location('under_test_for_tests', SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _UNDER_TEST = mod
+    r, _hit = AC.cached_analyze(mod, path, SCRIPT)
+    return r
+
+
+_UNDER_TEST = None
+
+
+def _recommend(path):
+    import subprocess
+    r = subprocess.run([sys.executable, SCRIPT, path, '--recommend'],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, f'--recommend failed rc={r.returncode}\n{r.stderr[-1500:]}'
+    return json.loads(r.stdout)
+
+
+# ------------------------------------------------- the fade CONFIRMATION gate (2026-08-20)
+#
+# `band_interior_regions`'s gradient_fade verdict is a cheap SCREEN; the renderer keys off
+# detect_fading_colors. Measured over the 34 assets where --recommend emitted the flag, the
+# two disagree on 16, and that half holds every catastrophic output in the set.
+
+
+@needs_dark
+def test_fade_recovery_is_not_recommended_where_it_ghosts():
+    """Measured 2026-08-20: `_ (7).gif` trips the gradient-fade screen, the detector finds
+    no fading colour, and the flag rendered bg_removed_worst 0.0000 -- 86.4% of true
+    background pixels alive at alpha 1-9. It must not be recommended."""
+    j = _recommend(os.path.join(DARK, '_ (7).gif'))
+    assert '--recover-fade-alpha' not in j['suggested_command'], j['suggested_command']
+
+
+def test_fade_recovery_is_still_recommended_where_there_is_a_real_fade():
+    """The negative half. A gate that suppresses the flag everywhere is not a gate -- and
+    satellite.gif carries a genuine flattened fade (#fdcb50) the detector confirms."""
+    j = _recommend(_p('satellite.gif'))
+    assert '--recover-fade-alpha' in j['suggested_command'], j['suggested_command']
+
+
+@needs_dark
+def test_fade_confirmation_is_tri_state_and_falls_through_to_unverified():
+    """Three states, and the fall-through must be UNVERIFIED rather than a pass:
+    True = detector confirmed, False = screen fired and detector found nothing,
+    None = the expensive detector was never run because the screen never fired.
+
+    Asserted on one asset of each, because a flag that reads the same on every input is
+    not measuring anything."""
+    assert _analyzed(_p('satellite.gif'))['fade_colors_confirmed'] is True
+    assert _analyzed(os.path.join(DARK, '_ (7).gif'))['fade_colors_confirmed'] is False
+    assert _analyzed(_p('rocket.gif'))['fade_colors_confirmed'] is None
+
+
+@needs_dark
+def test_forcing_the_flag_refuses_instead_of_ghosting():
+    """PREVENTION, separate from the prediction above: a run that never called --recommend
+    must still be stopped. Before this, forcing the flag wrote a translucent ghost and
+    exited 0."""
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as td:
+        out = os.path.join(td, 'ghost.webp')
+        r = subprocess.run([sys.executable, SCRIPT, os.path.join(DARK, '_ (7).gif'), out,
+                            '--recover-fade-alpha'], capture_output=True, text=True)
+    assert r.returncode != 0, 'forcing --recover-fade-alpha with nothing fading must refuse'
+    assert 'no translucent colour to recover' in (r.stdout + r.stderr)
 
 
 # --------------------------------------------------------------------------- defects

@@ -4,3 +4,6 @@ local/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Agent worktrees are their own checkouts, never content of this one
+.claude/worktrees/
