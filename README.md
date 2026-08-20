@@ -213,11 +213,12 @@ Five modes replace "run it and hope":
 </details>
 
 <details>
-<summary><b>Format &amp; encoding</b> — 6 flags</summary><br>
+<summary><b>Format &amp; encoding</b> — 7 flags</summary><br>
 
 | flag | |
 |:--|:--|
 | `--format {auto,gif,webp,avif}` | Container. `auto` reads the output extension. |
+| `--allow-truncating-gif` | Write a GIF even when a frame comes out fully transparent. Pillow truncates the file there — measured **85 of 123 frames**; the default is to refuse and point at WebP/APNG. |
 | `--webp-lossy` · `--webp-quality <n>` | Lossy WebP (default 90). Lossless is usually **smaller** on flat vector art — measured 2109 KB against 3005 KB on the same asset. |
 | `--webp-method <0-6>` | Encoder effort (default 2 — costs 0.6–8.3% more bytes than m4 and encodes ~2× faster). |
 | `--avif-quality <n>` | AVIF quality (default 70). Fits roughly **3× the frames** of WebP under the same byte cap. |

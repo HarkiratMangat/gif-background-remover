@@ -27,12 +27,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 **Do:** detect it in `analyze()` — scan every frame's detected background colour, and if it moves beyond a tolerance, say so and refuse rather than silently keying frame 0's colour across an animation where it means nothing. Whether a per-frame background colour is worth supporting after that is a separate and larger question. Start from `_changing_bg/`, which is the only place in the corpus that demonstrates this.
 
-### `[P1 · M · Opus5-High]` A fully-transparent frame makes Pillow's GIF writer truncate the file *(filed 2026-08-19 from the three-agent trial)*
-
-`growth.gif --auto` → GIF: `gifsicle: unknown block type 71 at file offset 702623`, **85 of 123 frames readable**, 1700ms of 2920ms. Root cause confirmed three ways — my own synthetic control, and independently by two of the three trial agents with their own controls: **an all-transparent output frame breaks the writer.** growth has one (frame 85, the rocket entirely off-canvas). Not flag-dependent: reproduced at defaults, with `pngquant`, and with `--dither-mode none`. WebP and APNG keep all 123.
-
-The script DOES warn — `WARNING: total playback length changed on write (2920ms intended, 1700ms written)` and `Saved (85 frames written from 123 intended)` — so this is not silent. **It writes the broken file anyway, and nothing in `--analyze`/`--recommend` predicts it BEFORE the render**, which is the autonomy gap: an unattended run ships a file missing 31% of its animation. **Do:** detect an all-transparent frame during analysis and either refuse GIF with a reason or auto-select WebP/APNG. One agent worked around it by duplicating the previous frame, which produced a visible stall — that is not the fix.
-
 ### `[P1 · M · Opus5-High]` `--recommend` calls a large interior design region "incidental background", and two of three agents destroyed the asset because of it *(filed 2026-08-19)*
 
 On `growth.gif`, `--recommend` emits: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region is the rocket's white body.** In a three-agent trial on five real assets, the two agents that followed the recommendation deleted **83.1% and 83.3% of growth's interior white**, and **45.8% of rocket's**, in both cases while reporting success. Only the agent given an explicit hand-written list of regions to protect got all five right.

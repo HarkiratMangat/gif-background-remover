@@ -857,8 +857,22 @@ def analyze(input_path, max_samples=40, tolerance=15):
     worst_margin_frame = None
     all_small_sizes = []
     per_frame_small_sizes = []
+    # A frame in which EVERY pixel is background becomes an entirely transparent output
+    # frame, and Pillow's GIF writer emits an unreadable block for one: the file TRUNCATES
+    # there. Measured on `growth.gif` (the rocket leaves the canvas at frame 85 of 123):
+    # `gifsicle: unknown block type 71`, 85 of 123 frames readable, 1700ms of 2920ms.
+    # Reproduced at defaults, under --quantizer pngquant, and under --dither-mode none, so
+    # it is not flag-dependent. WebP and APNG use different encoders and keep all 123.
+    #
+    # Scanned on EVERY frame, never on `sample_idxs`. growth's blank frame is a SINGLE frame
+    # in 123; the changing-background item filed the same day is the record of what sampling
+    # does to a transient -- a 10-frame spread over 30 read 78.6% at frame 10 while frame 12
+    # was 0.0%. This costs nothing extra: the loop already computes frame_bg_mask.
+    blank_frames = []
     for i in range(n_frames):
         frame_bg_mask = color_mask(all_rgb_frames[i], bg_rgb, tolerance)
+        if frame_bg_mask.all():
+            blank_frames.append(i)
         m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
             worst_margin = m['margin_ratio']
@@ -1636,6 +1650,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
         'n_frames_total': n_frames,
         'frames_sampled': len(sample_idxs),
         'detected_bg_color': rgb_to_hex(bg_rgb),
+        'has_fully_transparent_frame': bool(blank_frames),
+        'fully_transparent_frames': blank_frames,
         'source_has_pre_existing_transparency': 'transparency' in im.info,
         'edge_hardness': edge_hardness,
         'tumble_risk': tumble_risk,
@@ -1959,7 +1975,19 @@ def recommend(input_path, tolerance=15):
              "  Prefer GIF only when the destination requires it, or when it is a genuine win on "
              "size or render time at near-equal visual quality. Always report frame counts "
              "alongside file sizes -- under a cap, frames are what actually gets spent.")
-    if _fades:
+    # A blank frame outranks the fade check: it is not a quality preference but a
+    # container-level impossibility, and an autonomous run takes these flags verbatim.
+    _blank = report.get('fully_transparent_frames') or []
+    if _blank:
+        report['recommended_format'] = 'webp-or-apng'
+        evidence.insert(0,
+            f"FORMAT: .webp or .apng -- NOT GIF. Frame(s) {_blank[:6]}"
+            f"{' ...' if len(_blank) > 6 else ''} of {report['n_frames_total']} contain nothing "
+            f"but background, so the output frame is entirely transparent. Pillow's GIF writer "
+            f"emits an unreadable block for such a frame and the file TRUNCATES there -- measured "
+            f"85 of 123 frames written on a real asset whose subject leaves the canvas. WebP and "
+            f"APNG use different encoders and keep every frame. Ranking:\n" + _rank)
+    elif _fades:
         report['recommended_format'] = 'webp-or-avif'
         evidence.insert(0,
             f"FORMAT: .webp or .avif, with --recover-fade-alpha. {len(_fades)} region(s) show a "
@@ -6223,6 +6251,24 @@ def process(input_path, output_path, args, diagnostics=None):
             rgb_frames, alpha_frames, hex_to_rgb(args.bg_color))
         print(f"Square-padded {before[1]}x{before[0]} -> "
               f"{alpha_frames[0].shape[1]}x{alpha_frames[0].shape[0]}", file=sys.stderr)
+    # Refuse rather than write a file that truncates. This is checked on the FINAL alpha
+    # planes, after every stride/resize/tier transform, because those can remove the blank
+    # frame (--frame-stride may simply skip it) -- analyze()'s source-side prediction is
+    # what steers --recommend BEFORE the render; this is the backstop that cannot be wrong.
+    # The script already warned about the shortfall after the fact ("85 frames written from
+    # 123 intended") and wrote the broken file anyway; a warning nobody reads is not a gate.
+    if _fmt == 'gif' and not getattr(args, 'allow_truncating_gif', False):
+        _blank_out = [i for i, a in enumerate(alpha_frames) if not (a > 0).any()]
+        if _blank_out:
+            raise SystemExit(
+                f"ERROR: refusing to write {output_path!r} as a GIF. Frame(s) "
+                f"{_blank_out[:6]}{' ...' if len(_blank_out) > 6 else ''} of {len(alpha_frames)} "
+                f"came out entirely transparent (the subject leaves the canvas). Pillow's GIF "
+                f"writer emits an unreadable block there and the file TRUNCATES at that frame -- "
+                f"measured 85 of 123 frames on a real asset. Nothing has been written.\n"
+                f"  Write .webp or .apng instead: different encoder, every frame kept, and true "
+                f"8-bit alpha as a bonus.\n"
+                f"  Pass --allow-truncating-gif to write the truncated GIF anyway.")
     if _fmt == 'apng':
         size_bytes = render_frames_to_apng(
             rgb_frames, alpha_frames, durations, loop, output_path)
@@ -7112,6 +7158,15 @@ def main():
                          'against the background at authoring time -- GIF '
                          'physically cannot represent that (references/'
                          'lessons.md SS16).')
+    p.add_argument('--allow-truncating-gif', action='store_true',
+                    help='Write a GIF even when a frame comes out entirely '
+                         'transparent. Pillow\'s GIF writer emits an unreadable '
+                         'block for such a frame and the file truncates there '
+                         '(measured: 85 of 123 frames written on a real asset '
+                         'whose subject leaves the canvas), so the default is to '
+                         'refuse and point at WebP/APNG, which keep every frame. '
+                         'This flag exists for the case where a truncated GIF is '
+                         'genuinely preferred to no GIF at all.')
     p.add_argument('--webp-lossy', action='store_true',
                     help='Encode WebP lossily. Default is lossless, which on '
                          'flat vector art is usually SMALLER as well as '

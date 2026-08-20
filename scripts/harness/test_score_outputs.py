@@ -93,3 +93,42 @@ def test_ungradeable_fade_reports_unverified_not_a_pass():
     never 1.0 — a vacuous pass is the exact failure this file replaced."""
     r = S.score(_p('galaxy.gif'), _p('agent-3-expert', 'galaxy_transparent.webp'))
     assert r['fade_coherence'] is None and r['fade_model'] is None, r
+
+
+# --------------------------------------------------------------- Task 2: truncating GIF
+
+SCRIPT = os.path.join(ROOT, 'scripts', 'remove_gif_background.py')
+
+
+def _analyze(path):
+    import json
+    import subprocess
+    r = subprocess.run([sys.executable, SCRIPT, path, '--analyze'],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    return json.loads(r.stdout)
+
+
+def test_all_transparent_frame_is_detected_before_render():
+    """An all-transparent output frame silently truncates a GIF at that frame
+    (Pillow 12.3.0). growth.gif has one and shipped 85 of 123 frames."""
+    a = _analyze(_p('growth.gif'))
+    assert a.get('has_fully_transparent_frame') is True
+    assert a.get('fully_transparent_frames') == [85], a.get('fully_transparent_frames')
+
+
+def test_an_asset_without_a_blank_frame_reports_false():
+    """The negative half. A detector that says True on everything is not a detector."""
+    a = _analyze(_p('rocket.gif'))
+    assert a.get('has_fully_transparent_frame') is False
+    assert a.get('fully_transparent_frames') == []
+
+
+def test_recommend_steers_away_from_gif_on_a_blank_frame():
+    """An autonomous run takes --recommend's flags verbatim, so the container decision has
+    to be IN the recommendation, not only in a post-render warning."""
+    import subprocess
+    r = subprocess.run([sys.executable, SCRIPT, _p('growth.gif'), '--recommend'],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert 'NOT GIF' in r.stdout, r.stdout[:3000]

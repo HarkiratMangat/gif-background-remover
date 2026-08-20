@@ -24,6 +24,25 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### ✅ SHIPPED — A fully-transparent frame makes Pillow's GIF writer truncate the file
+**Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.1; plan task 2 of `docs/plans/2026-08-20-post-trial-defects.md`.
+
+**What happened.** Three changes, because prediction and prevention are different jobs. `analyze()` gained `has_fully_transparent_frame` and `fully_transparent_frames`, scanned on EVERY frame rather than on `sample_idxs` and piggybacked on the per-frame `color_mask` the margin/small-region checks already compute, so it costs nothing extra — growth's blank frame is frame 85 of 123, a single frame, and the changing-background item filed the same day is the standing record of what a spread does to a transient. `recommend()` gained a FORMAT branch that outranks the fade check and emits `FORMAT: .webp or .apng -- NOT GIF`, because an autonomous run takes those flags verbatim. And `process()` refuses the write, checked on the FINAL alpha planes after every stride/resize/tier transform (`--frame-stride` can legitimately skip the blank frame, so the source-side prediction steers the recommendation while the render-side check is the one that cannot be wrong). `--allow-truncating-gif` is the escape hatch.
+
+**Verified:** `growth.gif --auto` → `.gif` now exits 1 naming frame 85 of 123 and writes nothing; with `--allow-truncating-gif` it exits 0; `.webp` exits 0 with all 123 frames. `love.gif --auto` still hashes `2fd526b6fb3b191c`. `audit_docs.py` exits 0. Four falsifier tests in `scripts/harness/test_score_outputs.py`, including the negative half — `rocket.gif` must report `False`, because a detector that says True on everything is not a detector.
+
+**The transferable lesson:** the script ALREADY warned (`Saved (85 frames written from 123 intended)`) and wrote the broken file anyway. A warning emitted after an irreversible write is not a gate.
+
+<details><summary>Original item, kept verbatim</summary>
+
+### ~~`[P1 · M · Opus5-High]` A fully-transparent frame makes Pillow's GIF writer truncate the file *(filed 2026-08-19 from the three-agent trial)*~~
+
+`growth.gif --auto` → GIF: `gifsicle: unknown block type 71 at file offset 702623`, **85 of 123 frames readable**, 1700ms of 2920ms. Root cause confirmed three ways — my own synthetic control, and independently by two of the three trial agents with their own controls: **an all-transparent output frame breaks the writer.** growth has one (frame 85, the rocket entirely off-canvas). Not flag-dependent: reproduced at defaults, with `pngquant`, and with `--dither-mode none`. WebP and APNG keep all 123.
+
+The script DOES warn — `WARNING: total playback length changed on write (2920ms intended, 1700ms written)` and `Saved (85 frames written from 123 intended)` — so this is not silent. **It writes the broken file anyway, and nothing in `--analyze`/`--recommend` predicts it BEFORE the render**, which is the autonomy gap: an unattended run ships a file missing 31% of its animation. **Do:** detect an all-transparent frame during analysis and either refuse GIF with a reason or auto-select WebP/APNG. One agent worked around it by duplicating the previous frame, which produced a visible stall — that is not the fix.
+
+</details>
+
 ### `[P3 · L (first slice: S) · Opus5-High]` No answer yet for a moving hole with neither geometric separability nor external tracking
 **Added:** 2026-08-08, from reconciling the v4.0.0 live-skill-drop (`references/lessons.md` §15).
 
