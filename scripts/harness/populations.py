@@ -110,6 +110,30 @@ POPULATIONS = {
                  'split, never the pooled figure, exactly as with `corpus`. Their real job is the '
                  'RENDER gate, where they are the only assets in it that a real user actually '
                  'complained about.'),
+    'dark_bg': dict(
+        dir=os.path.join(ROOT, 'local/corpus dark'), labels=None, recurse=False,
+        default_label='ambiguous',
+        what='105 assets on FLAT OPAQUE NON-WHITE backgrounds -- measured on the final set '
+             '2026-08-20: 55 dark (<80 luminance), 54 saturated (chroma >=60), 65 animated. '
+             'Supplied by Harkirat 2026-08-20 to close the one gap the rest of the corpus could '
+             'not test around: before this, 76 of 97 opaque-background assets were white-ish, only '
+             '5 were dark, and all 18 non-white ones came from a single population. 119 were '
+             'supplied; 2 byte-identical duplicates were dropped, 6 with no keyable background '
+             'moved to _excluded/ and 6 whose background CHANGES COLOUR mid-animation to '
+             '_changing_bg/ (that last set is the only demonstration anywhere of the '
+             'changing-background defect, and is deliberately kept out of scoring rather than '
+             'deleted).',
+        blind_to='EVERYTHING about hardness -- labelled `ambiguous` ON PURPOSE, so it is excluded '
+                 'from every recall and specificity figure. Its job is the RING METRIC and the '
+                 'narrow fringe constants on a non-white background, not classification. Labelling '
+                 '105 assets by blanket would be the exact error SS32 records; labelling them by '
+                 'eye would cost hours and buy nothing this population is for. '
+                 '⚠️ AND IT IS NOT UNIFORMLY FLAT-KEYABLE: measured 2026-08-20 on a 24-asset '
+                 'falsifier sample (the 12 darkest plus the 12 most saturated), only 13 have a '
+                 'border that is >=90% one colour -- the other 11 are photos or gradients with a '
+                 'dark cast. Never quote a pooled render figure over this population; split it by '
+                 'border flatness first, or it will report this tool failing at content it does '
+                 'not claim to handle.'),
     'corpus': dict(
         dir=os.path.join(ROOT, 'local/corpus-webp-avif-2026-08-17'), labels=None, recurse=False,
         glob='*_ORIGINAL.gif', default_label='antialiased',

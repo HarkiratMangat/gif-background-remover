@@ -19,6 +19,22 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 *Ordered by priority, P1 first. Every item here is genuinely open: if you find a `✅ CLOSED` marker in a body under this heading, that is the drift `audit_docs.py`'s tracker gate exists to catch — report it rather than trusting either half.*
 
+### `[P1 · S · Opus5-High]` `--recover-fade-alpha` GHOSTS the whole image on a flat dark background, and `--recommend` asks for it *(filed 2026-08-20 from the dark corpus)*
+
+`local/corpus dark/_ (7).gif` — a flat BLACK background (border 93.7% within tolerance of `#000000`). `--recommend` emits `--tumble-safe --recover-fade-alpha`, and the render keeps **100% of the background**: `bg_removed_worst 0.0000`, `bg_not_opaque_worst 1.0000`, `bg_kept_fade_correlation 1.0000`. Every background pixel survives at low alpha tracking its own distance from black — the whole frame becomes a translucent ghost.
+
+**This is the hurricane mechanism (`references/lessons.md` §34.2) on a dark background**, and it is worse here: against white, a ghosted output at least composites plausibly over white; against black, "distance from the background" is *brightness*, so every lit pixel in the image reads as a fade stage. **`detect_fading_colors` has never been measured on a non-white background** — the whole corpus was white-ish until 2026-08-20.
+
+**Do:** find out whether the fade detector has any specificity at all on a dark background before trusting the recommendation. If it does not, `--recommend` must stop suggesting `--recover-fade-alpha` there. Start from this asset; the `dark_bg` population has 55 more dark ones. ⚠️ Note the recommendation ALSO pairs it with `--tumble-safe`, which fade recovery ignores — the warning added 2026-08-20 fires here, so the run now says so out loud, but saying so is not choosing correctly.
+
+### `[P2 · S · Opus5-High]` Edge-cleanup erosion deletes thin features on a dark background — nearly 2× the perimeter *(filed 2026-08-20 from the dark corpus)*
+
+`local/corpus dark/Team Valor Animation #PokemonGO.gif`, a flat black background: `art_kept_worst 0.2399`, `interior_kept_worst 0.0000`. **The worst frame holds 0.54% of the animation's peak artwork — a thin flame wisp — and `art_lost_over_perimeter` is 1.977.**
+
+⚠️ **That ratio is what makes this a real finding rather than the collapsed-denominator artefact filed the same day.** A 1px erosion cannot cost more than about one perimeter ring; measured across the white-background trial assets it ran 0.70–0.97. Here it is nearly TWO rings, which is the signature of a feature so thin it is bitten from both sides at once. Same field, opposite verdict — which is the point of having built it.
+
+**Do:** the erosion calibrator optimises the fringe metric and has no term for thin-feature survival. `check_erosion_damage` already detects components that lose most of their pixels and only WARNS. Consider making the calibrator refuse a level that triggers it. Re-check against the white assets, where erosion 1 is measurably correct on 2 of 5 (`references/lessons.md` §34.5).
+
 ### `[P1 · L (first slice: M) · Opus5-High]` A 40-frame spread cannot see a transient, and the trigger for looking harder cannot be computed from the spread *(filed 2026-08-20, Harkirat's question)*
 
 `analyze(max_samples=40)` samples the expensive per-frame work — the candidate-region enclosure search, edge hardness, the band-interior/fade detection. Several checks already scan every frame (tumble margin, the small-region histogram, the blank-frame scan added 2026-08-20), so this is about the sampled half only.
