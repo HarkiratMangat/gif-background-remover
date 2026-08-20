@@ -19,6 +19,8 @@ from concurrent.futures import ProcessPoolExecutor
 warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from populations import iter_assets, score, POPULATIONS
+from machine import default_jobs
+from analysis_cache import cached_analyze, stats as cache_stats
 
 ROOT = "/Applications/Claude Code/Gif-Background-Remover"
 FIELDS = ('appears_hard_edged', 'plateau_cliff_ratio', 'plateau_cliff_samples', 'change_line_density',
@@ -41,12 +43,16 @@ def load(path, name):
 # BrokenProcessPool with a 1-second wall time turned out to mean; the run reported "8 jobs: 1s",
 # which reads as a 133x speedup until you notice no output file was written.
 _WORKER_MOD = None
+_WORKER_SCRIPT = None
+_WORKER_NO_CACHE = False
 
 
-def _init_worker(script_path):
+def _init_worker(script_path, no_cache=False):
     """Load the script under test ONCE per worker, not once per asset."""
-    global _WORKER_MOD
+    global _WORKER_MOD, _WORKER_SCRIPT, _WORKER_NO_CACHE
     _WORKER_MOD = load(script_path, 'under_test')
+    _WORKER_SCRIPT = script_path
+    _WORKER_NO_CACHE = no_cache
 
 
 def score_one(row):
@@ -54,7 +60,12 @@ def score_one(row):
     k, path, pop, lab = row
     rec = {'pop': pop, 'label': lab, 'path': os.path.relpath(path, ROOT)}
     try:
-        r = _WORKER_MOD.analyze(path)
+        # analyze() is deterministic in (asset bytes, script code), so it is computed once per
+        # script version and served from disk after that. The cache key includes the script's
+        # SHA, so any edit to the product invalidates every entry -- which matters because
+        # editing the product is exactly what a session using this harness does.
+        r, _hit = cached_analyze(_WORKER_MOD, path, _WORKER_SCRIPT,
+                                 enabled=not _WORKER_NO_CACHE)
         eh = r['edge_hardness']
         rec.update({f: eh.get(f) for f in FIELDS})
         rec['pred'] = eh.get('appears_hard_edged')
@@ -85,7 +96,12 @@ def main():
     # produced three data-loss classes. Parallelism costs nothing in the product at all.
     # maxtasksperchild is not tuning: a worker that has decoded a 3840x2160 sheet holds that
     # memory, and 8 of them at once is how a machine starts swapping.
-    ap.add_argument('--jobs', '-j', type=int, default=min(8, os.cpu_count() or 1),
+    ap.add_argument('--no-cache', action='store_true',
+                    help="recompute every analyze() instead of serving unchanged ones from "
+                         "local/.analysis-cache/. The cache is keyed on the SHA of the script "
+                         "under test AND each asset's mtime/size, so an edit to either already "
+                         "invalidates it -- reach for this only to prove that.")
+    ap.add_argument('--jobs', '-j', type=int, default=default_jobs(),
                     help='parallel worker processes (default 1). Results are identical either '
                          'way -- each asset is scored independently -- but ordering in the output '
                          'dict follows completion, so compare by KEY, never by position.')
@@ -105,47 +121,24 @@ def main():
     partial = a.out + '.partial'
 
 
-    def _score_one(row):
-        """Worker body: one asset in, one record out. Must stay import-safe and self-contained."""
-        k, path, pop, lab = row
-        rec = {'pop': pop, 'label': lab, 'path': os.path.relpath(path, ROOT)}
-        try:
-            m = _worker_mod()
-            r = m.analyze(path)
-            eh = r['edge_hardness']
-            rec.update({f: eh.get(f) for f in FIELDS})
-            rec['pred'] = eh.get('appears_hard_edged')
-            rec['frames'] = r.get('n_frames_total')
-        except (Exception, SystemExit) as e:
-            rec['error'] = f"{type(e).__name__}: {e}"
-        return k, rec
-
-
-    _WORKER_MOD = None
-
-
-    def _worker_mod():
-        """Load the script under test ONCE per worker, not once per asset."""
-        global _WORKER_MOD
-        if _WORKER_MOD is None:
-            _WORKER_MOD = load(_SCRIPT_PATH, 'under_test')
-        return _WORKER_MOD
     if a.jobs > 1:
-        print(f"running {a.jobs} workers", flush=True)
+        from machine import default_jobs as _dj
+        print(f"running {a.jobs} workers ({_dj(explain=True)[1]})", flush=True)
         # No max_tasks_per_child. It was there to bound memory, but the largest asset in the
         # corpus holds 100 MB of frames and 8 workers of those is 0.8 GB of 16 -- so it was
         # bounding nothing, while its repeated respawns hung the pool partway through a full
         # run: parent alive at 0% CPU, zero workers left, no error raised. A knob that solves
         # no measured problem and can hang the run is worse than absent.
         with ProcessPoolExecutor(max_workers=a.jobs,
-                                 initializer=_init_worker, initargs=(a.script,)) as ex:
+                                 initializer=_init_worker,
+                                 initargs=(a.script, a.no_cache)) as ex:
             for n, (k, rec) in enumerate(ex.map(score_one, assets, chunksize=1)):
                 out[k] = rec
                 if n % 25 == 0:
                     json.dump(out, open(partial, 'w'), indent=1)
                     print(f"  {n}/{len(assets)}  {time.time()-t0:.0f}s", flush=True)
     else:
-        _init_worker(a.script)
+        _init_worker(a.script, a.no_cache)
         for n, row in enumerate(assets):
             k, rec = score_one(row)
             out[k] = rec

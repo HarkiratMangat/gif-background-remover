@@ -35,7 +35,8 @@ from populations import iter_assets
 
 ROOT = "/Applications/Claude Code/Gif-Background-Remover"
 DEFAULT_SCRIPT = os.path.join(ROOT, 'scripts/remove_gif_background.py')
-DEFAULT_JOBS = min(8, os.cpu_count() or 1)
+from machine import default_jobs as _default_jobs   # noqa: E402
+DEFAULT_JOBS = _default_jobs()
 # ⚠️ --script is REQUIRED for a comparison run, and this is why: the first
 # attempt at a pre-fix baseline read the working-tree script on every asset, and
 # the working tree was edited 15 minutes into the run. Forty assets were measured

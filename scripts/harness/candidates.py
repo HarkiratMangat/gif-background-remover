@@ -63,6 +63,7 @@ from PIL import Image
 warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from populations import iter_assets, score
+from machine import default_jobs as _default_jobs
 
 STRONG, MINP = 40, 2
 
@@ -241,7 +242,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True)
     ap.add_argument('--only', default=None)
-    ap.add_argument('--jobs', '-j', type=int, default=min(8, os.cpu_count() or 1),
+    ap.add_argument('--jobs', '-j', type=int, default=_default_jobs(),
                     help='parallel workers. Defaults to %(default)s; pass 1 to force serial. '
                          'PROCESSES here, not threads: unlike the render harness this measures '
                          'in-process with numpy rather than shelling out, so the GIL is held. '
