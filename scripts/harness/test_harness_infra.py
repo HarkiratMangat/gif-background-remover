@@ -138,3 +138,43 @@ def test_a_tiny_memory_budget_binds_before_the_cores_do():
         import pytest
         pytest.skip('no memory probe on this platform')
     assert M.default_jobs(per_worker_mb=10 ** 7) == M.MIN_JOBS
+
+
+# --------------------------------------------------------------- snapshot.freeze (2026-08-20)
+#
+# Until this existed, only render_baseline.py froze the script under test, so a 12-minute
+# analyze pass silently forbade editing the file it was measuring. These prove the guarantee
+# is real rather than nominal -- a "freeze" that still reads the live file would pass every
+# smoke test and fail exactly once, invisibly, mid-measurement.
+
+
+def test_freeze_survives_an_edit_to_the_source(tmp_path):
+    """The whole point: mutate the source AFTER freezing and the snapshot must not move."""
+    import snapshot
+    src = tmp_path / 'prod.py'
+    src.write_text('VALUE = "before"\n')
+    snap, sha = snapshot.freeze(str(src))
+    src.write_text('VALUE = "after -- edited mid-run"\n')
+    assert open(snap).read() == 'VALUE = "before"\n'
+    assert open(src).read() != open(snap).read(), 'the test did not actually edit the source'
+
+
+def test_freeze_reports_the_SOURCE_sha_not_the_snapshot_path(tmp_path):
+    """The digest must identify the code being measured, so a run is attributable to a
+    commit. Two freezes of identical bytes agree; a changed byte does not."""
+    import snapshot
+    a = tmp_path / 'a.py'; a.write_text('X = 1\n')
+    b = tmp_path / 'b.py'; b.write_text('X = 1\n')
+    c = tmp_path / 'c.py'; c.write_text('X = 2\n')
+    assert snapshot.freeze(str(a))[1] == snapshot.freeze(str(b))[1]
+    assert snapshot.freeze(str(a))[1] != snapshot.freeze(str(c))[1]
+
+
+def test_freeze_keeps_the_analysis_cache_namespace(tmp_path):
+    """Freezing must be FREE: the snapshot is byte-identical, so analysis_cache's script-SHA
+    key is unchanged and a frozen run shares its cache with an unfrozen one. If this ever
+    fails, every frozen run silently starts cold."""
+    import snapshot
+    src = tmp_path / 'prod.py'; src.write_text('X = 1\n')
+    snap, _ = snapshot.freeze(str(src))
+    assert AC.script_sha(str(src)) == AC.script_sha(snap)

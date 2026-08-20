@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from populations import iter_assets, score, POPULATIONS
 from machine import default_jobs
 from analysis_cache import cached_analyze, stats as cache_stats
+from snapshot import freeze
 
 ROOT = "/Applications/Claude Code/Gif-Background-Remover"
 FIELDS = ('appears_hard_edged', 'plateau_cliff_ratio', 'plateau_cliff_samples', 'change_line_density',
@@ -116,7 +117,11 @@ def main():
                   for g in bypop.values() for i in range(min(a.sample, len(g)))]
         print(f"⚠️  SAMPLED: {len(assets)} assets, at most {a.sample} per population. "
               f"Figures from this run are for iteration only.", flush=True)
-    print(f"{len(assets)} assets; script={a.script}", flush=True)
+    # Freeze the script under test. Until 2026-08-20 only render_baseline.py did this, so a
+    # 12-minute analyze pass silently forbade editing the very file it was measuring; now
+    # nothing does. See scripts/harness/snapshot.py for the three times that cost a run.
+    a.script, _src_sha = freeze(a.script)
+    print(f"{len(assets)} assets; script frozen from {_src_sha}", flush=True)
     out, t0 = {}, time.time()
     partial = a.out + '.partial'
 

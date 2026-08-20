@@ -36,6 +36,7 @@ from populations import iter_assets
 ROOT = "/Applications/Claude Code/Gif-Background-Remover"
 DEFAULT_SCRIPT = os.path.join(ROOT, 'scripts/remove_gif_background.py')
 from machine import default_jobs as _default_jobs   # noqa: E402
+from snapshot import freeze
 DEFAULT_JOBS = _default_jobs()
 # ⚠️ --script is REQUIRED for a comparison run, and this is why: the first
 # attempt at a pre-fix baseline read the working-tree script on every asset, and
@@ -178,10 +179,7 @@ def run(a):
     # tree AGAIN, during a run whose whole purpose was to measure the edits being
     # made. "Be careful not to edit during a run" is not a fix -- freezing a copy
     # here is, because it cannot be forgotten.
-    snap = os.path.join(tempfile.mkdtemp(prefix='script_snapshot_'), 'under_test.py')
-    shutil.copy2(a.script, snap)
-    src_digest = hashlib.sha256(open(a.script, 'rb').read()).hexdigest()[:12]
-    a.script = snap
+    a.script, src_digest = freeze(a.script)
     print(f"{len(assets)} assets, set={a.set}, script frozen from {src_digest}", flush=True)
     out = {}; t0 = time.time(); partial = a.out + '.partial'
     tmp = tempfile.mkdtemp(prefix='render_baseline_')
