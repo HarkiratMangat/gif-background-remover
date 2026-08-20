@@ -46,8 +46,12 @@ SCRIPT = DEFAULT_SCRIPT
 # Only the alpha-carrying populations can regress on a source-transparency
 # change, and `labelled` is the opaque control that must NOT move.
 SETS = {
-    'standard': dict(labelled=None, alphas=None, sprites=40, corpus=None),
-    'fast': dict(labelled=8, alphas=8, sprites=8),
+    # `trial` is in BOTH sets and is never subsampled. Until 2026-08-20 the render gate did
+    # not contain a single asset a human had complained about, which is why a change to the
+    # incidental-region verdict could come back "214 vs 214, 0 changed" while visibly fixing
+    # the asset that motivated it. These 6 are the ones with a complaint attached.
+    'standard': dict(labelled=None, alphas=None, sprites=40, corpus=None, trial=None),
+    'fast': dict(labelled=8, alphas=8, sprites=8, trial=None),
     'full': dict(labelled=None, alphas=None, sprites=None, corpus=None, emoji=None),
 }
 

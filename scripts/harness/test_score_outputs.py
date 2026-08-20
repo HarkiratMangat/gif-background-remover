@@ -197,3 +197,31 @@ def test_a_full_size_frame_is_not_explained_away():
         r = S.score(_p(f'{f}.gif'), f'/tmp/{f}_e1.webp')
         assert r['art_frame_share_at_worst'] > 0.9, (f, r)
         assert r['art_lost_over_perimeter'] <= 1.1, (f, r)
+
+
+# ------------------------------------------------------- paper-plane, supplied 2026-08-20
+
+def test_paper_plane_reproduces_both_2026_08_20_p1_defects():
+    """Harkirat supplied this after seeing v6 give "nearly the same result" as v3.x: the
+    plane exits the canvas and the animation appeared to freeze mid-flight. It exercises
+    BOTH P1 fixes from the same day, independently of the trial assets."""
+    a = _analyze(_p('paper-plane.gif'))
+    assert a['has_fully_transparent_frame'] is True
+    assert a['fully_transparent_frames'] == [41], a['fully_transparent_frames']
+    # its two design regions sit UNDER the old 0.9 bar -- the pre-2026-08-20 code
+    # would have called them incidental background and deleted them
+    big = [r for r in a['candidate_regions'] if r['region_canvas_fraction'] >= 0.025]
+    assert len(big) == 2, big
+    assert all(0.5 <= r['enclosure_ratio'] < 0.9 for r in big), big
+    assert all(r['likely_intentional_design'] for r in big), big
+
+
+def test_interior_loss_reports_its_own_shape():
+    """`interior_kept_worst` is a SCREEN, not a verdict. paper-plane reads 0.556 because the
+    removed pixels are the COUNTER of a closed loop -- a hole a transparent sticker should
+    see through. The fields must separate that from real destruction of a body."""
+    ok = S.score(_p('paper-plane.gif'), '/tmp/pp.webp')
+    bad = S.score(_p('growth.gif'), _p('agent-2-detailed', 'growth.webp'))
+    assert ok['interior_lost_largest_component'] < 5000, ok
+    assert bad['interior_lost_largest_component'] > 10000, bad
+    assert bad['interior_kept_worst'] < ok['interior_kept_worst']

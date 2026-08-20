@@ -2128,6 +2128,8 @@ An output frame in which **every pixel is transparent** breaks Pillow's GIF writ
 
 ⚠️ **The script already printed `WARNING: total playback length changed on write` and `Saved (85 frames written from 123 intended)` — and wrote the file anyway.** That is the lesson worth keeping: a warning emitted after an irreversible write is not a gate, and an autonomous run has already shipped by the time anyone could read it.
 
+⚠️ **This is how the symptom presents to a viewer, and it does not look like truncation.** A second asset — a paper plane that flies off the canvas at frame 41 of 98 — was reported as the animation *freezing mid-flight*, with the pixels "stuck" before the subject flew back in. It is the same bug: the decoder stops at the unreadable block and the last good frame stays on screen for the remainder of the loop. The same asset produced the same symptom across three major versions of this skill, because nothing between them ever looked for a blank frame. **If an output appears to stall or freeze part way through, count its frames before theorising about timing.**
+
 **When it happens:** any animation where the subject leaves the canvas entirely, even for one frame. **The fix is the container** — WebP and APNG use a different encoder and keep every frame. Do not work around it by duplicating the previous frame; that produces a visible stall.
 
 ### 34.2 `--recover-fade-alpha` is a cliff, not a ramp — and *pale* is not *translucent*

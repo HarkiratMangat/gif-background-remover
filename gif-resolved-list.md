@@ -24,6 +24,21 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 
 ## Shipped / fixed / closed
 
+### ✅ CLOSED — `--recover-fade-alpha` silently disabled every protection flag
+**Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.4; plan task 5.
+
+**What happened.** The combination is now refused OUT LOUD rather than composed. `--recover-fade-alpha` takes its own render branch, deriving protection topologically (enclosed = opaque) and never consulting `protected_masks`, so `--tumble-safe`, `--protect-outline-color`, `--protect-region`, `--protect-band-only` and `--keep-bg-blob-if-near` were all ignored with no message. The run now prints exactly which flags are being ignored, says "not weakened, ignored", and points at §34.4. Verified live on the asset that motivated it: combining fade recovery with `--tumble-safe` on growth prints `does NOT apply --tumble-safe, --protect-outline-color`.
+
+**Not composed, deliberately.** Making the two paths compose is a real design question — the fade branch's flood starts from the canvas border, which is precisely what tumble protection exists to prevent — and a much larger change than this item. The difference between a known limit and a silent one is the message.
+
+<details><summary>Original item, kept verbatim</summary>
+
+### ~~`[P2 · S · Sonnet5-High]` `--recover-fade-alpha` silently disables `--tumble-safe` and every other protection flag *(filed 2026-08-19)*~~
+
+The render loop takes the `recovered_rgb` branch and skips `protected_masks` entirely, so a run combining fade recovery with tumble-safe protection gets only the former, with no warning. Found by the expert-prompt agent on `growth.gif`, where fade recovery deletes the rocket body on ~25 frames because its flood starts from the canvas border — and `--tumble-safe` is exactly the fix that cannot be combined with it. **Do:** either make them composable or refuse the combination out loud.
+
+</details>
+
 ### ✅ CLOSED — the two erosion items, which contradicted each other and were both wrong
 **Closed:** 2026-08-20, on `feat/v6-backlog`. **Full story:** `references/lessons.md` §34.5; plan task 4 of `docs/plans/2026-08-20-post-trial-defects.md`.
 

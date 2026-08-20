@@ -90,6 +90,26 @@ POPULATIONS = {
                  'recall and specificity figure. Its job is the gifsicle colour-dither question, which is about '
                  'what the ENCODER does to a smooth ramp, not about what kind of art something is. That is also '
                  'why a constructed fixture is legitimate here and was not for the detection corpus.'),
+    'trial': dict(
+        dir=os.path.join(ROOT, 'local/Corpus Trial Gifs'), labels=None, recurse=False,
+        glob='*.gif', default_label='antialiased',
+        what='The 6 assets the 2026-08-19 three-agent trial and its follow-up were run on: five '
+             '640x640 flat vector icons on white (galaxy, growth, hurricane, rocket, satellite) '
+             'plus paper-plane, supplied by Harkirat 2026-08-20. Every one of them is a case some '
+             'gate here could NOT see: the trial found five defects in ninety minutes on a build '
+             'that had just passed the 797-asset corpus, an xhigh code review and a full render '
+             'diff, because all three compare the product against itself or a label rather than '
+             'against what a user wanted. paper-plane is the sharpest of them -- it exits the '
+             'canvas at frame 41 of 98, reproducing in v6 the same "pixels stuck mid-animation" '
+             'Harkirat saw in v3.x, and it independently exercises BOTH 2026-08-20 P1 fixes: the '
+             'fully-transparent-frame GIF refusal, and the area-conditioned incidental-region '
+             'verdict (its two design regions sit at enclosure_ratio 0.85, under the old 0.9 bar, '
+             'so the previous code would have deleted them).',
+        blind_to='pixel art entirely, and small sample. These are 6 easy true negatives for any '
+                 'hard-edge rule, so they buy specificity almost for free -- read the per-population '
+                 'split, never the pooled figure, exactly as with `corpus`. Their real job is the '
+                 'RENDER gate, where they are the only assets in it that a real user actually '
+                 'complained about.'),
     'corpus': dict(
         dir=os.path.join(ROOT, 'local/corpus-webp-avif-2026-08-17'), labels=None, recurse=False,
         glob='*_ORIGINAL.gif', default_label='antialiased',

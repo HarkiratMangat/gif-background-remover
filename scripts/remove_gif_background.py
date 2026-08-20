@@ -1721,6 +1721,13 @@ def analyze(input_path, max_samples=40, tolerance=15):
     }
 
 
+# Set the first time recommend() emits the container ranking in this process, so a batch
+# prints those ~150 words once instead of once per asset. Process-level state is right here
+# and only here: it is a PRESENTATION fact about one run's output, not a per-asset analysis
+# result -- nothing downstream reads it and no verdict depends on it.
+_FORMAT_RANK_EMITTED = False
+
+
 def recommend(input_path, tolerance=15):
     """
     Run analyze() and translate its report into a suggested command line
@@ -2036,6 +2043,12 @@ def recommend(input_path, tolerance=15):
     #   compatibility        WebP > GIF > AVIF
     #   GIF                  only when explicitly required, or a genuine win on
     #                        size/render-time at near-equal visual quality
+    # ~150 identical words per asset. On a five-asset job one trial session read it five
+    # times and called it "the single most wasteful thing I read all session". The ranking
+    # is invocation-level advice, not per-asset evidence, so it is emitted in full ONCE and
+    # referred to thereafter. The per-asset VERDICT above it is unchanged -- that part is
+    # genuinely per-asset and is what an autonomous run acts on.
+    global _FORMAT_RANK_EMITTED
     _rank = ("  full resolution -> WebP lossless (bit-exact, widest support), "
              "then AVIF q85 (smaller, still excellent), then GIF.\n"
              "  under a byte cap (e.g. 256 KB emoji) -> AVIF first: measured, it keeps EVERY "
@@ -2044,6 +2057,10 @@ def recommend(input_path, tolerance=15):
              "  Prefer GIF only when the destination requires it, or when it is a genuine win on "
              "size or render time at near-equal visual quality. Always report frame counts "
              "alongside file sizes -- under a cap, frames are what actually gets spent.")
+    if _FORMAT_RANK_EMITTED:
+        _rank = "  (container ranking as printed for the first asset of this run)"
+    else:
+        _FORMAT_RANK_EMITTED = True
     # A blank frame outranks the fade check: it is not a quality preference but a
     # container-level impossibility, and an autonomous run takes these flags verbatim.
     _blank = report.get('fully_transparent_frames') or []
@@ -5855,6 +5872,30 @@ def process(input_path, output_path, args, diagnostics=None):
 
     recovered_rgb = recovered_alpha = None
     if getattr(args, 'recover_fade_alpha', False):
+        # --recover-fade-alpha takes its OWN render branch, which derives protection
+        # topologically (enclosed = opaque) and never consults `protected_masks` -- see the
+        # `recovered_rgb is not None` branch in the frame loop below. Every protection flag
+        # is therefore silently ignored when combined with it. Found by the expert-prompt
+        # session of the 2026-08-19 three-agent trial on an asset that needs BOTH: fade
+        # recovery deletes the rocket body on ~25 frames because its flood starts from the
+        # canvas border, and --tumble-safe is exactly the fix that cannot be combined with
+        # it. Composing the two is a real design question and a much larger change; saying
+        # so out loud costs nothing and is the difference between a known limit and a
+        # silent one. references/lessons.md SS34.4
+        _ignored = [n for n, v in (
+            ('--tumble-safe', getattr(args, 'tumble_safe', False)),
+            ('--protect-outline-color', getattr(args, 'protect_outline_color', None)),
+            ('--protect-region', getattr(args, 'protect_region', None)),
+            ('--protect-band-only', getattr(args, 'protect_band_only', None)),
+            ('--keep-bg-blob-if-near', getattr(args, 'keep_bg_blob_if_near', None)),
+        ) if v]
+        if _ignored:
+            print("WARNING: --recover-fade-alpha takes its own render path and does NOT "
+                  "apply " + ", ".join(_ignored) + ". "
+                  + ("They are" if len(_ignored) > 1 else "It is")
+                  + " being IGNORED for this run -- not weakened, ignored. Pick one: fade "
+                    "recovery, or region protection. (references/lessons.md SS34.4)",
+                  file=sys.stderr)
         fade_log = []
         recovered_rgb, recovered_alpha = recover_fade_alpha_frames(
             rgb_frames_raw, hex_to_rgb(args.bg_color),

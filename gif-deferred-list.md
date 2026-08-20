@@ -43,10 +43,6 @@ The source colour moves smoothly; alpha holds flat at 255 through frame 12 then 
 
 ⚠️ **The deeper error, and it may not be fixable by tuning:** `--recover-fade-alpha` treats *pale* as *translucent*. Hurricane's badge is a solid pale shape the animator drew getting lighter, not a see-through one. Reconstructing alpha from paleness composites identically over white and wrongly over anything else. **For a fade drawn against the background colour, alpha recovery and colour fidelity are different goals**, and the tool currently assumes they are the same. `references/lessons.md` §16 is the existing evidence trail.
 
-### `[P2 · S · Sonnet5-High]` `--recover-fade-alpha` silently disables `--tumble-safe` and every other protection flag *(filed 2026-08-19)*
-
-The render loop takes the `recovered_rgb` branch and skips `protected_masks` entirely, so a run combining fade recovery with tumble-safe protection gets only the former, with no warning. Found by the expert-prompt agent on `growth.gif`, where fade recovery deletes the rocket body on ~25 frames because its flood starts from the canvas border — and `--tumble-safe` is exactly the fix that cannot be combined with it. **Do:** either make them composable or refuse the combination out loud.
-
 ### `[P3 · XS · Sonnet5-Medium]` `--recommend` prints self-contradictory enclosure evidence *(filed 2026-08-19)*
 
 On rocket and satellite it emits `outline … verified across 177 frames (0% enclosed)` — `anomalous_frame_count: 0` beside `enclosure_ratio_all_frames: 0.0`. The recommendation is correct in the end (coverage 0.999/1.0) but the evidence reads as nonsense, and an autonomous run is supposed to be auditable from exactly this string.

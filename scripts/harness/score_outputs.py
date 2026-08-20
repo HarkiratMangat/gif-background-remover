@@ -158,6 +158,14 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     # Keep reporting the worst frame -- a 16-frame background wedge averaged to 99.9% and
     # vanished, which is why the rule exists. Just never read a worst-frame FRACTION as
     # damage without its denominator.
+    # `interior_kept_worst` has the same denominator problem in a different dress, found
+    # 2026-08-20 on paper-plane: it read 0.556, which sounds like half the artwork gone. The
+    # lost pixels are the COUNTER of a closed loop -- the hole inside a swirl -- which a
+    # transparent sticker is supposed to see through. The measure is a SCREEN, not a verdict:
+    # on growth and rocket it correctly caught real destruction (0.000 and 0.309), and here it
+    # correctly caught a removal that happens to be right. So report what was lost and how big
+    # the biggest single piece was, and let the caller tell a loop counter from a rocket body.
+    interior_lost, interior_biggest = [], []
     art_px, art_lost, art_perim = [], [], []
     fade_series = {c: [] for c in comps}
     for i in idxs:
@@ -176,6 +184,13 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
         outside, interior, arts = _truth(s_rgb, bg_c)
         bg.append(float((al[outside] == 0).mean()) if outside.any() else 1.0)
         inter.append(float((al[interior] > 0).mean()) if interior.any() else 1.0)
+        _il = interior & (al == 0)
+        interior_lost.append(int(_il.sum()))
+        if _il.any():
+            _lab, _n = ndimage.label(_il, structure=ST)
+            interior_biggest.append(int(np.bincount(_lab.ravel())[1:].max()) if _n else 0)
+        else:
+            interior_biggest.append(0)
         art.append(float((al[arts] > 0).mean()) if arts.any() else 1.0)
         art_px.append(int(arts.sum()))
         art_lost.append(int((al[arts] == 0).sum()) if arts.any() else 0)
@@ -200,6 +215,9 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     return {'bg_removed_worst': min(bg) if bg else 1.0,
             'interior_kept_worst': min(inter) if inter else 1.0,
             'art_kept_worst': min(art) if art else 1.0,
+            'interior_lost_px_worst': max(interior_lost) if interior_lost else 0,
+            'interior_lost_largest_component': (max(interior_biggest)
+                                                if interior_biggest else 0),
             'art_kept_worst_frame': idxs[aw] if idxs else 0,
             'art_px_at_worst': art_px[aw] if art_px else 0,
             'art_px_peak': peak,
