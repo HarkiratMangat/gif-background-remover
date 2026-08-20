@@ -165,6 +165,39 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     # on growth and rocket it correctly caught real destruction (0.000 and 0.309), and here it
     # correctly caught a removal that happens to be right. So report what was lost and how big
     # the biggest single piece was, and let the caller tell a loop counter from a rocket body.
+    # `bg_removed_worst` is the THIRD measure here to be caught punishing a correct answer,
+    # and all three failed the same way: a binary ground truth cannot grade a fade. Found
+    # 2026-08-20 on an asset whose hearts fade in and out behind a smiley -- it read 0.931,
+    # which sounds like 7% of the background left behind. Measured on its worst frame: all
+    # 13,622 "retained background" pixels are TRANSLUCENT (alpha 2-37, median 32, zero at
+    # 255), their source colour sits 5-28 from the background against a tolerance of 30, and
+    # the correlation between source distance and output alpha is 0.943. That is a fade being
+    # preserved faithfully, not background being missed.
+    # So report the strict figure AND the unambiguous one: background kept at more than half
+    # opacity is wrong under every interpretation, while background kept at low alpha
+    # proportional to its own paleness is what a fade is supposed to look like.
+    # ⚠️ NEITHER of the two supporting fields discriminates a preserved fade from a ghost,
+    # and both candidate discriminators were BUILT AND FALSIFIED before this comment was
+    # written. `bg_not_opaque_worst` does not: the known-broken hurricane output scores
+    # 1.0000 on it too, because that failure ghosts the whole image at low alpha instead of
+    # leaving a solid patch. And the distance/alpha correlation does not either -- the
+    # obvious hypothesis was that a ghost keeps alpha unrelated to paleness, but hurricane
+    # reads **0.957** at its worst frame against in-love's 0.943, because
+    # `--recover-fade-alpha` derives alpha FROM paleness, so its failure is faithful to
+    # paleness by construction. An early probe showed 0.021 and was wrong: it had sampled a
+    # different frame than the one it reported.
+    #
+    # What actually separates them is MAGNITUDE, which `bg_removed_worst` already carries:
+    #   a preserved fade   0.931 retained-background worst  (6.9% kept, all translucent)
+    #   a ghosted output   0.390                            (61% kept)
+    #   a solid bg wedge   0.951, and bg_not_opaque_worst 0.951 -- the only case where a
+    #                      pixel is kept at full opacity
+    # So the three fields are a SCREEN, read together: a low strict figure with everything
+    # translucent is a fade only if the amount retained is small. Do not reach for the
+    # correlation as a verdict; it is reported as evidence and it is kept here mainly so the
+    # next session does not re-derive the falsified hypothesis.
+    bg_opaque = []
+    bg_keep_corr = []
     interior_lost, interior_biggest = [], []
     art_px, art_lost, art_perim = [], [], []
     fade_series = {c: [] for c in comps}
@@ -183,6 +216,21 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
             o = np.dstack([s_rgb, al])
         outside, interior, arts = _truth(s_rgb, bg_c)
         bg.append(float((al[outside] == 0).mean()) if outside.any() else 1.0)
+        bg_opaque.append(float((al[outside] <= 128).mean()) if outside.any() else 1.0)
+        # ⚠️ Indexed by FRAME, and read back at the frame with the worst bg_removed -- not
+        # the frame with the most retained pixels, and not the best correlation. The first
+        # draft took max() over frames and reported hurricane at 0.957 when its own worst
+        # frame reads 0.021, i.e. it certified the known-broken output by quoting its most
+        # flattering frame. Same worst-frame rule as every other figure in this file, and
+        # exactly the failure the file exists to prevent, reintroduced in a new field.
+        _kept = outside & (al > 0)
+        _c = None
+        if _kept.sum() >= 200:
+            _d = np.abs(s_rgb[_kept].astype(int) - bg_c).sum(-1).astype(float)
+            _v = al[_kept].astype(float)
+            if _d.std() > 0 and _v.std() > 0:
+                _c = float(np.corrcoef(_d, _v)[0, 1])
+        bg_keep_corr.append(_c)
         inter.append(float((al[interior] > 0).mean()) if interior.any() else 1.0)
         _il = interior & (al == 0)
         interior_lost.append(int(_il.sum()))
@@ -213,6 +261,11 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     peak = max(art_px) if art_px else 0
     ratios = [l / p for l, p in zip(art_lost, art_perim) if p > 0]
     return {'bg_removed_worst': min(bg) if bg else 1.0,
+            'bg_not_opaque_worst': min(bg_opaque) if bg_opaque else 1.0,
+            # read at the WORST bg_removed frame -- the one that needs explaining
+            'bg_kept_fade_correlation': (round(bg_keep_corr[worst], 3)
+                                         if bg_keep_corr and bg_keep_corr[worst] is not None
+                                         else None),
             'interior_kept_worst': min(inter) if inter else 1.0,
             'art_kept_worst': min(art) if art else 1.0,
             'interior_lost_px_worst': max(interior_lost) if interior_lost else 0,

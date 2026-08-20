@@ -225,3 +225,58 @@ def test_interior_loss_reports_its_own_shape():
     assert ok['interior_lost_largest_component'] < 5000, ok
     assert bad['interior_lost_largest_component'] > 10000, bad
     assert bad['interior_kept_worst'] < ok['interior_kept_worst']
+
+
+# ------------------------------- retained background: a fade, a ghost, or a real miss
+
+def test_a_preserved_fade_is_not_reported_as_leftover_background():
+    """in-love.gif (Harkirat, 2026-08-20): hearts fade in and out behind a smiley, each
+    carrying a darker outline AND a lighter interior that both fade. `bg_removed_worst`
+    reads 0.931 -- which sounds like 7% of the background missed. Every one of those 13,622
+    pixels is translucent and its alpha tracks the source's own paleness."""
+    r = S.score(_p('in-love.gif'), '/tmp/in-love_auto.webp')
+    assert r['bg_removed_worst'] < 0.99                    # the strict figure fires...
+    assert r['bg_not_opaque_worst'] > 0.99, r              # ...nothing is kept solid...
+    assert r['bg_kept_fade_correlation'] > 0.80, r         # ...and it tracks the fade
+
+
+def test_a_ghosted_output_is_still_condemned():
+    """The negative half, and the reason neither supporting field can stand alone. The
+    known-broken hurricane output keeps nothing solid (so the opacity screen passes it) AND
+    its retained alpha tracks paleness at 0.957, BETTER than the correct fade's 0.943 --
+    because `--recover-fade-alpha` derives alpha from paleness, so its failure is faithful
+    to paleness by construction. What condemns it is the AMOUNT: it retains 61% of the
+    background where the correct fade retains 6.9%."""
+    r = S.score(_p('hurricane.gif'), _p('agent-3-expert', 'hurricane_transparent.webp'))
+    assert r['bg_not_opaque_worst'] > 0.99, r        # the opacity screen passes it
+    assert r['bg_kept_fade_correlation'] > 0.80, r   # and so does the correlation
+    assert r['bg_removed_worst'] < 0.50, r           # only the magnitude condemns it
+
+
+def test_the_two_fades_are_separated_by_amount_not_by_shape():
+    """Locks the falsified hypothesis in place so it is not re-derived: on the correct fade
+    and the ghost, both supporting fields agree; only bg_removed_worst separates them."""
+    good = S.score(_p('in-love.gif'), '/tmp/in-love_auto.webp')
+    ghost = S.score(_p('hurricane.gif'), _p('agent-3-expert', 'hurricane_transparent.webp'))
+    assert good['bg_not_opaque_worst'] > 0.99 and ghost['bg_not_opaque_worst'] > 0.99
+    assert good['bg_kept_fade_correlation'] > 0.80 and ghost['bg_kept_fade_correlation'] > 0.80
+    assert good['bg_removed_worst'] - ghost['bg_removed_worst'] > 0.4, (good, ghost)
+
+
+def test_a_solid_background_wedge_is_caught_by_opacity():
+    """The third failure mode: growth/agent-3 holds a fully opaque background wedge."""
+    r = S.score(_p('growth.gif'), _p('agent-3-expert', 'growth_transparent.webp'))
+    assert r['bg_not_opaque_worst'] < 0.99, r
+
+
+def test_for_you_survives_an_outline_that_is_recoloured_mid_animation():
+    """for-you.gif (Harkirat, 2026-08-20): the navy outline turns yellow, so navy drops
+    below 20% of its peak on 37 CONSECUTIVE frames of 144. `--recommend` must not pick a
+    colour that vanishes -- it picks the heart fill, present in all 144."""
+    import subprocess
+    out = subprocess.run([sys.executable, SCRIPT, _p('for-you.gif'), '--recommend'],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert '--protect-outline-color c83c78' in out.stdout, out.stdout[:1500]
+    r = S.score(_p('for-you.gif'), '/tmp/for-you_auto.webp')
+    assert r['interior_kept_worst'] > 0.99 and r['bg_removed_worst'] > 0.99, r

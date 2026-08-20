@@ -19,6 +19,30 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 *Ordered by priority, P1 first. Every item here is genuinely open: if you find a `✅ CLOSED` marker in a body under this heading, that is the drift `audit_docs.py`'s tracker gate exists to catch — report it rather than trusting either half.*
 
+### `[P1 · L (first slice: M) · Opus5-High]` A 40-frame spread cannot see a transient, and the trigger for looking harder cannot be computed from the spread *(filed 2026-08-20, Harkirat's question)*
+
+`analyze(max_samples=40)` samples the expensive per-frame work — the candidate-region enclosure search, edge hardness, the band-interior/fade detection. Several checks already scan every frame (tumble margin, the small-region histogram, the blank-frame scan added 2026-08-20), so this is about the sampled half only.
+
+**The failure is a RATIO, not a class of asset: a transient of length L in an N-frame file is invisible when `40/N < 1/L`.** Measured 2026-08-20 — `for-you.gif` (144 frames) loses its navy outline for **37 consecutive frames** and a 40-sample spread lands ~10 samples inside it, so it was caught; `in-love.gif` (48 frames) has fade stages living 1–2 frames each and 40-of-48 samples nearly everything; but the changing-background asset filed the same morning has a 5-frame window in 30, and a 10-sample scan read **78.6% at frame 10 while frame 12 was 0.0%**. The same content at 300 frames misses all three.
+
+⚠️ **So a "this asset looks hard" trigger computed FROM the 40 samples is unfalsifiable in the direction that matters** — the assets needing escalation most are exactly the ones whose difficulty is invisible at 40 samples. Do not build that.
+
+**Do: make the CHEAP pass dense and let it nominate frames for the EXPENSIVE pass.** The blank-frame scan is the worked example — every frame, no measurable cost, because what makes `analyze` slow is the enclosure search, not decoding. One extra cheap pass over every frame collecting the detected background colour, the pixel count of each provisional palette colour, and the non-background pixel count yields four nominations, **three of which are defects already filed here and currently undetected**:
+1. **background colour MOVES** beyond tolerance → the changing-colour-background item above.
+2. **a colour that carried the outline COLLAPSES** on a run of frames → `for-you.gif`; today it survives only because `--recommend` happened to pick a colour present in all 144 frames.
+3. **a colour appears in very FEW frames at LARGE pixel counts** → `in-love.gif`'s fade stages; this is the fade-ladder signature from `references/lessons.md` §34.2.
+4. **non-background count hits ZERO** → the blank frame. Already shipped.
+
+Each yields FRAME INDICES, so escalation adds a handful of frames to the spread instead of raising 40 → N.
+
+**First slice (M):** the cheap pass plus nomination (1) only — the changing-background item — with its cost measured on the longest asset in the corpus and the nomination shown to fire on `Pew Pew Pew.gif`. ⚠️ **A nomination that cannot flag its own motivating asset is not a signal**, and **the dense pass must be MEASURED cheap, not assumed cheap by analogy** with the blank-frame scan, which reused a mask that already existed. Changing `sample_idxs` feeds the hardness measures, so this forces a full 797-asset re-score.
+
+### `[P2 · S · Sonnet5-High]` A mid-band `enclosure_ratio_all_frames` is reported with the word "verified" *(filed 2026-08-20, the cheap half of the item above)*
+
+`for-you.gif`'s outline works on two frames in three, and `--recommend` says `Region 1: outline c83c78 verified across 144 frames (68% enclosed) -- recommending --protect-outline-color.` The number is honest and the sentence is not: an autonomous run reads "verified". The same applies to a region that fails one of the `is_intentional_design` bars narrowly — 0.85 ratio at 2.4% of canvas is a coin-flip reported as a dismissal.
+
+**Do:** treat mid-band values as UNSURE in the wording, not just in the number. Below some floor say it plainly failed, above some ceiling say verified, and in between say it is a coin-flip and name what to check. Needs no new analysis pass — every value involved is already computed. This is the half of the escalation item that can land on its own.
+
 ### `[P2 · M · Opus5-High]` A background that CHANGES COLOUR mid-animation is unprocessable, and nothing detects it *(filed 2026-08-20)*
 
 `--bg-color` is one value and `detect_bg_color` reads frame 0, so an animation whose background changes colour cannot be processed at all — and no check anywhere reports that. Measured on `Pew Pew Pew.gif`: the background cycles magenta → pink → red → orange → yellow → green across frames 11–15 of 30, and on frame 12 the frame-0 colour covers **0.0%** of the canvas. Six such assets are now isolated in `local/corpus dark/_changing_bg/` with their worst frame and colour transition recorded.
