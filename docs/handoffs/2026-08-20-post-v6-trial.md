@@ -34,6 +34,12 @@
 
 **GitHub Releases still shows v5.4.0 deliberately.** v5.5.0 is merged and tagged but unpublished; **v6.0.0 is built and committed but the trial found defects after the build**, so publishing it now would ship known-broken fade handling and a GIF path that can truncate. Decide explicitly: publish v6.0.0 as-is with the defects documented, or hold the release until the plan's Task 2 and Task 3 land.
 
+## The one long-standing gap that just closed
+
+`local/corpus dark/` arrived 2026-08-20 and closes the narrow-constants item (autonomy backlog #13), which had been blocked on a corpus since 2026-08-17. **119 files, all opaque-background, 107 keyable, 59 dark and 63 saturated** — against a previous corpus that held **5 dark assets total**, all from one population.
+
+**Register it as `ambiguous`, like `gradient_beds`** — its job is the ring metric and the fringe constants on a non-white background, not classification. Do NOT blanket-label 119 assets; §32 is the record of why. Exclude the 12 non-keyable full-bleed illustrations by name. Task 8 of the plan has the entry, the exclusions and the acceptance criterion — including that **"the constants are fine on dark backgrounds too" is a valid outcome**, not a failure to find something.
+
 ## Artefacts
 
 - Trial outputs and per-agent step logs: `local/Corpus Trial Gifs/agent-{1-vague,2-detailed,3-expert}/`

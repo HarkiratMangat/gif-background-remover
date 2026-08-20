@@ -482,9 +482,80 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
 
 ---
 
+### Task 8: Register the dark corpus and settle the narrow constants
+
+**Files:**
+- Modify: `scripts/harness/populations.py` — new population entry
+- Modify: `scripts/remove_gif_background.py` — only if Step 4's measurement says a constant must move
+
+**Interfaces:**
+- Consumes: `score()` from Task 1.
+- Produces: population `dark_bg`, usable by `run_populations.py --only dark_bg`.
+
+**Why this exists.** The fringe bands (0.04 / 0.15), the floor tolerance (0.02) and the post-render margin (0.05) were calibrated on 4–5 flat vector icons **on white**. Before 2026-08-20 the whole corpus held **97** opaque-background assets, of which **76 were white-ish and only 5 dark**, and every one of the 18 non-white ones came from a single population. The ring metric had never seen a dark or coloured background.
+
+**Measured 2026-08-20** on `local/corpus dark/` (119 files, supplied by Harkirat): **all 119 have opaque backgrounds**, 59 dark (<80 luminance), 63 saturated (chroma ≥60), 76 animated. **107 of 119 are genuinely keyable** — ≥30% of the frame is border-connected background colour. That takes dark backgrounds from 5 to ~60, across two independent sources instead of one.
+
+⚠️ **The 12 that are not keyable must be excluded explicitly, not quietly.** They are full-bleed illustrations with no background field at all (0.1–6.9% border-connected: `Malika Favre portrait…`, `Animated Loops - José Pistilli.gif`, `By Rafahu #art #illustration #gif #Batman.gif`, `Art gif.gif`, `Wallpaper and Illustration 《LADY AGNES》(5).jpeg`, `Bits - Giacomo D'Ancona.jpeg`, plus the six marginal ones between 10% and 30%). Scoring them would produce a vacuous pass, which this corpus has already recorded twice.
+
+- [ ] **Step 1: Register the population as `ambiguous`**
+
+```python
+    'dark_bg': dict(
+        dir=os.path.join(ROOT, 'local/corpus dark'), labels=None, recurse=False,
+        default_label='ambiguous',
+        what='107 keyable assets on FLAT OPAQUE NON-WHITE backgrounds -- 59 dark (<80 luminance), '
+             '63 saturated (chroma >=60), 76 animated. Supplied 2026-08-20 to close the one gap the '
+             'rest of the corpus could not test around: before this, 76 of 97 opaque-background '
+             'assets were white-ish, only 5 were dark, and all 18 non-white ones came from a single '
+             'population.',
+        blind_to='EVERYTHING about hardness -- labelled `ambiguous` ON PURPOSE, so it is excluded '
+                 'from every recall and specificity figure. Its job is the RING METRIC and the '
+                 'narrow fringe constants on a non-white background, not classification. Labelling '
+                 '119 assets by blanket would be the exact error SS32 records; labelling them by eye '
+                 'would cost hours and buy nothing this population is for.'),
+```
+
+- [ ] **Step 2: Exclude the 12 non-keyable files by name, with the reason in the entry**
+
+- [ ] **Step 3: Confirm the population scores and that its figures are excluded**
+
+```bash
+python3 scripts/harness/run_populations.py --only dark_bg --out /tmp/dark.json
+python3 -c "
+import json; d=json.load(open('/tmp/dark.json'))['records']
+print(len(d),'scored'); import collections
+print(collections.Counter(v['label'] for v in d.values()))
+assert all(v['label']=='ambiguous' for v in d.values())
+print('OK — excluded from recall/specificity by construction')"
+```
+
+- [ ] **Step 4: Measure the ring metric and the fringe constants on a non-white background**
+
+```bash
+cd scripts/harness && python3 -c "
+import glob, os, subprocess, sys, score_outputs as S
+for p in sorted(glob.glob('../../local/corpus dark/*'))[:20]:
+    d='/tmp/'+os.path.basename(p).replace(' ','_')+'.webp'
+    subprocess.run([sys.executable,'../remove_gif_background.py',p,d,'--auto'],capture_output=True)
+    if os.path.exists(d):
+        r=S.score(p,d)
+        print(f'{os.path.basename(p)[:30]:<32} edge={r["edge_cleanliness"]:.3f} bg={r["bg_removed_worst"]:.3f} art={r["art_kept_worst"]:.3f}')"
+```
+
+**Acceptance:** a constant moves **only if the dark population shows it failing**, and the change is then re-checked against the white-background assets so it does not trade one family for another. **"The numbers look fine on dark backgrounds too" is a valid and likely outcome** — record it and close the item.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A && git commit -m "test(harness): register the dark-background corpus, and settle the narrow constants against it"
+```
+
+---
+
 ## Self-Review
 
-**Spec coverage.** All seven defects from the investigation map to a task: enclosure/incidental → 3 · transparent-frame GIF → 2 · fade cliff → 6 · erosion contradiction + WebP artefacting → 4 (fused) · fade-recovery flag conflict → 5 · format convention + boilerplate → 7 · the scorer → 1. The `--recommend` "0% enclosed" evidence string is NOT covered — it is cosmetic, it is filed at P3, and adding it here would pad the plan.
+**Spec coverage.** All seven defects from the investigation map to a task, and Task 8 closes the long-standing narrow-constants item that was blocked on a corpus until 2026-08-20: enclosure/incidental → 3 · transparent-frame GIF → 2 · fade cliff → 6 · erosion contradiction + WebP artefacting → 4 (fused) · fade-recovery flag conflict → 5 · format convention + boilerplate → 7 · the scorer → 1. The `--recommend` "0% enclosed" evidence string is NOT covered — it is cosmetic, it is filed at P3, and adding it here would pad the plan.
 
 **Placeholders.** Tasks 4 and 6 deliberately leave a NUMBER unfixed, because the number is the deliverable of a measurement step within the task and the plan states the decision criterion up front. That is not a placeholder; a plan that pre-picked those thresholds would be inventing evidence.
 
