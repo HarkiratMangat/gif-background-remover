@@ -217,3 +217,27 @@ def test_fade_color_bypasses_the_ladder_guard(painted, tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
     assert os.path.exists(out)
     assert hex_to_rgb(hexc) == tuple(int(v) for v in ART)
+
+
+def test_unverified_fade_is_declined_not_emitted(flattened, monkeypatch):
+    """THE FALL-THROUGH. `fade_colors_confirmed` is three-state and its None arm is documented
+    "unverified, never a pass" -- but the gate tested only `is False`, so a confirmation step
+    that RAISED emitted the destructive flag on no evidence. The word and the behaviour
+    disagreed, which is what SS38 was one function along. Driven by making the real detector
+    raise, because that is the only way the None arm is reachable."""
+    import remove_gif_background as M
+
+    def boom(*a, **k):
+        raise RuntimeError('detector unavailable')
+
+    monkeypatch.setattr(M, 'detect_fading_colors', boom)
+    rep = M.analyze(flattened)
+    assert rep.get('fade_colors_confirmed') is None
+    out = M.recommend(flattened)
+    # The COMMAND, not the whole report -- the evidence prose legitimately contains the flag
+    # name in the sentence declining it, and asserting on the report as a whole would pass for
+    # a build that emitted it and fail for one that explained itself.
+    assert '--recover-fade-alpha' not in out['suggested_command'], \
+        'an unverified fade must not emit the flag'
+    assert any('NOT recommending --recover-fade-alpha' in e for e in out['evidence']), \
+        'and it must say why, since an autonomous run has nothing else to read'

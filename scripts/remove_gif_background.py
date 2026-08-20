@@ -2276,6 +2276,21 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             "see a fade the detector missed, name its colour with --fade-color, which "
             "bypasses detection entirely.")
     elif (any(r['classification'] == 'gradient_fade' for r in band_regions)
+          and _fade_ok is None):
+        # ⚠️ THE FALL-THROUGH USED TO EMIT THE FLAG. `fade_colors_confirmed` is three-state and
+        # its None arm is written "unverified, never a pass" -- but the gate below only tested
+        # `is False`, so a confirmation step that RAISED sent an autonomous run straight into
+        # the destructive path with no evidence at all. The word and the behaviour disagreed,
+        # which is exactly what SS38 was, one function along. Unverified means decline.
+        evidence.append(
+            "NOT recommending --recover-fade-alpha: a band-interior region shows the "
+            "gradient-fade signature, but the fade detector could not be run on this asset, so "
+            "there is no evidence that anything is actually translucent. This flag takes its "
+            "own render path and ignores every protection flag, and on a source with nothing "
+            "flattened it keys the background to a faint non-zero alpha instead of removing it "
+            "-- so an UNVERIFIED fade is not a reason to reach for it. Name the fading colour "
+            "with --fade-color if you can see one.")
+    elif (any(r['classification'] == 'gradient_fade' for r in band_regions)
           and report.get('fade_palette_is_ladder')):
         # The detector found translucency, and it found TOO MUCH of it in one direction:
         # a fade LADDER, i.e. one colour painted at several lightnesses rather than a
@@ -2478,6 +2493,16 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             f"the art palette, so there is no partial transparency for WebP/AVIF to carry "
             f"that GIF cannot. WebP/AVIF are still the better containers on edge quality. "
             f"Ranking:\n" + _rank)
+    elif _fades and report.get('fade_colors_confirmed') is None:
+        # Same fall-through as the flag gate above. GIF is not DISQUALIFIED by a fade nobody
+        # could confirm -- but say that it is unconfirmed rather than implying it was checked.
+        report['recommended_format'] = 'gif-ok'
+        evidence.insert(0,
+            f"FORMAT: GIF is not disqualified. {len(_fades)} region(s) tripped the "
+            f"gradient-fade screen and the fade detector could NOT be run, so whether any "
+            f"partial transparency exists is UNVERIFIED -- not confirmed absent, and not "
+            f"confirmed present. WebP/AVIF remain the better containers on edge quality and "
+            f"are the safe choice if you can see a fade. Ranking:\n" + _rank)
     elif _fades and report.get('fade_palette_is_ladder'):
         # A PAINTED fade is opaque artwork in pale colours, so GIF can carry it faithfully.
         # Saying "webp-or-avif, with --recover-fade-alpha" here would tell an autonomous run
