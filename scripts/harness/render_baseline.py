@@ -252,8 +252,17 @@ def compare(pa, pb):
         head = f"  {k}  [{a.get('label')}/{a.get('pop')}]"
         if 'opaque_total' in d:
             x, y = d['opaque_total']
-            pct = (100.0 * y / x) if x else float('nan')
-            head += f"  opaque {x} -> {y} ({pct:.1f}%)"
+            # ⚠️ EITHER SIDE CAN BE None -- an asset that RENDERED on one side and was
+            # REFUSED on the other has no opaque count there, and `100.0 * None` is a
+            # TypeError that kills the whole comparison after the header has already
+            # printed "19 changed". Hit for real on 2026-08-20, the first time a release
+            # diff spanned a change that adds a refusal: the gate reported a number and
+            # then crashed before naming a single asset, which is the worst of both.
+            if x is None or y is None:
+                head += f"  opaque {x} -> {y}  (no output on one side)"
+            else:
+                pct = (100.0 * y / x) if x else float('nan')
+                head += f"  opaque {x} -> {y} ({pct:.1f}%)"
         elif 'alpha_sha256' in d:
             head += "  alpha CHANGED (same opaque count)"
         for f in ('returncode', 'no_output', 'frames', 'size'):

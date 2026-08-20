@@ -337,3 +337,48 @@ def test_a_SUSTAINED_recolour_IS_told_to_split():
     m = _remedy(list(range(100, 200)), ['00ff00'], 200)
     assert 'long enough to SPLIT' in m
     assert 'SPLITTING WOULD NOT HELP' not in m
+
+
+# --------------------------- the ALREADY-BACKGROUND-REMOVED false positives (2026-08-20)
+#
+# ⚠️ Caught by the PRE/POST render gate, not by any analyze()-level check: the refusal fired
+# on 9 of 37 assets in the `alphas` population -- already-cut-out art with no background at
+# all -- because the detector had only ever been validated on 71 OPAQUE assets. Two distinct
+# causes, and fixing one left the other:
+#   * under alpha == 0 the RGB is whatever the encoder left there, and for a GIF that is a
+#     palette entry which can differ frame to frame. Voting on it reads noise as a colour.
+#   * a large piece of ARTWORK touching three corners on frame 0 reads as a background, and
+#     then animates away.
+# After both: 0 of 37 alphas fire, 6 of 6 positives still do, 0 of 105 dark negatives do.
+
+
+def test_a_fully_transparent_corner_is_not_a_background_reading():
+    R = _script()
+    import numpy as np
+    rgb = np.zeros((20, 20, 3), np.uint8)
+    rgb[:] = (10, 20, 30)                      # arbitrary junk under the transparency
+    trans = np.ones((20, 20), bool)            # every pixel fully transparent
+    p = R.probe_frame_background(rgb, (255, 255, 255), 15, transparent=trans)
+    assert p['corner_color'] is None, p
+    assert p['distance_from_reference'] is None
+
+
+def test_an_unreadable_frame_0_reports_unverified_not_a_recolour():
+    """The fall-through of a guard that can REFUSE must never be a verdict."""
+    R = _script()
+    probes = [{'corner_color': None, 'distance_from_reference': None,
+               'reference_coverage': 0.0, 'corner_color_coverage': None}] * 8
+    out = R.summarise_background_color_stability(probes)
+    assert out['changes'] is None, out
+    assert out['unverified_reason'] and 'readable' in out['unverified_reason']
+
+
+def test_opaque_frames_are_still_readable():
+    """The negative half: the fix must not blind the detector on ordinary opaque art."""
+    R = _script()
+    import numpy as np
+    rgb = np.zeros((20, 20, 3), np.uint8)
+    rgb[:] = (255, 0, 255)
+    p = R.probe_frame_background(rgb, (255, 0, 255), 15, transparent=np.zeros((20, 20), bool))
+    assert p['corner_color'] == 'ff00ff'
+    assert p['distance_from_reference'] == 0

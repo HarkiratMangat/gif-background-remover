@@ -283,7 +283,7 @@ BG_RECOLOR_DISTANCE = 40
 BG_RECOLOR_COLLAPSE = 0.15
 
 
-def probe_frame_background(rgb, bg_rgb, tolerance=15, bg_mask=None):
+def probe_frame_background(rgb, bg_rgb, tolerance=15, bg_mask=None, transparent=None):
     """One frame's background reading, for the dense scan below.
 
     Returns this frame's own corner-majority colour, how far that sits from the reference
@@ -298,8 +298,25 @@ def probe_frame_background(rgb, bg_rgb, tolerance=15, bg_mask=None):
     if bg_mask is None:
         bg_mask = color_mask(rgb, bg_rgb, tolerance)
     h, w, _ = rgb.shape
-    corners = [tuple(int(v) for v in c)
-               for c in (rgb[0, 0], rgb[0, w - 1], rgb[h - 1, 0], rgb[h - 1, w - 1])]
+    pts = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
+    # ⚠️ A SOURCE-TRANSPARENT CORNER CARRIES NO BACKGROUND INFORMATION. Under alpha == 0 the
+    # RGB is whatever the encoder left there -- for a GIF, a palette entry that can differ
+    # frame to frame after disposal -- so voting on it reads noise as a background colour.
+    #
+    # Measured 2026-08-20 by the PRE/POST render gate, which is the only thing that caught
+    # it: the changing-background refusal fired on 9 of 37 assets in the already-background-
+    # removed `alphas` population, every one a false positive. `diorpop.gif` read #ac5f40 on
+    # frame 0 and #000000 on frames 2-10; `c33ec4...gif` read #00aaff then #ffffff on 46 of
+    # 48 frames. Both are cutouts with NO background at all. The detector had been validated
+    # on 71 OPAQUE assets, so this whole class was outside its control.
+    if transparent is not None:
+        pts = [(y, x) for (y, x) in pts if not transparent[y, x]]
+    if not pts:
+        # Nothing readable. The caller must treat this as UNVERIFIED, never as agreement.
+        return {'corner_color': None, 'distance_from_reference': None,
+                'reference_coverage': round(float(bg_mask.mean()), 5),
+                'corner_color_coverage': None}
+    corners = [tuple(int(v) for v in rgb[y, x]) for (y, x) in pts]
     own = max(set(corners), key=corners.count)
     dist = int(np.abs(np.asarray(own, dtype=int) - np.asarray(bg_rgb, dtype=int)).max())
     cov_ref = float(bg_mask.mean())
@@ -336,6 +353,21 @@ def summarise_background_color_stability(probes):
     answer a refusal must never be built on.
     """
     n = len(probes)
+    # An unreadable frame is not agreement and not a recolour: it is a frame the question
+    # could not be asked about. If frame 0 is unreadable there is no reference at all, and
+    # if most frames are, the answer would rest on a handful of corners.
+    _readable = [p for p in probes if p.get('corner_color') is not None]
+    if probes and (probes[0].get('corner_color') is None or len(_readable) < 0.5 * n):
+        return {
+            'changes': None,
+            'unverified_reason': (
+                f'only {len(_readable)} of {n} frames have a readable background corner -- '
+                f'the rest are fully transparent there, so they carry no background colour '
+                f'to compare. This is normal for an already-background-removed source.'),
+            'frames_scanned': n,
+            'recolored_frame_indexes': [],
+            'recolored_colors': [],
+        }
     base = {
         'changes': None,
         'unverified_reason': None,
@@ -1069,10 +1101,12 @@ def analyze(input_path, max_samples=40, tolerance=15):
     # A fully opaque source has no partial alpha and takes the identical path, byte for byte,
     # which is what keeps the labelled corpus a valid control for it. SS29.11
     all_rgb_frames = []
+    all_trans_masks = []           # alpha == 0 per frame, for the background-corner probe
     for i in range(n_frames):
         im.seek(i)
         _rgba_i = np.array(im.convert('RGBA'))
         _a_i = _rgba_i[..., 3]
+        all_trans_masks.append(_a_i == 0)
         if ((_a_i > 0) & (_a_i < 255)).any():
             _f_i = _a_i[..., None].astype(np.float32) / 255.0
             all_rgb_frames.append((_rgba_i[..., :3].astype(np.float32) * _f_i
@@ -1118,7 +1152,8 @@ def analyze(input_path, max_samples=40, tolerance=15):
         if frame_bg_mask.all():
             blank_frames.append(i)
         bg_probes.append(probe_frame_background(
-            all_rgb_frames[i], bg_rgb, tolerance, bg_mask=frame_bg_mask))
+            all_rgb_frames[i], bg_rgb, tolerance, bg_mask=frame_bg_mask,
+            transparent=all_trans_masks[i]))
         m = measure_bg_component_margin(all_rgb_frames[i], bg_rgb, tolerance, mask=frame_bg_mask)
         if m['margin_ratio'] is not None and (worst_margin is None or m['margin_ratio'] < worst_margin):
             worst_margin = m['margin_ratio']
@@ -1936,6 +1971,20 @@ def analyze(input_path, max_samples=40, tolerance=15):
         except Exception:
             fade_colors_confirmed = None      # unverified, never a pass
     background_color_stability = summarise_background_color_stability(bg_probes)
+    # ⚠️ AN ALREADY-BACKGROUND-REMOVED SOURCE HAS NO BACKGROUND TO CHANGE, so the question is
+    # not applicable rather than answered. Without this, `diorpop.gif` reads a large piece of
+    # ARTWORK touching three corners on frame 0 (#ac5f40 over 30.0% of the canvas) as its
+    # background, watches the artwork animate away to 0.05%, and refuses the file. Ignoring
+    # transparent corners fixes 8 of the 9 false positives the render gate found in the
+    # `alphas` population; this fixes the ninth, and it is the more fundamental statement of
+    # why none of them were ever candidates. UNVERIFIED, never False: the fall-through of a
+    # guard that can REFUSE must not be a quiet pass either way.
+    if _src_bg_transparent and background_color_stability.get('changes'):
+        background_color_stability = dict(
+            background_color_stability, changes=None,
+            unverified_reason="this source's own transparency IS its background "
+                              "(already background-removed), so there is no background "
+                              "colour for the animation to change.")
 
     return {
         'n_frames_total': n_frames,
@@ -6217,10 +6266,23 @@ def process(input_path, output_path, args, diagnostics=None):
     # command line, a batch manifest, a session that skipped straight to processing) would
     # otherwise write a silently, totally wrong file. `_refuse_empty_render` is the model:
     # prediction and prevention are separate jobs. references/lessons.md SS36
-    if n_frames > 1 and not getattr(args, 'allow_changing_background', False):
+    # ⚠️ THE SAME GATE analyze() APPLIES, and it has to be here too. Adding it in analyze()
+    # alone left this path refusing `diorpop.gif` while --analyze reported UNVERIFIED for it
+    # -- the two halves of a deliberately duplicated guard disagreeing, which is worse than
+    # either answer. An already-background-removed source has no background to change, so
+    # the question is not applicable rather than answered False.
+    _src_is_cutout = any(
+        st is not None and st.any()
+        and source_transparency_is_the_background(
+            st, rgb_frames_key[i], hex_to_rgb(args.bg_color), args.tolerance)[0]
+        for i, st in enumerate(source_trans_masks))
+    if n_frames > 1 and not _src_is_cutout and not getattr(args, 'allow_changing_background', False):
         _bg_ref = hex_to_rgb(args.bg_color)
         _stability = summarise_background_color_stability(
-            [probe_frame_background(_f, _bg_ref, args.tolerance) for _f in rgb_frames_key])
+            [probe_frame_background(_f, _bg_ref, args.tolerance,
+                                    transparent=(_a == 0) if _a is not None else None)
+             for _f, _a in zip(rgb_frames_key,
+                               source_alpha_planes or [None] * len(rgb_frames_key))])
         if _stability['changes']:
             raise SystemExit(
                 f"ERROR: refusing to process {input_path!r} -- "
