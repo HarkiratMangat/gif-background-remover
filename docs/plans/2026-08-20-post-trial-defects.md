@@ -494,9 +494,9 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
 
 **Why this exists.** The fringe bands (0.04 / 0.15), the floor tolerance (0.02) and the post-render margin (0.05) were calibrated on 4–5 flat vector icons **on white**. Before 2026-08-20 the whole corpus held **97** opaque-background assets, of which **76 were white-ish and only 5 dark**, and every one of the 18 non-white ones came from a single population. The ring metric had never seen a dark or coloured background.
 
-**Measured 2026-08-20** on `local/corpus dark/` (119 files, supplied by Harkirat): **all 119 have opaque backgrounds**. After filtering — 12 with under 30% border-connected background moved out, 2 byte-identical duplicates removed — **105 remain**, re-measured on that final set as **53 dark** (<80 luminance), **55 saturated** (chroma ≥60) and **71 animated**. That takes dark backgrounds from 5 to ~60, across two independent sources instead of one.
+**Measured 2026-08-20** on `local/corpus dark/` (119 files, supplied by Harkirat): **all 119 have opaque backgrounds**. After filtering — 2 byte-identical duplicates removed and 6 with no keyable background moved out — **111 remain**, re-measured on that final set as **55 dark** (<80 luminance), **59 saturated** (chroma ≥60) and **71 animated**. That takes dark backgrounds from 5 to ~60, across two independent sources instead of one.
 
-✅ **The 12 non-keyable files were MOVED OUT on 2026-08-20**, to `local/corpus dark/_excluded/` with a README recording the measurement and the condition for putting one back. Six are full-bleed illustrations with essentially no background field (0.1–6.9% border-connected — Malika Favre, José Pistilli, a Batman piece, `Art gif.gif`, `LADY AGNES`, `Bits - Giacomo D'Ancona`); six more sit between 20.0% and 27.4%. **Moved rather than name-listed, because a name list is a discipline and a moved file is a control** — no scoring run can pick these up by accident. **105 remain in the scoring folder**, which is the count to expect from `--only dark_bg`.
+✅ **Six files with no keyable background were moved to `local/corpus dark/_excluded/`**, each confirmed BY EYE. ⚠️ **The first pass used a 30%-of-frame threshold and it was wrong on six of twelve** — those six are tightly-cropped compositions where the subject fills the canvas and the background is a legitimate minority. Harkirat challenged four; inspection confirmed all six and they were restored. **The share of the frame is not the criterion** — what separates them is whether the detected colour forms a coherent field surrounding the subject. The `_excluded/README.md` names each one and why. **111 remain**, the count to expect from `--only dark_bg`.
 
 - [ ] **Step 1: Register the population as `ambiguous`**
 
@@ -504,9 +504,9 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
     'dark_bg': dict(
         dir=os.path.join(ROOT, 'local/corpus dark'), labels=None, recurse=False,
         default_label='ambiguous',
-        what='105 assets on FLAT OPAQUE NON-WHITE backgrounds -- 53 dark (<80 luminance), 55 saturated '
-             '(chroma >=60), 71 animated. 119 were supplied; 12 with no keyable background and 2 byte-identical '
-             'duplicates were removed first. Supplied 2026-08-20 to close the one gap the '
+        what='111 assets on FLAT OPAQUE NON-WHITE backgrounds -- 55 dark (<80 luminance), 59 saturated '
+             '(chroma >=60), 71 animated. 119 were supplied; 2 byte-identical duplicates and 6 with no keyable '
+             'background were removed first, each of the 6 confirmed BY EYE rather than by a threshold. Supplied 2026-08-20 to close the one gap the '
              'rest of the corpus could not test around: before this, 76 of 97 opaque-background '
              'assets were white-ish, only 5 were dark, and all 18 non-white ones came from a single '
              'population.',
@@ -517,13 +517,13 @@ git add -A && git commit -m "docs(skill): one delivery convention for the format
                  'would cost hours and buy nothing this population is for.'),
 ```
 
-- [ ] **Step 2: Confirm the population scores 105 assets and that its figures are excluded**
+- [ ] **Step 2: Confirm the population scores 111 assets and that its figures are excluded**
 
 ```bash
 python3 scripts/harness/run_populations.py --only dark_bg --out /tmp/dark.json
 python3 -c "
 import json; d=json.load(open('/tmp/dark.json'))['records']
-print(len(d),'scored — expect 105'); import collections
+print(len(d),'scored — expect 111'); import collections
 print(collections.Counter(v['label'] for v in d.values()))
 assert all(v['label']=='ambiguous' for v in d.values())
 print('OK — excluded from recall/specificity by construction')"
