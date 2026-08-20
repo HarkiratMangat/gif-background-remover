@@ -67,6 +67,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 31. [The source's own alpha was thrown away before the mask was computed](#31-the-sources-own-alpha-was-thrown-away-before-the-mask-was-computed)
 32. [A blanket label is a measurement of nothing, and the quantized twin is not the artwork](#32-a-blanket-label-is-a-measurement-of-nothing-and-the-quantized-twin-is-not-the-artwork)
 33. [Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin](#33-following-a-moving-hole-identity-by-continuity-when-nothing-in-a-single-frame-can-tell-it-from-its-twin)
+34. [What three fresh sessions on five real assets found that every automated gate missed](#34-what-three-fresh-sessions-on-five-real-assets-found-that-every-automated-gate-missed)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -126,6 +127,13 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Flat 2-3 colour vector art called pixel art | §32.3 (the 16-colour floor's first real negatives) |
 | Native-resolution (1:1) pixel art read as antialiased | §32.7 (plateau_cliff_ratio needs a scale factor) |
 | A hole to punch MOVES, and matching decoration must be kept | §33 (`--remove-region-track`) |
+| A GIF this tool wrote plays only part way through | §34.1 (a fully transparent frame truncates it) |
+| `gifsicle: unknown block type` on our own output | §34.1 |
+| A fade comes out as a sudden pop instead of a smooth ramp | §34.2 (`--recover-fade-alpha` saturates) |
+| A faded shape looks right over white and wrong over anything else | §34.2 (pale is not the same as translucent) |
+| `--recommend` called a real design region "incidental" background | §34.3 (check it before trusting it) |
+| An interior area of the design came out transparent | §34.3 |
+| `--tumble-safe` seems to do nothing | §34.4 (`--recover-fade-alpha` disables it) |
 | `--remove-region` hits the right spot on frame 0 and nowhere else | §33 |
 | Two identical same-coloured features, opposite treatment | §33 (seed one; identity is carried by continuity) |
 | A whole sprite pack detected at 20-25% while others are at 100% | §32.7 |
@@ -1946,7 +1954,7 @@ A skip-guard for exactly this already existed, and it did not fire: it was keyed
 
 **Those last 105 are not a regression, and checking rather than assuming is the point.** Every one of them has a source alpha of **1 to 3 out of 255** — under 1.2% opacity — and PRE was rendering them at a mean alpha of 254.7, i.e. fully opaque. The clamp correctly drops them to 1–3 and the AVIF encoder rounds that to 0. The acceptance criterion as originally written ("no asset loses opaque pixels") predates knowing this failure mode; the criterion that survives contact with it is **no asset loses a pixel the SOURCE declared meaningfully visible**.
 
-⚠️ **This is release gate 8's own lesson recurring:** a correctness fix reached one code path while a *calibrator* downstream read the changed values and made a worse decision. `analyze()`-level numbers all said the fix had landed. Only rendering found it.
+⚠️ **This is the render gate's own lesson recurring:** a correctness fix reached one code path while a *calibrator* downstream read the changed values and made a worse decision. `analyze()`-level numbers all said the fix had landed. Only rendering found it.
 
 ### 31.2 The other half: the flags were chosen from one image and the removal acted on another
 `analyze()` has composited partial-alpha frames before measuring since §28.5. `process()` did not: it built `rgb_frames_raw` with a bare `convert('RGB')`, so `color_mask` and `estimate_alpha_and_defringe` compared against **the colour stored underneath a translucent pixel** — whatever the encoder happened to leave there — rather than against what the pixel looks like. Measured at 41 of 338 partial-alpha sources disagreeing at the real removal reach, worst 18.41% of a frame.
@@ -2101,3 +2109,53 @@ One of thirty of our own files clears a 0.02 threshold. The medians are indistin
 ⚠️ **Three attempts were needed to get a measurement that meant anything, and the first two both returned confident-looking answers.** Attempt 1 compared already-transparent sources against our output of them — but `--auto` correctly does nothing to those, so it scored each file against itself and reported "identical, not separable". Attempt 2 switched to opaque sources, which have no alpha boundary at all, so the score was undefined and it returned zero pairs. Only the third had two groups that both carry a boundary band and only one of which we wrote. **A negative result is only worth having once you have checked that the test could have produced a positive one.**
 
 **No new dependency.** `scipy.ndimage.label` plus centroids does what HoughCircles was reached for, which is what the deferred item asked for: a script-native primitive rather than bespoke external tooling every time.
+
+
+## 34. What three fresh sessions on five real assets found that every automated gate missed
+**Also searched as:** truncated animation · stops halfway · plays partially · pops instead of fading · sudden jump in opacity · design region deleted · flag ignored · flags conflict · unattended run shipped a broken file
+
+Three simulated fresh sessions were each handed this package and five real animated icons, under three tiers of user request. **Five defects, three of them severe, on a build that had just passed a 797-asset corpus score, an xhigh code review and a full PRE/POST render gate.** The full write-up, methodology and caveats live in the development repo; what follows is what a live session needs in order to recognise and route around each one.
+
+### 34.1 A fully transparent frame truncates a GIF, and the file is written anyway
+An output frame in which **every pixel is transparent** breaks Pillow's GIF writer. `gifsicle` reports `unknown block type 71`, and the file stops there: measured **85 of 123 frames written (31% of the frames lost), and 1700ms of 2920ms of playback (42% of the duration)** — two different denominators, both real. Reproduced with three independent synthetic controls, at defaults and under `pngquant` and `--dither-mode none` alike, so it is not a flag you chose wrongly.
+
+⚠️ **Measured on Pillow 12.3.0, and NOT yet confirmed on the claude.ai sandbox.** If you are reading this in a live session, your Pillow may differ. Treat the version as a strong hypothesis rather than the settled cause — but treat the SYMPTOM as real regardless, because the check costs nothing: read the frame count the script prints against the count you expected.
+
+**The script detects it** and prints `WARNING: total playback length changed on write` plus `Saved (N frames written from M intended)`. **Read that line.** Nothing in `--analyze` or `--recommend` predicts it beforehand, so an unattended run can ship a file missing a third of its animation while every other check reports clean.
+
+**When it happens:** any animation where the subject leaves the canvas entirely, even for one frame. **The fix is the container** — WebP and APNG use a different encoder and keep every frame. Do not work around it by duplicating the previous frame; that produces a visible stall.
+
+### 34.2 `--recover-fade-alpha` is a cliff, not a ramp — and *pale* is not *translucent*
+Measured on a badge that fades toward white, sampling the same region each frame:
+
+| frame | source colour distance from white | recovered alpha |
+|---|---|---|
+| 0 | 347.8 | 255 |
+| 12 | 258.7 | **255** |
+| 20 | 197.8 | 140.5 |
+| 32 | 105.1 | 70.5 |
+| 40 | 44.3 | 24.2 |
+
+The source colour moves smoothly while alpha holds flat at full opacity and then falls off a cliff. Reviewed by eye as glitchy and popping against a source that fades smoothly.
+
+⚠️ **The deeper problem, which no setting fixes.** `--recover-fade-alpha` infers alpha from how pale a pixel is. That is right for an element the GIF export FLATTENED. It is wrong for an element the artist drew getting lighter — a solid pale shape becomes see-through, which composites identically over white and visibly wrongly over anything else. **Before reaching for it, decide which of the two you have:** a flattened fade (the source once had alpha) or a painted fade (it never did). §16 has the flattened case in full.
+
+### 34.3 `--recommend` can name a real design region as background — check it before trusting it
+Observed verbatim on a rocket whose white body sits inside a navy outline: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region was the artwork.** Two of the three sessions followed the recommendation and deleted **83% of the body**; both reported success afterwards, because every mechanical check they ran agreed.
+
+⚠️ **This is the failure mode that documentation cannot reach**, and it is worth understanding rather than just avoiding: a session that reads the evidence, follows it, and verifies the result will still ship the broken file, because the verification measures the removal it was told to perform. The one session that got it right had been handed a per-region list by the user.
+
+**What to do, concretely, because "look at it" is not a procedure an autonomous run can follow.** `enclosure_ratio` is the share of a candidate region's boundary that the outline colour actually encloses; the message fires when it sits below the acceptance threshold. **The ratio alone is the wrong axis.** On the measured failure the region was **11,387 px of a 409,600 px canvas — 2.8% of the frame — at ratio 0.825**, and it was the rocket's body. Check `candidate_regions[].area` in `--analyze` output alongside the ratio: **a region above roughly 1% of the canvas is not incidental at any ratio**, and dismissing it is the failure this section exists for. The fix is `--protect-outline-color` on the outline colour; §26 covers the selection failures around it.
+
+⚠️ **The honest status: this is a workaround, not a fix.** The threshold that produced the wrong verdict still lives in the product, so a session that does not check will still be misled. That is filed, and until it lands the burden is on the reader — which is exactly the arrangement this project says does not work.
+
+### 34.4 `--recover-fade-alpha` silently disables every protection flag
+The render path for recovered alpha takes its own branch and never applies `protected_masks`, so `--tumble-safe`, `--protect-outline-color` and `--protect-region` are ignored with no warning when combined with it. Measured on an asset that needs fade recovery AND tumble protection: only the first happens. **If you need both, you cannot currently have both** — pick the one the asset needs more, and say which in the delivery note.
+
+### 34.5 Two erosion settings disagree, and neither is settled
+`--auto` calibrates `--edge-cleanup-erosion` against the asset's own fringe curve **by default** — SKILL.md's sentence saying `--auto-erosion` is what enables it is stale, the code enables it whenever you do not pass an explicit erosion. On an 8-bit-alpha output that calibration **overrides the documented WebP default of 0**, and measured on a real asset it cost **2,878 art pixels**.
+
+⚠️ **And the opposite complaint is also true and also measured.** Human review of the same trial found that erosion 0 leaves visible antialiasing artefacting along the outline on several assets, where erosion 1 looked clean. **So the two known problems point in opposite directions and neither has been settled by measurement.** Until they are: if artwork loss matters more than a slightly soft outline, pass `--edge-cleanup-erosion 0` explicitly; if outline cleanliness matters more, pass `1`. **Passing it explicitly is the point** — it is the only way to stop the calibration deciding for you.
+
+### 34.6 The transferable part
+All five defects live in the space between *"the measurement is correct"* and *"the output is what the user wanted"*, and every automated gate here inspects only the first. A corpus tells you the classifier is right; a render diff tells you nothing changed; neither tells you the product is right. **When something looks wrong to a human and every number says clean, the numbers are answering a different question.**

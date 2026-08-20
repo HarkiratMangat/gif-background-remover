@@ -2,6 +2,8 @@
 
 The project-local tracker for flagged findings, real TODOs, and reminders specific to this repo — split out from `/Applications/Claude Code/meta-deferred-list.md` on 2026-08-07, the same treatment Dior's Builds got (`docs/db-deferred-list.md`). That file stays the canonical home for things with no single-project home; this one is for anything a session working *only* in this repo would need.
 
+⚠️ **The seven items filed 2026-08-19 came from a three-agent trial on real assets, not from an audit.** Read `docs/investigations/2026-08-19-three-agent-package-trial.md` before working any of them — it explains why they cluster where they do, and `docs/plans/2026-08-20-post-trial-defects.md` sequences them (the scorer first, because it currently certifies the worst defect as fixed).
+
 **This file holds OPEN work only.** Closed items live in `gif-resolved-list.md` — see the conservation rule below. Restructured 2026-08-18 (Harkirat's call) after the tracker was found reporting 14 open items when 12 was the truth: open and closed items were interleaved under a section titled "Resolved", three `###` headings read as open above bodies that said `✅ CLOSED`, and a live P1 was two screens below a closed one. A tracker a session has to *audit* before it can *use* is not serving as a roadmap.
 
 **The conservation rule — one item removed here MUST equal one item added to `gif-resolved-list.md`.** Never delete an item; move it, keeping its original wording and adding the outcome. This is gated, not trusted: `python3 scripts/audit_docs.py --diff <base>` fails if this file loses a substantive line that cannot be traced into the archive by content. The gate exists because "tidying" and "deleting" look identical in a diff, and because this repo has already shipped a tracker that lied about its own contents.
@@ -16,6 +18,50 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 ## 🐞 Open — real TODOs with an available fix, not yet done
 
 *Ordered by priority, P1 first. Every item here is genuinely open: if you find a `✅ CLOSED` marker in a body under this heading, that is the drift `audit_docs.py`'s tracker gate exists to catch — report it rather than trusting either half.*
+
+### `[P1 · M · Opus5-High]` A fully-transparent frame makes Pillow's GIF writer truncate the file *(filed 2026-08-19 from the three-agent trial)*
+
+`growth.gif --auto` → GIF: `gifsicle: unknown block type 71 at file offset 702623`, **85 of 123 frames readable**, 1700ms of 2920ms. Root cause confirmed three ways — my own synthetic control, and independently by two of the three trial agents with their own controls: **an all-transparent output frame breaks the writer.** growth has one (frame 85, the rocket entirely off-canvas). Not flag-dependent: reproduced at defaults, with `pngquant`, and with `--dither-mode none`. WebP and APNG keep all 123.
+
+The script DOES warn — `WARNING: total playback length changed on write (2920ms intended, 1700ms written)` and `Saved (85 frames written from 123 intended)` — so this is not silent. **It writes the broken file anyway, and nothing in `--analyze`/`--recommend` predicts it BEFORE the render**, which is the autonomy gap: an unattended run ships a file missing 31% of its animation. **Do:** detect an all-transparent frame during analysis and either refuse GIF with a reason or auto-select WebP/APNG. One agent worked around it by duplicating the previous frame, which produced a visible stall — that is not the fix.
+
+### `[P1 · M · Opus5-High]` `--recommend` calls a large interior design region "incidental background", and two of three agents destroyed the asset because of it *(filed 2026-08-19)*
+
+On `growth.gif`, `--recommend` emits: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region is the rocket's white body.** In a three-agent trial on five real assets, the two agents that followed the recommendation deleted **83.1% and 83.3% of growth's interior white**, and **45.8% of rocket's**, in both cases while reporting success. Only the agent given an explicit hand-written list of regions to protect got all five right.
+
+⚠️ **The severity is in who it fools.** Agent 2 was told in plain language that interior light areas were artwork, ran the tool, read the evidence, followed it, and shipped a ruined file believing it was clean. This is not a missing lesson — no amount of documentation reaches a session that is being actively misadvised. **Do:** an enclosure ratio of 0.825 over a region of this size should not read as "incidental". Re-derive that threshold against region AREA, and check what the evidence string says when the region is large and the ratio is mid-range.
+
+### `[P1 · S · Opus5-High]` `--recover-fade-alpha` maps colour-distance to alpha as a CLIFF, not a ramp *(filed 2026-08-19)*
+
+Measured on `hurricane.gif`, sampling the octagon fill between the shuriken and the edge:
+
+| frame | source distance from white | output alpha |
+|---|---|---|
+| 0 | 347.8 | 255 |
+| 12 | 258.7 | **255** |
+| 20 | 197.8 | 140.5 |
+| 32 | 105.1 | 70.5 |
+| 40 | 44.3 | 24.2 |
+
+The source colour moves smoothly; alpha holds flat at 255 through frame 12 then drops to 140 within eight frames. Reviewed by eye as "super glitchy and buggy… despite it being a gradual smooth fadeout in the original". **All three trial agents produced BYTE-IDENTICAL output here** (same SHA over every frame), so this is one product behaviour, not a usage difference.
+
+⚠️ **The deeper error, and it may not be fixable by tuning:** `--recover-fade-alpha` treats *pale* as *translucent*. Hurricane's badge is a solid pale shape the animator drew getting lighter, not a see-through one. Reconstructing alpha from paleness composites identically over white and wrongly over anything else. **For a fade drawn against the background colour, alpha recovery and colour fidelity are different goals**, and the tool currently assumes they are the same. `references/lessons.md` §16 is the existing evidence trail.
+
+### `[P2 · S · Sonnet5-High]` `--auto` calibrates erosion by default, while SKILL.md says `--auto-erosion` is what enables it *(filed 2026-08-19)*
+
+SKILL.md: "Add `--auto-erosion` to have `--edge-cleanup-erosion` calibrated against the asset's own fringe curve rather than a global default." The code: `args.auto_erosion = 'edge_cleanup_erosion' not in _typed` — it is ON unless you pass an explicit erosion. Measured cost on `growth.gif` → WebP: the default loses **2,878 art pixels** against explicit `--edge-cleanup-erosion 0`, and it overrides the documented WebP default of 0 to do it. A documentation/behaviour contradiction in the direction that damages artwork. **Do:** decide which is right and make both agree; if default-on is right, SKILL.md's sentence is the bug.
+
+### `[P2 · S · Sonnet5-High]` `--recover-fade-alpha` silently disables `--tumble-safe` and every other protection flag *(filed 2026-08-19)*
+
+The render loop takes the `recovered_rgb` branch and skips `protected_masks` entirely, so a run combining fade recovery with tumble-safe protection gets only the former, with no warning. Found by the expert-prompt agent on `growth.gif`, where fade recovery deletes the rocket body on ~25 frames because its flood starts from the canvas border — and `--tumble-safe` is exactly the fix that cannot be combined with it. **Do:** either make them composable or refuse the combination out loud.
+
+### `[P3 · S · Sonnet5-High]` WebP's erosion-0 default leaves visible outline artefacts on some assets *(filed 2026-08-19 from visual review)*
+
+Human review of the trial outputs: galaxy's WebP and GIF at erosion 0 carry "anti-aliasing outline effect across its entire outer navy outline… not a clean polish", while the same asset at erosion 1 scored 9.5/10 with only minor speckles. The documented rule is that 8-bit alpha needs no fringe trim — true for the alpha, but the RGB fringe from colour unmixing is still visible. ⚠️ Interacts with the erosion-calibration item above: they disagree about which default is right. **Do:** measure outline cleanliness directly rather than inferring it from the alpha depth.
+
+### `[P3 · XS · Sonnet5-Medium]` `--recommend` prints self-contradictory enclosure evidence *(filed 2026-08-19)*
+
+On rocket and satellite it emits `outline … verified across 177 frames (0% enclosed)` — `anomalous_frame_count: 0` beside `enclosure_ratio_all_frames: 0.0`. The recommendation is correct in the end (coverage 0.999/1.0) but the evidence reads as nonsense, and an autonomous run is supposed to be auditable from exactly this string.
 
 
 ### `[P3 · S · Sonnet5-High]` `CatPackFree` sits at 0.250 (1/4) — four assets *(filed 2026-08-19)*
