@@ -240,7 +240,8 @@ Five modes replace "run it and hope":
 | `--frame-stride <n>` | Keep every Nth frame, **folding dropped durations into the kept frame** so total length is unchanged. |
 | `--crop` | Crop to the transparent bounding box (automatic within any tier). |
 | `--square-pad` | Pad to a square with transparent margin — emoji slots are square. |
-| `--batch manifest.json` | Many files in one invocation, with per-file overrides. |
+| `--out-dir <dir>` | Treat EVERY positional path as an input and derive each output name (`<stem>_transparent.<ext>`, escalating to `_v2` rather than overwriting). This is how two files render in one call — with exactly two bare paths and no `--out-dir`, the second is still the output. |
+| `--batch manifest.json` | Many files in one invocation, with per-file overrides. Only needed when the files want DIFFERENT flags; when they share them, pass the paths positionally. |
 | `--preview sheet.png` | PNG contact sheet over a checkerboard for a fast visual check. |
 | `--no-gifsicle-optimize` | A documented no-op, kept so old invocations still parse. Don't reach for it. |
 

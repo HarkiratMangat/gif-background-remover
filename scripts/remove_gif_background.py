@@ -7736,6 +7736,217 @@ def _prefixed_stderr(prefix):
         sys.stderr = old
 
 
+_FORMAT_EXT = {'gif': '.gif', 'webp': '.webp', 'avif': '.avif', 'apng': '.apng'}
+
+
+def derive_output_path(input_path, args, out_dir=None):
+    """
+    The output filename for an input the caller did NOT name an output for --
+    the multi-file positional path and --out-dir. Deterministic, never a guess:
+
+      <stem>_transparent<ext>   in `out_dir`, or beside the input when out_dir is None
+
+    `<ext>` comes from an explicit --format when one was typed, otherwise from the
+    input's own extension, because --format auto reads the OUTPUT extension and
+    deriving a name that changes the container silently would make the filename the
+    thing that decided the format. Two exceptions: a .jpg/.jpeg source has no animated
+    container to write back to, so it becomes .gif (the script's own default), and an
+    extensionless input becomes .gif for the same reason.
+
+    `_transparent` and the `_v2`/`_v3` escalation are SKILL.md's own delivery-naming
+    convention ("Delivery file naming, when reprocessing the same source"), not a new
+    one -- so a second run over the same inputs iterates the name instead of silently
+    overwriting the file the user may already have shipped.
+    """
+    stem, ext = os.path.splitext(os.path.basename(input_path))
+    fmt = getattr(args, 'format', 'auto')
+    if fmt and fmt != 'auto':
+        ext = _FORMAT_EXT[fmt]
+    elif ext.lower() in ('.jpg', '.jpeg', ''):
+        ext = '.gif'
+    directory = out_dir if out_dir else (os.path.dirname(os.path.abspath(input_path)))
+    base = os.path.join(directory, f"{stem}_transparent")
+    candidate = base + ext
+    n = 2
+    while os.path.exists(candidate):
+        if n > 99:
+            raise ValueError(f"{base}{ext} and 98 _vN variants of it all exist already; "
+                             f"name the output explicitly.")
+        candidate = f"{base}_v{n}{ext}"
+        n += 1
+    return candidate
+
+
+def resolve_positional_paths(paths, args, error):
+    """
+    Split the positional PATHs into (inputs, explicit_output). argparse cannot do this
+    itself: whether a trailing path is a SECOND INPUT or THE OUTPUT depends on the mode.
+
+    The rules, and none of them is a guess:
+      --verify            exactly two paths, source then the already-written output.
+      --analyze/--recommend   every path is an input. These modes write nothing, so a
+                          trailing path was never an output; before this, a second path
+                          was parsed into output_gif and then silently ignored.
+      render modes        --out-dir given -> every path is an input, names derived.
+                          3+ paths       -> every path is an input (there is no such
+                                            thing as two outputs), names derived.
+                          2 paths        -> input, output. Unchanged, and deliberately
+                                            NOT re-read as two inputs: that is the
+                                            single ambiguous case, and the historical
+                                            meaning wins. Pass --out-dir to render two
+                                            files in one call.
+    """
+    out_dir = getattr(args, 'out_dir', None)
+    if args.verify:
+        if out_dir:
+            error('--out-dir does not apply to --verify -- it inspects an output that '
+                  'already exists and writes nothing')
+        if len(paths) != 2:
+            error('--verify takes exactly two paths: input_gif (the original source) '
+                  'and output_gif (the file to verify)')
+        return [paths[0]], paths[1]
+    if args.analyze or args.recommend:
+        if out_dir:
+            error('--out-dir does not apply to --analyze/--recommend -- they read files '
+                  'and write no output')
+        return list(paths), None
+    if out_dir:
+        return list(paths), None
+    if len(paths) >= 3:
+        return list(paths), None
+    if len(paths) == 2:
+        return [paths[0]], paths[1]
+    return list(paths), None
+
+
+def run_read_only(paths, key, fn):
+    """
+    Run a read-only mode (--analyze/--recommend) over N inputs inside ONE process.
+
+    This exists to cut AGENT round-trips, not script runtime: the 2026-08-19 three-agent
+    trial measured 50-74 tool calls on a five-asset job, roughly 10-15 per asset, and N
+    separate `--recommend` invocations was the shape every one of the three sessions
+    independently fell into -- because the CLI had no way to say "these five files"
+    without hand-building a --batch manifest first.
+
+    One file failing does not abort the rest (same contract as --batch): its entry
+    carries an "error" key instead of the report, so the caller still gets the other N-1.
+    """
+    out = []
+    for idx, pth in enumerate(paths):
+        print(f"[{idx + 1}/{len(paths)}] {key} {pth} ...", file=sys.stderr)
+        try:
+            out.append({'input': pth, key: fn(pth)})
+        except (Exception, SystemExit) as e:
+            print(f"  ERROR on {pth}: {e}", file=sys.stderr)
+            out.append({'input': pth, 'error': str(e)})
+    return out
+
+
+def _run_one_job(job_input, job_output, base_args, arg_parser, overrides=None,
+                 use_auto=False):
+    """
+    Render ONE file with a private copy of `base_args`, optionally overridden per job.
+    Shared by --batch (overrides = the manifest entry) and the multi-file positional
+    path (no overrides). Raises on failure; the callers own the isolation.
+    """
+    job_args = copy.deepcopy(base_args)
+    for key, value in (overrides or {}).items():
+        if key in ('input', 'output'):
+            continue
+        if not hasattr(job_args, key):
+            print(f"  WARNING: unknown manifest key '{key}' for "
+                  f"{job_input}, ignoring.", file=sys.stderr)
+            continue
+        setattr(job_args, key, value)
+    apply_pixel_art_preset(job_args)
+
+    if job_args.protect_outline_color and job_args.protect_region:
+        raise ValueError("job sets both protect_outline_color and protect_region "
+                         "-- use only one")
+
+    job_label = os.path.basename(job_input)
+    with _prefixed_stderr(f"  [{job_label}] "):
+        if not job_args.bg_color:
+            im = Image.open(job_input)
+            rgb0 = np.array(im.convert('RGB'))
+            job_args.bg_color = rgb_to_hex(detect_bg_color(rgb0))
+            print(f"Auto-detected background color: #{job_args.bg_color}",
+                  file=sys.stderr)
+        if use_auto:
+            auto_run(job_input, job_output, job_args, arg_parser)
+        else:
+            process(job_input, job_output, job_args)
+
+
+def _print_job_summary(results, header='Batch summary'):
+    print(f"\n=== {header} ===", file=sys.stderr)
+    ok_count = sum(1 for r in results if r['status'] == 'ok')
+    for r in results:
+        if r['status'] == 'ok':
+            print(f"  OK      {r['input']} -> {r['output']} ({r['size_kb']} KB)",
+                  file=sys.stderr)
+        elif r['status'] == 'skipped':
+            print(f"  SKIPPED {r.get('input')}: {r['reason']}", file=sys.stderr)
+        else:
+            print(f"  ERROR   {r['input']}: {r['reason']}", file=sys.stderr)
+    print(f"{ok_count}/{len(results)} succeeded.", file=sys.stderr)
+    return ok_count
+
+
+def run_multi(inputs, args, arg_parser, use_auto=False):
+    """
+    Render N inputs given as plain positional paths (or one input plus --out-dir),
+    deriving each output name via derive_output_path.
+
+    The point is the same as run_read_only's: ONE invocation instead of N, so the
+    per-call agent overhead is paid once. Being one PROCESS also means the module-level
+    dedup flags -- `_FORMAT_RANK_EMITTED` above all -- work here exactly as they already
+    do inside --batch, which they cannot do across N separate CLI calls no matter how
+    the text is written.
+
+    --batch is still the right tool when the files need DIFFERENT flags (different
+    protect_outline_color/bg_color, the usual case); this is for when they share them.
+    """
+    out_dir = getattr(args, 'out_dir', None)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    results = []
+    for idx, job_input in enumerate(inputs):
+        if not os.path.exists(job_input):
+            print(f"[{idx + 1}/{len(inputs)}] SKIPPED {job_input}: no such file.",
+                  file=sys.stderr)
+            results.append({'input': job_input, 'output': None,
+                            'status': 'skipped', 'reason': 'no such file'})
+            continue
+        try:
+            job_output = derive_output_path(job_input, args, out_dir)
+        except ValueError as e:
+            print(f"[{idx + 1}/{len(inputs)}] SKIPPED {job_input}: {e}", file=sys.stderr)
+            results.append({'input': job_input, 'output': None,
+                            'status': 'skipped', 'reason': str(e)})
+            continue
+
+        print(f"[{idx + 1}/{len(inputs)}] Processing {job_input} -> {job_output} ...",
+              file=sys.stderr)
+        try:
+            _run_one_job(job_input, job_output, args, arg_parser, use_auto=use_auto)
+            size_kb = os.path.getsize(job_output) / 1024
+            results.append({'input': job_input, 'output': job_output,
+                            'status': 'ok', 'size_kb': round(size_kb, 1)})
+        # SystemExit as well as Exception, for the same reason --batch catches it: every
+        # deliberate refusal inside process() is a `raise SystemExit`, which derives from
+        # BaseException, so one refused asset would otherwise abort every file after it.
+        except (Exception, SystemExit) as e:
+            print(f"  ERROR processing {job_input}: {e}", file=sys.stderr)
+            results.append({'input': job_input, 'output': job_output,
+                            'status': 'error', 'reason': str(e)})
+
+    _print_job_summary(results, header='Multi-file summary')
+    return results
+
+
 def run_batch(args, arg_parser):
     """
     Process multiple GIFs from a JSON manifest (see --batch's help text for
@@ -7747,6 +7958,10 @@ def run_batch(args, arg_parser):
     which is the whole reason this isn't just "run the same flags on N
     files" -- most real batches share quality/size settings but NOT color
     settings across files).
+
+    When the files DO share their settings, the multi-file positional path
+    (`prog a.gif b.gif c.gif --out-dir out/`) does the same job without a
+    manifest -- see run_multi.
 
     One job failing doesn't abort the rest -- each is wrapped individually,
     errors are collected and reported in the final summary table so a typo
@@ -7778,31 +7993,7 @@ def run_batch(args, arg_parser):
         print(f"[{idx + 1}/{len(jobs)}] Processing {job_input} -> {job_output} ...",
               file=sys.stderr)
         try:
-            job_args = copy.deepcopy(args)
-            for key, value in job.items():
-                if key in ('input', 'output'):
-                    continue
-                if not hasattr(job_args, key):
-                    print(f"  WARNING: unknown manifest key '{key}' for "
-                          f"{job_input}, ignoring.", file=sys.stderr)
-                    continue
-                setattr(job_args, key, value)
-            apply_pixel_art_preset(job_args)
-
-            if job_args.protect_outline_color and job_args.protect_region:
-                raise ValueError("manifest entry sets both protect_outline_color "
-                                  "and protect_region -- use only one")
-
-            job_label = os.path.basename(job_input)
-            with _prefixed_stderr(f"  [{job_label}] "):
-                if not job_args.bg_color:
-                    im = Image.open(job_input)
-                    rgb0 = np.array(im.convert('RGB'))
-                    job_args.bg_color = rgb_to_hex(detect_bg_color(rgb0))
-                    print(f"Auto-detected background color: #{job_args.bg_color}",
-                          file=sys.stderr)
-
-                process(job_input, job_output, job_args)
+            _run_one_job(job_input, job_output, args, arg_parser, overrides=job)
             size_kb = os.path.getsize(job_output) / 1024
             results.append({'input': job_input, 'output': job_output,
                              'status': 'ok', 'size_kb': round(size_kb, 1)})
@@ -7819,17 +8010,9 @@ def run_batch(args, arg_parser):
             results.append({'input': job_input, 'output': job_output,
                              'status': 'error', 'reason': str(e)})
 
-    print("\n=== Batch summary ===", file=sys.stderr)
-    ok_count = sum(1 for r in results if r['status'] == 'ok')
-    for r in results:
-        if r['status'] == 'ok':
-            print(f"  OK      {r['input']} -> {r['output']} ({r['size_kb']} KB)",
-                  file=sys.stderr)
-        elif r['status'] == 'skipped':
-            print(f"  SKIPPED {r.get('input')}: {r['reason']}", file=sys.stderr)
-        else:
-            print(f"  ERROR   {r['input']}: {r['reason']}", file=sys.stderr)
-    print(f"{ok_count}/{len(results)} succeeded.", file=sys.stderr)
+    _print_job_summary(results)
+
+
 
 
 def apply_pixel_art_preset(args, argv=None):
@@ -8149,10 +8332,24 @@ def auto_run(input_path, output_path, args, parser):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('input_gif', nargs='?', default=None,
-                    help='Not required when using --batch')
-    p.add_argument('output_gif', nargs='?', default=None,
-                    help='Not required when using --analyze or --batch')
+    p.add_argument('paths', nargs='*', default=[], metavar='PATH',
+                    help='input_gif [output_gif], OR several inputs at once. '
+                         '--analyze/--recommend read EVERY path given, so N '
+                         'files can be inspected in one invocation instead of '
+                         'N. For rendering, two paths still mean input then '
+                         'output; three or more mean three or more inputs, '
+                         'each written to a name derived from its own (see '
+                         '--out-dir). Not required when using --batch.')
+    p.add_argument('--out-dir', default=None, metavar='DIR',
+                    help='Write derived output names into DIR instead of '
+                         'beside each input, and treat EVERY positional path '
+                         'as an input. This is how two files get rendered in '
+                         'one invocation: with exactly two bare paths and no '
+                         '--out-dir, the second is the output, unchanged. '
+                         'Derived names follow the delivery convention -- '
+                         '<stem>_transparent.<ext>, escalating to _v2/_v3 '
+                         'rather than overwriting an existing file. Created '
+                         'if it does not exist.')
     p.add_argument('--batch', default=None,
                     help='Path to a JSON manifest for processing multiple '
                          'GIFs in one invocation: a list of objects, each '
@@ -8678,12 +8875,20 @@ def main():
                         'pass per candidate, not one render.')
     args = p.parse_args()
 
+    # Which positional is an INPUT and which is THE OUTPUT depends on the mode, so it
+    # cannot be expressed in argparse itself. Everything downstream keeps reading
+    # args.input_gif/args.output_gif exactly as before; only the multi-input paths
+    # look at args.input_paths.
+    args.input_paths, args.output_gif = resolve_positional_paths(args.paths, args, p.error)
+    args.input_gif = args.input_paths[0] if args.input_paths else None
+
     if sum([args.analyze, args.recommend, args.verify, args.auto]) > 1:
         p.error('Use only one of --analyze, --recommend, --verify, or --auto at a time')
     if args.auto:
         if args.batch:
-            p.error('--auto processes a single file; use --batch without --auto, or '
-                    'run --auto per file')
+            p.error('--auto and --batch are different multi-file paths; pass the '
+                    'files as plain positional paths with --auto (they share flags), '
+                    'or use --batch without --auto (they need different flags)')
         args.auto_erosion = True
     # An explicitly typed --edge-cleanup-erosion outranks the calibration. Gating
     # this on the parsed value would not work: the user may have typed the default
@@ -8697,6 +8902,11 @@ def main():
     if args.analyze:
         if not args.input_gif:
             p.error('input_gif is required when using --analyze')
+        if len(args.input_paths) > 1:
+            print(json.dumps(run_read_only(
+                args.input_paths, 'analysis',
+                lambda pth: analyze(pth, tolerance=args.tolerance)), indent=2))
+            return
         report = analyze(args.input_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
         return
@@ -8704,6 +8914,11 @@ def main():
     if args.recommend:
         if not args.input_gif:
             p.error('input_gif is required when using --recommend')
+        if len(args.input_paths) > 1:
+            print(json.dumps(run_read_only(
+                args.input_paths, 'recommendation',
+                lambda pth: recommend(pth, tolerance=args.tolerance)), indent=2))
+            return
         rec = recommend(args.input_gif, tolerance=args.tolerance)
         print(json.dumps(rec, indent=2))
         return
@@ -8725,8 +8940,14 @@ def main():
         return
 
     if args.auto:
-        if not args.input_gif or not args.output_gif:
-            p.error('both input_gif and output_gif are required when using --auto')
+        if not args.input_gif:
+            p.error('at least one input file is required when using --auto')
+        if len(args.input_paths) > 1 or args.out_dir:
+            run_multi(args.input_paths, args, p, use_auto=True)
+            return
+        if not args.output_gif:
+            p.error('both input_gif and output_gif are required when using --auto '
+                    '(or give --out-dir and let the output name be derived)')
         if not args.bg_color:
             _im = Image.open(args.input_gif)
             args.bg_color = rgb_to_hex(detect_bg_color(np.array(_im.convert('RGB'))))
@@ -8739,8 +8960,12 @@ def main():
 
     if not args.input_gif:
         p.error('input_gif is required unless --batch is used')
+    if len(args.input_paths) > 1 or args.out_dir:
+        run_multi(args.input_paths, args, p, use_auto=False)
+        return
     if not args.output_gif:
-        p.error('output_gif is required unless --analyze or --batch is used')
+        p.error('output_gif is required unless --analyze or --batch is used '
+                '(or give --out-dir and let the output name be derived)')
     if not args.bg_color:
         im = Image.open(args.input_gif)
         rgb0 = np.array(im.convert('RGB'))

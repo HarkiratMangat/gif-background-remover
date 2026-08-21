@@ -5,6 +5,12 @@ description: Remove the background color from an animated image -- GIF, WebP, AV
 
 # GIF Background Remover
 
+⚠️ **Do not `cat` this file.** It is large enough that a single read of it fails outright on most sandboxes -- every one of the three agents in the 2026-08-19 trial paid that failed call, then fell back to chunked reads, before any real work started. Read the outline first, then only the sections the job actually needs:
+```
+rg -n '^#{2,3} ' SKILL.md          # the outline, with line numbers
+sed -n '<start>,<end>p' SKILL.md   # then the section you need, by the range rg gave you
+```
+
 **Skill version: v6.0.0** (previous: v5.5.0, v5.4.0, v5.3.0, v5.2.1, v5.2.0, v5.1.1, v5.1.0, v5.0.0, v4.0.0, v3.3.3 … v1). Full per-version detail, and the three-part versioning convention itself, live in `references/version-history.md` — read it when you need to know what a past version changed or which tier a pending change belongs to.
 
 ⚠️ **v6.0.0 is NOT published, and neither was v5.5.0. GitHub's Releases page deliberately still shows v5.4.0 as Latest.** This entry describes work that is built, gated and committed but deliberately held: a three-agent trial on real assets found seven defects AFTER the build, three of them severe, and publishing now would ship a fade that pops instead of ramping and a GIF path that can silently truncate. See `references/lessons.md` §34 for what those are and how to route around them. When v6.0.0 is eventually published its notes will cover everything since v5.4.0, v5.5.0's entry folded into its history. **v6.0.0** is a *major* bump: two data-loss classes on the alpha path, a reversal of a compression default, a seventh pixel-art discriminator, a new region flag, and the ground truth the detection figures rest on rebuilt by eye. Detection over the independent populations goes **recall 0.8932 → 0.9644**.
@@ -183,6 +189,20 @@ The reader is `Image.open` — format-agnostic, so anything Pillow decodes works
 
 ⚠️ **If the SOURCE is a WebP or AVIF rather than a GIF**, read `references/lessons.md` §17 before trusting any timing. Pillow populates `info['duration']` during `seek()` for GIF but only during `load()` for WebP/AVIF, so a seek-only read returns the PREVIOUS frame's value — a real 124-frame source came back one bogus frame prepended and the last dropped, 240 ms short, while the script reported "durations preserved exactly". Fixed in the script, but the failure mode is worth recognising if you see it anywhere else.
 
+### One invocation per JOB, not per FILE
+**2+ files in one job -> pass them all to ONE invocation. Never N separate calls.** Every mode takes several paths:
+```
+python scripts/remove_gif_background.py a.gif b.gif c.gif --recommend
+python scripts/remove_gif_background.py a.gif b.gif c.gif --auto --out-dir out/
+```
+- `--analyze`/`--recommend` read **every** path given and return a JSON list, one entry per input (`{"input": ..., "analysis"/"recommendation": ...}`).
+- For rendering, **two bare paths still mean `input output`** -- that is the one genuinely ambiguous case and the old meaning wins. To render two files in one call, add `--out-dir DIR`. Three or more bare paths are three or more inputs.
+- Derived output names follow the delivery convention below -- `<stem>_transparent.<ext>`, escalating to `_v2`/`_v3` rather than overwriting a file already delivered. `--out-dir` is created if it does not exist.
+- One file failing does not abort the rest; read the summary table printed at the end before reporting the job done.
+- **Reach for `--batch` instead when the files need DIFFERENT flags** -- different `protect_outline_color`/`bg_color`, which is the usual case for unrelated art. Same flags across the files -> positional paths; different flags -> a manifest.
+
+⚠️ **This is measured, not a style preference.** The 2026-08-19 three-agent trial cost **50-74 tool calls** for a five-asset job -- roughly 10-15 per asset -- because all three sessions independently invoked the tool once per file. Per-run boilerplate (the container ranking above all) is emitted once per PROCESS: measured on three real assets, one invocation prints that block once and back-references it twice, where three invocations print it three times.
+
 ### 0. Start with `--auto` unless a check below says otherwise
 ```
 python scripts/remove_gif_background.py <input.gif> <output.gif> --auto
@@ -331,6 +351,7 @@ Practical notes:
 **The standalone levers — `--frame-stride`, `--resize-max-dim`, and automatic `--target-kb` fitting — plus their measured case histories, are in `references/compression.md`.** Read it when a tier alone is not the right answer: the user wants only a frame-rate cut, only a resize, or a hard byte target.
 
 ## Batch processing multiple GIFs
+**Only when the files need DIFFERENT flags.** When they share flags, pass the paths positionally in one invocation instead -- see "One invocation per JOB, not per FILE" above; building a manifest for that case is overhead with no return.
 ```
 python scripts/remove_gif_background.py --batch manifest.json --compress optimize
 ```
