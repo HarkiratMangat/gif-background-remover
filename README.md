@@ -183,6 +183,8 @@ Five modes replace "run it and hope":
 | `--edge-cleanup-erosion <px>` | Erodes the opaque/transparent boundary to clear feather fringe. Context-resolved: 0 for WebP/AVIF, 1 under `--dither-mode none`, else 2. |
 | `--erosion-exempt-max-size <px>` | Exempt removed regions at or below N pixels from erosion. |
 | `--erosion-exempt-transient` | Exempt by **identity** rather than size — stable across frames = design, comes and goes = incidental. For when the two overlap in size. |
+| `--edge-softening <px>` | Alpha ramp put back on the boundary a deep trim just cut, so erosion 2+ does not read as a hard step. Context-resolved: 1px when the resolved `--edge-cleanup-erosion` is ≥2, else 0. 8-bit-alpha containers only — declined on `.gif` with a reason. |
+| `--no-erosion-component-protection` | Turns OFF the default protection that exempts a small or thin **kept** art component from edge-cleanup erosion when the trim would cut it below 30% survival — the mirror of `--erosion-exempt-max-size`. Use only to reproduce output from before this protection existed. |
 | `--dither-mode {bayer,none,continuous}` | How feathered edges resolve to the container's alpha. |
 | `--bayer-size {4,8}` | Threshold-matrix size (default 8 — 64 levels against 4×4's 16, tracking intended alpha 2.5× more closely). |
 
