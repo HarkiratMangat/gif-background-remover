@@ -200,6 +200,7 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     bg_keep_corr = []
     interior_lost, interior_biggest = [], []
     art_px, art_lost, art_perim = [], [], []
+    art_lost_faint, art_lost_solid = [], []
     fade_series = {c: [] for c in comps}
     for i in idxs:
         src.seek(i)
@@ -241,8 +242,34 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
             interior_biggest.append(0)
         art.append(float((al[arts] > 0).mean()) if arts.any() else 1.0)
         art_px.append(int(arts.sum()))
-        art_lost.append(int((al[arts] == 0).sum()) if arts.any() else 0)
+        _lost = arts & (al == 0)
+        art_lost.append(int(_lost.sum()) if arts.any() else 0)
         art_perim.append(_perimeter(arts) if arts.any() else 0)
+        # ⚠️ WHAT was lost, not just how much. `art_lost_over_perimeter` is the FOURTH measure
+        # in this file caught punishing a correct answer, and it fails the same way the other
+        # three did: `_truth` calls every pixel more than TOL from the background "art", so a
+        # flattened fade's faint stages ARE artwork by that definition -- and truncating them
+        # at a 1-bit cutoff, the only thing a GIF can do, then scores as destruction.
+        # Measured 2026-08-20 over the 20 assets a PRE/POST erosion study had attributed to
+        # the keyer: 10 of them lose pixels whose median source distance is 33-63, i.e. sitting
+        # just above the TOL=30 line, at a faint share of 98.7-100%. Two of those ten are
+        # `love` and `heart`, whose outputs have been accepted for months. The 4 with real
+        # damage lose pixels at median distance 145-264, 40-88% of them past 150, and remove
+        # solid blobs of 2,072-6,657px. That is a bimodal split with nothing in between, which
+        # is where these two cut points come from -- they are read off the distribution, not
+        # chosen. 90 is 3x TOL: the band a truncated fade occupies.
+        if _lost.any():
+            _dl = d[_lost]
+            art_lost_faint.append(float((_dl <= 3 * TOL).mean()))
+            _solid = _lost & (d > 150)
+            if _solid.any():
+                _sl, _sn = ndimage.label(_solid, structure=ST)
+                art_lost_solid.append(int(np.bincount(_sl.ravel())[1:].max()) if _sn else 0)
+            else:
+                art_lost_solid.append(0)
+        else:
+            art_lost_faint.append(1.0)
+            art_lost_solid.append(0)
         edge.append(_edge_cleanliness(o))
         for c in comps:
             live = (lab == c) & (d > TOL)
@@ -259,7 +286,12 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     worst = int(np.argmin(bg)) if bg else 0
     aw = int(np.argmin(art)) if art else 0
     peak = max(art_px) if art_px else 0
-    ratios = [l / p for l, p in zip(art_lost, art_perim) if p > 0]
+    _pairs = [(l / p, i) for i, (l, p) in enumerate(zip(art_lost, art_perim)) if p > 0]
+    ratios = [r for r, _ in _pairs]
+    # Read the two supporting fields at the frame the RATIO is worst -- the frame that needs
+    # explaining -- not at the worst-art frame and not as a mean. Same rule as
+    # `bg_kept_fade_correlation`, which was caught quoting its most flattering frame.
+    _wi = max(_pairs)[1] if _pairs else None
     return {'bg_removed_worst': min(bg) if bg else 1.0,
             'bg_not_opaque_worst': min(bg_opaque) if bg_opaque else 1.0,
             # read at the WORST bg_removed frame -- the one that needs explaining
@@ -277,6 +309,13 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
             'art_frame_share_at_worst': (round(art_px[aw] / peak, 4)
                                          if peak else None),
             'art_lost_over_perimeter': (round(max(ratios), 3) if ratios else None),
+            # Read these two BEFORE calling a high ratio damage. A high ratio with a faint
+            # share near 1.0 and no solid component is a fade being truncated, which is
+            # correct on a 1-bit container and is not a defect.
+            'art_lost_faint_share': (round(art_lost_faint[_wi], 3)
+                                     if _wi is not None and art_lost_faint else None),
+            'art_lost_solid_largest_component': (art_lost_solid[_wi]
+                                                 if _wi is not None and art_lost_solid else None),
             'edge_cleanliness': min(edge) if edge else 1.0,
             'fade_coherence': coh,
             'fade_model': model,

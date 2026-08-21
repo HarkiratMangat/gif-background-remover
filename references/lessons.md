@@ -2377,6 +2377,24 @@ So the fix is a restriction of the SEARCH SPACE, not a constant inside a formula
 
 ⚠️ **`score_outputs` is NOT valid on the already-background-removed population.** It derives its ground truth from the SOURCE's RGB, and under `alpha == 0` that is whatever the encoder left there (§36). On `alphas` it reports `art_lost_over_perimeter` values of 19, 29, 63 and 71 on assets that are rendering correctly. The honest acceptance for that population is the alpha FINGERPRINT, not the score; the scores are reported only as a determinism check (identical on 37 of 37).
 
+### 37.5 The other 20 were attributed to the KEYER, and 14 of them were the METRIC
+§37.4 left 20 damaged assets whose loss survives erosion 0 entirely, filed as a keyer defect no erosion change could touch. Attributing them BEFORE trying to fix them dissolved most of the population.
+
+`_truth` calls every source pixel more than `TOL` (30) from the background "art". A flattened fade's faint stages are therefore artwork by that definition — and truncating them at a 1-bit cutoff, **the only thing a GIF can do**, then scores as destruction. The tell was in the list itself: `love` and `heart`, whose outputs have been accepted for months, sat in it at `art_lost_over_perimeter` 2.572 and 4.098.
+
+Rendering all 20 at erosion 0 and splitting the lost pixels by their SOURCE distance from the background gives a completely bimodal answer with nothing in between:
+
+| | assets | median distance of the lost pixels | share ≤ 3×TOL | largest solid component removed |
+|---|---|---|---|---|
+| fade truncation | **14** | 33–71 | **98.7–100%** | **0** |
+| real loss | **6** | 145–420 | 0.0–27.8% | 2,072–164,804 px |
+
+⚠️ **And 4 of the remaining 6 are content this tool does not claim to handle.** Border flatness — the share of the 1px border ring within tolerance of its own modal colour — reads **0.201, 0.523, 0.665 and 0.777** on them, against the ≥0.90 bar for "flat-keyable" and 1.000 on every fade-truncation control. Two of those four also come out with `bg_removed_worst` of 0.009 and 0.003, i.e. the keyer removes almost no background at all: photographs with a dark cast, not flat-background art.
+
+**So the population is 20 → 14 metric artefact → 4 out of scope → 2 genuine.** Two assets is not enough to build a discriminator against — the same call this project made about a 3-asset sprite pack whose misses are real but too few to build a measure against — so the close here is the MEASURE, not a product change: `score()` now reports `art_lost_faint_share` and `art_lost_solid_largest_component` beside the ratio, read at the frame the RATIO is worst rather than as a mean or at the worst-art frame. Both cut points are read off the split above, not chosen; 90 is 3×TOL, the band a truncated fade occupies. A falsifier PAIR covers them: one synthetic source containing both a faint ramp and a saturated blob, scored twice, differing only in which of the two the output removes.
+
+**The transferable part, and it is now four for four in this file.** `bg_removed_worst`, `interior_kept_worst`, `art_kept_worst` and now `art_lost_over_perimeter` were each caught punishing a correct answer, and every one failed the same way: **a binary ground truth cannot grade a fade.** When a measure indicts a population, check whether the tool's own accepted reference outputs are in it before believing the measure — they were here, and they were the whole clue.
+
 **The transferable part.** A calibrator that optimises one objective will spend everything the other objectives were worth — that much is real, and the measurement above is the evidence. But two plausible cost terms both failed, one on a population and one on arithmetic, and the second had passed an 87-asset corpus check first. **When a fix and its measurement are built by the same reasoning, the corpus can only tell you they agree.**
 
 ## 38. The word `verified` was printed over a number that said otherwise

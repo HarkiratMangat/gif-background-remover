@@ -418,3 +418,68 @@ def test_for_you_survives_an_outline_that_is_recoloured_mid_animation():
     assert '--protect-outline-color c83c78' in out.stdout, out.stdout[:1500]
     r = S.score(_p('for-you.gif'), rendered('for-you.gif'))
     assert r['interior_kept_worst'] > 0.99 and r['bg_removed_worst'] > 0.99, r
+
+
+# --------------------------------------------------------------------------------------
+# `art_lost_over_perimeter` is the FOURTH measure in this file caught punishing a correct
+# answer, and these two tests are the discriminator that separates the correct case from the
+# defect. Measured 2026-08-20 over the 20 assets a PRE/POST erosion study had attributed to
+# the keyer: 14 lose pixels at median source distance 33-71 with a faint share of 98.7-100%
+# and NO solid component -- a flattened fade being truncated at a 1-bit cutoff, which is the
+# only thing a GIF can do. Two of those 14 are `love` and `heart`, whose outputs have been
+# accepted for months. The 6 with real damage lose pixels at median 145-420, 40-100% of them
+# past 150, removing solid blobs of 2,072-164,804px. Nothing lands in between.
+def _fade_and_blob(tmp_path):
+    """A source with BOTH failure candidates in it: a faint ramp just above the art
+    threshold, and a saturated solid blob. One image, so the two tests below differ only in
+    which of the two the output removes -- which is the whole point."""
+    import numpy as np
+    from PIL import Image
+    bg = np.array([255, 255, 255], np.uint8)
+    rgb = np.zeros((120, 120, 3), np.uint8)
+    rgb[:] = bg
+    # faint ramp: 40 units from white, i.e. just past TOL=30 -- a truncated fade's last stages
+    rgb[10:50, 10:110] = (241, 242, 242)
+    # solid blob: far from the background on every channel
+    rgb[70:110, 20:80] = (20, 40, 200)
+    p = str(tmp_path / 'src.webp')
+    Image.fromarray(rgb, 'RGB').save(p, lossless=True, quality=100)
+    return p, rgb, bg
+
+
+def _write_rgba(rgb, alpha, path):
+    import numpy as np
+    from PIL import Image
+    Image.fromarray(np.dstack([rgb, alpha.astype(np.uint8)]), 'RGBA').save(
+        path, lossless=True, quality=100)
+    return path
+
+
+def test_truncating_a_faint_fade_reads_as_faint_not_damage(tmp_path):
+    """THE CORRECT ANSWER. Removing only the near-background stages must be reportable as
+    such, however bad the raw ratio looks."""
+    import numpy as np
+    src, rgb, bg = _fade_and_blob(tmp_path)
+    d = np.abs(rgb.astype(int) - bg).sum(-1)
+    alpha = np.where(d > S.TOL, 255, 0).astype(np.uint8)
+    alpha[10:50, 10:110] = 0                      # drop the faint ramp, keep the blob
+    out = _write_rgba(rgb, alpha, str(tmp_path / 'faint.webp'))
+    r = S.score(src, out)
+    assert r['art_lost_over_perimeter'] > 1.1, 'the raw ratio must still look alarming'
+    assert r['art_lost_faint_share'] >= 0.95
+    assert r['art_lost_solid_largest_component'] == 0
+
+
+def test_deleting_a_solid_blob_reads_as_damage(tmp_path):
+    """THE DEFECT, and the falsifier for the test above: same source, same measure, and the
+    two fields must come out the other way round. Without this pair, 'faint share is high' is
+    just a statement about this fixture."""
+    import numpy as np
+    src, rgb, bg = _fade_and_blob(tmp_path)
+    d = np.abs(rgb.astype(int) - bg).sum(-1)
+    alpha = np.where(d > S.TOL, 255, 0).astype(np.uint8)
+    alpha[70:110, 20:80] = 0                      # drop the blob, keep the faint ramp
+    out = _write_rgba(rgb, alpha, str(tmp_path / 'blob.webp'))
+    r = S.score(src, out)
+    assert r['art_lost_faint_share'] <= 0.05
+    assert r['art_lost_solid_largest_component'] >= 2000
