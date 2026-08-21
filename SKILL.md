@@ -201,6 +201,8 @@ python scripts/remove_gif_background.py a.gif b.gif c.gif --auto --out-dir out/
 - One file failing does not abort the rest; read the summary table printed at the end before reporting the job done.
 - **Reach for `--batch` instead when the files need DIFFERENT flags** -- different `protect_outline_color`/`bg_color`, which is the usual case for unrelated art. Same flags across the files -> positional paths; different flags -> a manifest.
 
+⚠️ **Before any of those runs, settle the size/format gate below** ("The size/format gate") — with no stated size or format requirement the answer is full resolution and no compression flags, and a guessed target is worse than a question.
+
 ⚠️ **This is measured, not a style preference.** The 2026-08-19 three-agent trial cost **50-74 tool calls** for a five-asset job -- roughly 10-15 per asset -- because all three sessions independently invoked the tool once per file. Per-run boilerplate (the container ranking above all) is emitted once per PROCESS: measured on three real assets, one invocation prints that block once and back-references it twice, where three invocations print it three times.
 
 ### 0. Start with `--auto` unless a check below says otherwise
@@ -316,8 +318,14 @@ It does NOT replace the visual checks (soft-vs-jagged edges, a `--protect-region
 ## File-size optimization: default vs. named tiers
 **The default output is plain background removal, plus one correctness fix, nothing else.** No crop, resize, frame-drop, or gifsicle pass — every frame and its exact timing survive untouched at the original canvas size. The one exception is `--edge-cleanup-erosion` (default 2px): not a size tradeoff, it's fixing a real color artifact in the feathering math, so it applies regardless of any `--compress` tier.
 
-### When to raise file-size optimization at all
-Don't ask by default on every request — do ask when there's a reasonable signal it matters: the user mentioned a platform with known constraints (Discord stickers = 256KB, exact error `[50138]... 262144` bytes; Slack emojis; a CMS upload limit), the printed size is large enough that a common constraint would plausibly bite, or the phrasing suggests a specific destination ("for my Discord server", "as a sticker"). Otherwise just deliver the plain file. When you do ask, keep it short: "This came out to 2.7 MB — want me to optimize it for a specific target, like Discord's 256KB sticker limit?"
+### The size/format gate — settle this BEFORE choosing any compression flag
+**Three cases, and only three.** Read what the user actually said, not the vibe of the job.
+
+1. **No size, format or compression requirement stated at all → full resolution, no compression flags, full quality.** This is the default and it is not a judgement call. Do not infer a target from the file being large, from the art looking like a sticker, or from a platform you assume is the destination. Deliver the plain file; if the printed size is large enough that a common constraint would plausibly bite, name the size in one line and *offer* — "This came out to 2.7 MB — want me to optimize it for a specific target, like Discord's 256KB sticker limit?" — then wait. Offering is not acting.
+2. **A real constraint was stated → act on it directly, no question needed.** A byte cap ("under 256KB"), a named destination that genuinely imposes one (Discord stickers = 256KB, exact error `[50138]... 262144` bytes; Slack emojis; a CMS upload limit), an explicit "make it small", "trim the canvas", "resize it to 128px", or a named output format. Those are requirements, and `--target-kb`, `--crop`, `--resize-max-dim` and `--format` implement them.
+3. **Anything that would require GUESSING a target → ask the user one short question, before rendering.** An implied-but-unstated size limit, an ambiguous format preference, "make it work for chat" without naming the app. Ask; do not pick a plausible-sounding default and render it.
+
+⚠️ **Case 3 is the one that goes wrong, and it goes wrong by looking like case 2.** A guessed target produces a real file at a real size, and nothing in the output says the number was invented — so the guess is invisible to everyone downstream, including the next reviewer. The 2026-08-19 trial measured the consequence: **variant sprawl was inversely proportional to how much the user had constrained the goal** — the session that knew least produced the most files. One question costs one turn; a guessed constraint costs every render after it. Same principle as the delivery convention above: ship what the job actually asked for, and name the fork rather than resolving it silently.
 
 ### The three named tiers (`--compress optimize|medium|heavy`)
 Each is a fixed, tested bundle, not independent flags to mix by hand. `medium`/`heavy` include every `optimize` step, then add more:

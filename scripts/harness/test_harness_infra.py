@@ -171,10 +171,20 @@ def test_freeze_reports_the_SOURCE_sha_not_the_snapshot_path(tmp_path):
 
 
 def test_freeze_keeps_the_analysis_cache_namespace(tmp_path):
-    """Freezing must be FREE: the snapshot is byte-identical, so analysis_cache's script-SHA
-    key is unchanged and a frozen run shares its cache with an unfrozen one. If this ever
-    fails, every frozen run silently starts cold."""
+    """Freezing must be FREE: the snapshot is byte-identical, so analysis_cache's key is
+    unchanged and a frozen run shares its cache with an unfrozen one. If this ever fails,
+    every frozen run silently starts cold.
+
+    ⚠️ Asserted on `analysis_fingerprint`, which is what `_entry_path` actually calls --
+    checking `script_sha` alone would keep passing after the key moved. The fixture defines
+    a real `analyze` for the same reason: without one the fingerprint falls back to
+    `script_sha` and the assertion tests the abandoned function all over again."""
     import snapshot
-    src = tmp_path / 'prod.py'; src.write_text('X = 1\n')
+    src = tmp_path / 'prod.py'
+    src.write_text('K = 3\n\n\ndef helper():\n    return K\n\n\ndef analyze(p):\n'
+                   '    return helper()\n')
     snap, _ = snapshot.freeze(str(src))
+    assert AC.analysis_fingerprint(str(src)).startswith('a'), \
+        'fixture fell back to script_sha -- the assertion below would be vacuous'
+    assert AC.analysis_fingerprint(str(src)) == AC.analysis_fingerprint(snap)
     assert AC.script_sha(str(src)) == AC.script_sha(snap)
