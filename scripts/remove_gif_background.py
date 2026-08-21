@@ -5891,9 +5891,19 @@ def measure_outer_ring_background_fraction(rgb, alpha, bg_rgb, palette,
     return float((d_bg < d_art).mean())
 
 
+#: The most erosion any AUTOMATIC decision may reach. Read by BOTH consumers -- the
+#: calibrator's selectable set and `--auto`'s post-render escalation -- because a cap one of
+#: them respects and the other walks straight past is the two-consumer split SS35, SS36 and
+#: SS37 all were: fixing `calibrate_edge_cleanup_erosion` on its own left the post-render
+#: correction escalating back into the level calibration had just rejected, printing 40 damage
+#: warnings and keeping the file because the one number it read had improved.
+#: The value is measured, not chosen: see calibrate_edge_cleanup_erosion's docstring.
+EROSION_MAX_AUTO = 1
+
+
 def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
                                     candidates=(0, 1, 2, 3), tiny_masks=None,
-                                    tolerance_above_floor=0.02, log=None):
+                                    tolerance_above_floor=0.02, max_selectable=EROSION_MAX_AUTO, log=None):
     """
     Choose --edge-cleanup-erosion by comparing THIS asset against ITSELF.
 
@@ -5915,6 +5925,36 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
     the floor, too much shows no further improvement and loses the tie to the
     smaller candidate.
 
+    ⚠️ **THE SELECTABLE SET STOPS AT 1, AND EVERY LEVEL IS STILL MEASURED.** The rule above
+    is sound about the thing it measures and has no term at all for what erosion COSTS, so on
+    art that ramps into the background -- a glow, a soft outline, antialiasing baked into an
+    opaque GIF -- the curve keeps falling as erosion walks inward through the artwork and the
+    "floor" is simply wherever the candidate list stopped. Two cost terms were built to fix
+    that and both failed their own acceptance (references/lessons.md SS37): reusing
+    `check_erosion_damage` as a gate made `edge_cleanliness` worse on 40 of 147 assets, and a
+    scale-free `lost / perimeter` measure turned out to be exactly 1.000 on every possible
+    input. What settled it was measuring the answer instead of the rule -- **112 assets whose
+    calibration actually runs, each rendered through the real `--auto` CLI at erosion 0, 1, 2
+    AND 3 and scored** (448 renders):
+
+      * NO asset anywhere lost LESS artwork at a higher level: 0 of 112. Erosion is
+        monotonically destructive, so any level above the minimum that works is pure cost.
+      * Going above 1 improved `bg_removed_worst` by at most **0.021**, on 10 assets -- and 6
+        of those 10 never escalated anyway. The three the cap actually costs are assets whose
+        background removal has already failed (0.009 -> 0.030, 0.516 -> 0.535, 0.980 -> 0.995).
+      * Going from 0 to 1 buys a LOT on real assets (+0.622, +0.198, +0.187 `bg_removed_worst`),
+        which is why the floor is 1 and not 0 -- erosion earns its place, once.
+      * On the 37 assets the calibrator escalated to 2 or 3, capping at 1 takes the median
+        `art_lost_over_perimeter` from **2.232 to 1.400** and `art_kept_worst` from 0.893 to
+        0.926, per population: dark_bg 34 moved (median 1.284 perimeters of artwork saved),
+        labelled 2 (0.945), trial 1 (1.137), corpus 0 -- so the five white-background
+        reference assets, `love.gif` included, are byte-identical.
+
+    So this is a restriction of the SEARCH SPACE justified by measurement, not a constant
+    inside a formula. Levels 2 and 3 are still measured because the table is the evidence a
+    human audits, and because `--auto`'s post-render check reads the in-memory value at the
+    level actually used.
+
     Runs on in-memory alpha before any encode, so it costs one extra erosion
     pass per candidate -- not one extra render.
     """
@@ -5935,12 +5975,26 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
         log.append("erosion calibration: no measurable opaque edge ring -- keeping the default.")
         return None, table
     floor = min(measured.values())
-    best = min(e for e, v in measured.items() if v <= floor + tolerance_above_floor)
+    selectable = {e: v for e, v in measured.items() if e <= max_selectable}
+    if not selectable:
+        log.append("erosion calibration: no candidate at or below the selectable ceiling "
+                   f"{max_selectable} -- keeping the default.")
+        return None, table
+    sel_floor = min(selectable.values())
+    best = min(e for e, v in selectable.items() if v <= sel_floor + tolerance_above_floor)
     log.append("erosion calibrated against this asset's own curve ("
                + ", ".join(f"{e}:{v}" for e, v in sorted(measured.items()))
-               + f") -> {best}; floor {floor:.4f}, and {best} is the smallest level "
-                 f"already within {tolerance_above_floor} of it, so the fringe is gone "
-                 f"without eroding more than necessary.")
+               + f") -> {best}; the smallest level within {tolerance_above_floor} of "
+                 f"{sel_floor:.4f}, this asset's floor among the levels that may be chosen.")
+    if floor < sel_floor - tolerance_above_floor:
+        # Say what was rejected and why, because the number a human would otherwise reach for
+        # is the global floor and it is exactly the number this rule declines to chase.
+        log.append(f"erosion: levels above {max_selectable} reach {floor:.4f} and are NOT "
+                   f"selectable. Measured across 112 assets rendered at every level, that "
+                   f"remaining descent is the metric walking inward through ARTWORK: no asset "
+                   f"lost less art at a higher level, and going above 1 improved background "
+                   f"removal by at most 0.021 while costing a median 1.3 extra perimeter "
+                   f"rings of artwork (references/lessons.md SS37).")
     return best, table
 
 
@@ -7430,7 +7484,17 @@ def auto_run(input_path, output_path, args, parser):
     post = post_render_fringe_check(input_path, output_path, tolerance=args.tolerance)
     table = diag.get('erosion_table') or {}
     measured = {e: v for e, v in table.items() if v is not None}
-    floor = min(measured.values()) if measured else None
+    _used = diag.get('erosion_used')
+    if _used is None:
+        _used = args.edge_cleanup_erosion or 0
+    # ⚠️ Compare against the in-memory value AT THE LEVEL ACTUALLY USED, not the global floor.
+    # This check asks one question -- "did the encoder reintroduce edge pixels the in-memory
+    # calibration could not see?" -- and the global floor cannot answer it once the calibrator
+    # is allowed to decline a lower reading on purpose: the gap would then be measuring OUR OWN
+    # decision, not the encoder's, and would fire on every asset whose curve keeps falling past
+    # the selectable ceiling. Falls back to the floor when the level used is not in the table
+    # (an explicitly typed level, or a skipped calibration).
+    floor = measured.get(_used, min(measured.values()) if measured else None)
     if post is None:
         print("  post-render fringe: not measurable on this output -- reporting "
               "unverified rather than assuming a pass.", file=sys.stderr)
@@ -7446,11 +7510,22 @@ def auto_run(input_path, output_path, args, parser):
     # largest benign encoder gap measured 0.0021, so 0.05 is ~24x the worst
     # observed agreement. Measured on flat vector icon art over white; an art
     # style far outside that corpus may warrant re-measuring.
-    if floor is not None and post > floor + 0.05:
-        _used = diag.get('erosion_used')
-        if _used is None:
-            _used = args.edge_cleanup_erosion or 0
-        newe = _used + 1
+    if floor is not None and post > floor + 0.05 and _used >= EROSION_MAX_AUTO:
+        # The disagreement is real and MORE EROSION IS NOT AN AVAILABLE REMEDY. Escalating from
+        # here is the exact move SS37 measured as destructive: across 112 assets rendered at
+        # every level, no asset lost less artwork at a higher level and going above
+        # EROSION_MAX_AUTO improved background removal by at most 0.021. Report it as an
+        # unresolved disagreement rather than acting on it -- an honest "check this by hand"
+        # beats a correction whose own success criterion is the metric that is misreading.
+        print(f"  DISAGREEMENT: the encoded file is {post - floor:.4f} above the {floor:.4f} "
+              f"the in-memory calibration predicted at --edge-cleanup-erosion {_used} -- the "
+              f"encoder reintroduced edge pixels the calibration could not see. NOT correcting: "
+              f"{_used} is already the most erosion an automatic decision may use, and more of "
+              f"it is measurably artwork loss rather than fringe removal "
+              f"(references/lessons.md SS37). Inspect this asset by hand, or pass "
+              f"--edge-cleanup-erosion explicitly if you want a higher level.", file=sys.stderr)
+    elif floor is not None and post > floor + 0.05:
+        newe = min(_used + 1, EROSION_MAX_AUTO)
         print(f"  DISAGREEMENT: the encoded file is {post - floor:.4f} above the floor the "
               f"in-memory calibration predicted -- the encoder reintroduced edge pixels the "
               f"calibration could not see. Re-rendering ONCE at "

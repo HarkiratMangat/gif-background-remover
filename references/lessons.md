@@ -2201,6 +2201,17 @@ That is a categorical gap, not a tuned constant. The measured residual that prod
 
 `detect_fade_ladder()` has **three call sites and one implementation**, because the two-consumer split is what §35 and §36 both were: `analyze()` reports `fade_palette_is_ladder`, `recommend()` declines the flag and stops calling the format `webp-or-avif *with* --recover-fade-alpha`, and `recover_fade_alpha_frames()` REFUSES outright so a run that never called `--recommend` is stopped too. `--fade-color` still bypasses all of it — naming the colour is the user overriding detection, not asking detection to try harder.
 
+**How often it fires, measured over 266 assets across five populations.** The screen fires on 66 of them and 24 would have been handed `--recover-fade-alpha`; the ladder rule fires on **2**. Per population: `corpus` 4 flag / **0 ladder**, `labelled` 5 / **0**, `trial` 3 / **1** (hurricane), `dark_bg` 12 / **1**, and `small_aa_quantized` — 117 assets deliberately re-exported at 16-64 colours — 0 / **0**. ⚠️ That last population is the falsifier that mattered most and it was chosen before the survey ran: quantization error could plausibly push a genuinely flattened stage more than `FADE_RESIDUAL_TOLERANCE` off the line and manufacture a ladder out of nothing. It does not; the hazard is real in principle and absent in 117 measured cases.
+
+⚠️ **The one firing outside the motivating asset is NOT a clean win, and saying otherwise would be the easy lie.** One dark-background asset from the development repo's corpus (which is not part of this package, so this is provenance rather than something you can re-run here) has a 3-rung ladder — cosine 0.969, distances 365.5 / 321.3 / 296.8. Rendered to `.webp` through `--auto` on both sides:
+
+| | `fade_coherence` | `bg_removed_worst` | `edge_cleanliness` | `art_kept_worst` |
+|---|---|---|---|---|
+| with the flag | 0.492 | 0.8748 | 0.3349 | 1.0000 |
+| declined | 0.444 | **0.9863** | **0.5915** | 0.8188 |
+
+Background removal and edge quality both improve clearly; artwork retention falls; and `fade_coherence` is **below the 0.90 bar on BOTH sides**, so the axis the rule was accepted on cannot adjudicate this asset at all. Note that the flag's perfect `art_kept_worst` is the same artefact as its poor `bg_removed_worst`: this render path never zeroes anything, so it "keeps" the background along with the art (§35). **Reporting the sensitivity is the answer here, not raising the rung floor to 4 to make the awkward case disappear** — three is the principled floor, because two collinear colours are just a colour and a lighter version of it, and moving a documented threshold because one measurement objects is how a corpus gets fitted to a conclusion.
+
 ### 34.3 `--recommend` can name a real design region as background — check it before trusting it
 Observed verbatim on a rocket whose white body sits inside a navy outline: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region was the artwork.** Two of the three sessions followed the recommendation and deleted **83% of the body**; both reported success afterwards, because every mechanical check they ran agreed.
 
@@ -2329,6 +2340,36 @@ Eroding *n* rings should not cost much more than *n* perimeters, so `lost / peri
 
 ### 37.3 What the next attempt should know
 The cost term has to compare erosion's loss against something that is **not** a function of erosion itself. Candidates not yet tried: loss measured against the frame's own artwork AREA rather than its boundary; per-component survival with a floor derived from the asset's own component-size distribution rather than a constant 25px; or accepting that this is a per-asset judgement and having `--recommend` say so. Whatever is tried, the acceptance is fixed and both halves are required: the 36 erosion-caused assets must improve, and `edge_cleanliness` must not fall on the 41 controls.
+
+### 37.4 What closed it: measuring the ANSWER instead of arguing about the rule
+Both rejected fixes were attempts to add a cost term to the calibration RULE. What settled it was rendering every reachable asset at every level and reading the answer off real outputs: **112 assets whose calibration actually runs, each rendered through the real `--auto` CLI at erosion 0, 1, 2 and 3 and scored — 448 renders.** Three facts came out of it, and none of them is a threshold:
+
+1. **NO asset anywhere lost LESS artwork at a higher erosion level — 0 of 112.** Erosion is monotonically destructive, so every level above the smallest one that works is pure cost.
+2. **Going above 1 improved `bg_removed_worst` by at most 0.021**, on 10 assets — and 6 of those 10 never escalated anyway. The three a cap actually costs are assets whose background removal has already failed: 0.009 → 0.030, 0.516 → 0.535, 0.980 → 0.995.
+3. **Going from 0 to 1 buys a great deal** — +0.622, +0.198, +0.187 `bg_removed_worst` on three real assets. Erosion earns its place exactly once.
+
+So the fix is a restriction of the SEARCH SPACE, not a constant inside a formula: `EROSION_MAX_AUTO = 1`. Every level is still MEASURED — the table is the evidence a human audits, and the post-render check reads the in-memory value at the level actually used — but only 0 and 1 may be selected, and the log says what was rejected and why.
+
+**Measured PRE/POST through the real CLI on 186 assets across five populations.** 37 assets move (2→1 on 17, 3→1 on 15, 3→0 on 4, 2→0 on 1); 149 are untouched.
+
+| | result |
+|---|---|
+| erosion-caused population (51) | `art_lost_over_perimeter` **better on 28, worse on 0**, unchanged on 23 |
+| artwork recovered | median **0.614** perimeter rings, max **2.079** |
+| `art_kept_worst` | median **+0.0146**, and it never falls on any asset |
+| controls (54 already under 1.1) | worse on **0** for `art_lost_over_perimeter`, `art_kept_worst`, `bg_removed_worst` AND `edge_cleanliness` |
+| `bg_removed_worst`, all 186 | worse on 5, worst **−0.021**; better on 0 |
+| already-background-removed (37) | score-identical on **37 of 37** |
+
+⚠️ **THE SECOND CONSUMER, and it was the whole point.** `--auto`'s post-render correction escalates to `used + 1` on its own, bypassing calibration entirely — §37 records a previous fix that reached the calibrator and left this path escalating straight back into the level calibration had just rejected. The cap therefore lives in ONE constant read by BOTH, and the escalation now reports an unresolved disagreement rather than acting on it once it is already at the ceiling. Measured on `dark_bg/_ (10).gif`, whose calibrated level did not change at all: PRE escalated 1 → 2 and POST declines, `art_lost_over_perimeter` **3.684 → 3.223**. That asset is invisible to any check that only looks at what the calibrator picked.
+
+⚠️ **And the post-render check was re-anchored, because the cap makes the old anchor wrong.** It compared the encoded fringe fraction against the GLOBAL floor of the calibration table. Once the calibrator is allowed to decline a lower reading on purpose, that gap measures OUR OWN decision rather than the encoder's, and would fire on every asset whose curve keeps falling past the ceiling. It now compares against the in-memory value **at the level actually used**, which is the only thing that answers the question the check is asking.
+
+⚠️ **What this does NOT close, stated plainly.** Of the 51 erosion-caused assets, **23 are still over 1.1 at erosion 1** — the cap cannot reach them because their calibrated level was already 1. And a further **20 damaged assets are attributable to the KEYER, not erosion** (their damage survives erosion 0 entirely), which no erosion change will ever touch. The motivating asset, a neon glow on flat black, goes `art_lost_over_perimeter` **6.823 → 4.972** and `art_kept_worst` **0.667 → 0.788** — a real improvement and not a fix. The remaining loss is the keyer cutting a soft falloff it cannot tell from background.
+
+⚠️ **`edge_cleanliness` CANNOT vary on a GIF output, and the original acceptance criterion did not say so.** It counts pixels at an alpha the encoder never asked for — neither ~0 nor ~255 — and a 1-bit container has none by construction, so it reads exactly 1.000 on every GIF render. Measured: **0 of 112 assets show any variation across four erosion levels.** "edge_cleanliness did not fall on the controls" is therefore true here and nearly vacuous; the field that actually carries the control's meaning on a GIF is `bg_removed_worst` (background left behind), and it is worse on 0 of 54 controls. **Check that an acceptance metric can move on the population you are about to measure it on**, or it will report a pass it was never able to withhold.
+
+⚠️ **`score_outputs` is NOT valid on the already-background-removed population.** It derives its ground truth from the SOURCE's RGB, and under `alpha == 0` that is whatever the encoder left there (§36). On `alphas` it reports `art_lost_over_perimeter` values of 19, 29, 63 and 71 on assets that are rendering correctly. The honest acceptance for that population is the alpha FINGERPRINT, not the score; the scores are reported only as a determinism check (identical on 37 of 37).
 
 **The transferable part.** A calibrator that optimises one objective will spend everything the other objectives were worth — that much is real, and the measurement above is the evidence. But two plausible cost terms both failed, one on a population and one on arithmetic, and the second had passed an 87-asset corpus check first. **When a fix and its measurement are built by the same reasoning, the corpus can only tell you they agree.**
 
