@@ -62,6 +62,41 @@ def background_colour(rgb):
     return cols[int(np.argmax(cnt))].astype(int)
 
 
+def _frame_start_times_ms(im):
+    """Cumulative start time (ms) of every STORED frame in an animated image, plus the
+    file's total duration. Frame i covers [starts[i], starts[i+1)) -- the last frame
+    extends to `total`.
+
+    Needed because GIF/WebP encoders merge a run of pixel-identical consecutive frames
+    into one stored frame with an extended duration, to save space. Reading two files'
+    frames by raw POSITION (`src.seek(i)` / `out.seek(i)` for the same i) silently drifts
+    out of sync the instant one file merges a frame the other did not -- every stored
+    index after that point points at a different moment in the animation in each file.
+    Missing/zero duration metadata defaults to 30ms rather than 0, so a file with no
+    duration info at all does not collapse every frame's start time onto zero.
+    """
+    starts = []
+    t = 0
+    for i in range(getattr(im, 'n_frames', 1)):
+        im.seek(i)
+        starts.append(t)
+        t += im.info.get('duration', 30) or 30
+    return starts, t
+
+
+def _stored_index_at_time(starts, total, t):
+    """The stored-frame index active at time `t` on that file's own timeline, clamped to
+    its range. `bisect_right` then step back one gives the last start <= t, i.e. exactly
+    the frame whose interval contains it."""
+    import bisect
+    if t <= 0:
+        return 0
+    if t >= total:
+        return len(starts) - 1
+    i = bisect.bisect_right(starts, t) - 1
+    return max(0, min(i, len(starts) - 1))
+
+
 def _truth(rgb, bg):
     """outside = bg-coloured and connected to the border; interior = bg-coloured but not;
     art = the rest."""
@@ -128,9 +163,33 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
     src = Image.open(src_path)
     out = Image.open(out_path) if alpha_override is None else None
     n = getattr(src, 'n_frames', 1)
-    if out is not None:
-        n = min(n, getattr(out, 'n_frames', 1))
+    # Sampled over the SOURCE's own frame count, not min(src, out) -- capping to the
+    # shorter of the two silently excluded source frames whenever the output coalesced
+    # frames, which is exactly where a real defect is likely to live (SS37.8: the
+    # `Cut loop.gif` case this was found on had its worst frame outside the capped range
+    # entirely on some renders).
     idxs = sorted(set(np.linspace(0, n - 1, min(samples, n)).astype(int).tolist()))
+    out_idx_for = None
+    if out is not None:
+        out_n = getattr(out, 'n_frames', 1)
+        if out_n == n:
+            # EQUAL frame counts is the common case and means no coalescing happened --
+            # position i of the output IS logical frame i, exactly as before. Falling
+            # through to duration-based mapping here was tried and is actively WRONG: a
+            # source and a re-encoded output can report different per-frame durations for
+            # the same discrete frame sequence (measured on `in-love.gif`: source 40ms,
+            # rendered .webp 30ms/frame, same 48 frames both files) with no coalescing at
+            # all, and mapping by absolute time then reads the WRONG frame despite the
+            # correspondence being trivially 1:1. Nine real fixture tests caught this.
+            out_idx_for = {i: i for i in idxs}
+        else:
+            src_starts, _ = _frame_start_times_ms(src)
+            out_starts, out_total = _frame_start_times_ms(out)
+            # Frame counts differ, which is the actual signal that the output coalesced
+            # (or otherwise dropped) frames the source has -- only here does duration-based
+            # mapping have anything real to correct. See _frame_start_times_ms's docstring.
+            out_idx_for = {i: _stored_index_at_time(out_starts, out_total, src_starts[i])
+                           for i in idxs}
 
     src.seek(0)
     bg_c = background_colour(np.array(src.convert('RGB')))  # frame 0 defines it throughout
@@ -207,7 +266,7 @@ def score(src_path, out_path=None, samples=24, alpha_override=None):
         s_rgb = np.array(src.convert('RGB'))
         d = np.abs(s_rgb.astype(int) - bg_c).sum(-1)
         if alpha_override is None:
-            out.seek(i)
+            out.seek(out_idx_for[i])
             o = np.array(out.convert('RGBA'))
             if o.shape[:2] != s_rgb.shape[:2]:
                 return {'shape_mismatch': True}

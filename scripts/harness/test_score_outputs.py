@@ -483,3 +483,70 @@ def test_deleting_a_solid_blob_reads_as_damage(tmp_path):
     r = S.score(src, out)
     assert r['art_lost_faint_share'] <= 0.05
     assert r['art_lost_solid_largest_component'] >= 2000
+
+
+# --------------------------------------------------------------------------------------
+# `score()` used to read source and output frames by raw POSITION, and GIF/WebP encoders
+# merge runs of pixel-identical consecutive frames into one stored frame with an extended
+# duration. Past the first merge, "frame i" of the two files stops being the same moment
+# in the animation. Found 2026-08-21 auditing `Cut loop.gif`'s erosion diagnosis: reading
+# "frame 67" by position actually read original frame 68 once a coalesce upstream of it
+# had shifted every later index, and the reported worst-frame loss was 2,943px of
+# saturated colour where the correctly-aligned frame reads 814px of pale colour.
+# references/lessons.md SS37.8.
+def test_stored_index_at_time_matches_a_real_alternating_duration_pattern():
+    """Hand-computed against the exact duration pattern `_ (10).gif` renders with
+    (20ms/40ms alternating -- a real coalesce, not a contrived one): starts = [0, 20, 60,
+    80], total = 100. This is the case the first duration-mapping attempt broke on."""
+    starts, total = [0, 20, 60, 80], 100
+    cases = [(0, 0), (19, 0), (20, 1), (59, 1), (60, 2), (79, 2), (80, 3), (99, 3),
+             (100, 3), (150, 3)]
+    for t, want in cases:
+        got = S._stored_index_at_time(starts, total, t)
+        assert got == want, f"t={t}: got stored index {got}, want {want}"
+
+
+def _write_rgba_frames(frames, durations, path):
+    """Animated LOSSLESS RGBA WebP -- the exact alpha values chosen here are the exact
+    values read back. `frames` is a list of (rgb, alpha) pairs."""
+    import numpy as np
+    from PIL import Image
+    ims = [Image.fromarray(np.dstack([rgb, alpha.astype(np.uint8)]), 'RGBA')
+           for rgb, alpha in frames]
+    ims[0].save(path, save_all=True, append_images=ims[1:], duration=durations,
+                loop=0, lossless=True, quality=100)
+    with Image.open(path) as im:
+        assert getattr(im, 'n_frames', 1) == len(frames), 'fixture lost frames on write'
+    return path
+
+
+def test_a_defect_invisible_under_positional_indexing_is_caught_by_time_mapping(tmp_path):
+    """THE DEFECT this fix closes. Source: 2 frames, blank then a solid square. Output: ONE
+    stored frame (duration 60ms, covering both 30ms source frames) that is fully
+    transparent throughout -- exactly what a renderer that (wrongly) treated both frames
+    as identical-blank would coalesce down to, erasing the square.
+
+    Under the OLD positional code, `n = min(2 source frames, 1 output frame) = 1`, so only
+    source frame 0 (blank, nothing to lose) is ever sampled -- `frames_compared` reads 1
+    and the erased square is invisible to the scorer. Under the fix, sampling stays over
+    the source's own 2 frames and source frame 1 (30ms) is correctly mapped by TIME onto
+    the single output frame (which spans 0-60ms), so the erasure is caught.
+    """
+    import numpy as np
+    from PIL import Image
+    bg = np.array([255, 255, 255], np.uint8)
+    blank = np.zeros((60, 60, 3), np.uint8); blank[:] = bg
+    square = blank.copy(); square[20:40, 20:40] = (20, 40, 200)
+    src_frames = [Image.fromarray(blank, 'RGB'), Image.fromarray(square, 'RGB')]
+    src = str(tmp_path / 'src.webp')
+    src_frames[0].save(src, save_all=True, append_images=src_frames[1:],
+                       duration=[30, 30], loop=0, lossless=True, quality=100)
+
+    transparent = np.zeros((60, 60), np.uint8)
+    out = _write_rgba_frames([(blank, transparent)], [60], str(tmp_path / 'out.webp'))
+
+    r = S.score(src, out)
+    assert r['frames_compared'] == 2, (
+        'sampling must cover both source frames, not be capped to the shorter output')
+    assert r['art_kept_worst'] == 0.0, (
+        "the erased square must be detected once frame 1 is correctly time-mapped: " + str(r))
