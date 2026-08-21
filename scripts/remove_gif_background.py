@@ -5937,7 +5937,8 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
     calibration actually runs, each rendered through the real `--auto` CLI at erosion 0, 1, 2
     AND 3 and scored** (448 renders):
 
-      * NO asset anywhere lost LESS artwork at a higher level: 0 of 112. Erosion is
+      * NO asset anywhere lost LESS artwork at a higher level: 0 of the 104 that scored at
+        all four levels, at zero margin (8 of the 112 scored at no level at all). Erosion is
         monotonically destructive, so any level above the minimum that works is pure cost.
       * Going above 1 improved `bg_removed_worst` by at most **0.021**, on 10 assets -- and 6
         of those 10 never escalated anyway. The three the cap actually costs are assets whose
