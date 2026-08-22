@@ -153,16 +153,18 @@ Five modes replace "run it and hope":
 | `--verify` | Leftover background, protected-region coverage, edge fringe, small-region inflation, timing. |
 
 <details>
-<summary><b>Background &amp; protection</b> — 8 flags</summary><br>
+<summary><b>Background &amp; protection</b> — 9 flags</summary><br>
 
 | flag | |
 |:--|:--|
 | `--bg-color <hex>` | Background to remove. Auto-detected from frame 0's corners if omitted. |
 | `--tolerance <n>` | Per-channel match tolerance (default 15). |
+| `--allow-changing-background` | Process an animation whose background CHANGES COLOUR partway through, which is otherwise refused. One `--bg-color` cannot key two backgrounds, so every recoloured frame keeps its own — measured **0.00% coverage** of the frame-0 colour on 4 of 30 frames of a real asset, with the render passing every quality check. |
 | `--protect-outline-color <hex[,hex…]>` | **The default choice.** Everything enclosed by a closed outline is protected; accepts several independently-outlined regions. |
 | `--outline-tolerance <n>` | Tolerance for the outline colour (default 40). |
 | `--protect-region circle:cx,cy,r \| rect:x,y,w,h` | Manual region, `;`-separated for several. **A last resort** — a fixed circle rarely matches a real interior's irregular shape. |
 | `--remove-region …` | The inverse: force-remove, overriding protection inside it. |
+| `--remove-region-track …` | Same spec, but as a frame-0 SEED that is then FOLLOWED across the animation — for a hole that moves and cannot be told from same-coloured decoration by size or aspect. |
 | `--remove-region-feather <px>` | Edge taper for that cut (default 1.5). |
 | `--protect-band-only <px>` | Feather only a thin ring around the removable core; force-protect everything else. For when a solid design colour sits near the background. |
 | `--ignore-source-alpha` | Remove by colour across the whole frame even when the source's own transparency already IS its background. Restores pre-v5.5.0 behaviour; on real sprite packs the padding under that transparency is the same value as the artwork's outlines, so this can destroy art. |
@@ -181,6 +183,8 @@ Five modes replace "run it and hope":
 | `--edge-cleanup-erosion <px>` | Erodes the opaque/transparent boundary to clear feather fringe. Context-resolved: 0 for WebP/AVIF, 1 under `--dither-mode none`, else 2. |
 | `--erosion-exempt-max-size <px>` | Exempt removed regions at or below N pixels from erosion. |
 | `--erosion-exempt-transient` | Exempt by **identity** rather than size — stable across frames = design, comes and goes = incidental. For when the two overlap in size. |
+| `--edge-softening <px>` | Alpha ramp put back on the boundary a deep trim just cut, so erosion 2+ does not read as a hard step. Context-resolved: 1px when the resolved `--edge-cleanup-erosion` is ≥2, else 0. 8-bit-alpha containers only — declined on `.gif` with a reason. |
+| `--no-erosion-component-protection` | Turns OFF the default protection that exempts a small or thin **kept** art component from edge-cleanup erosion when the trim would cut it below 30% survival — the mirror of `--erosion-exempt-max-size`. Use only to reproduce output from before this protection existed. |
 | `--dither-mode {bayer,none,continuous}` | How feathered edges resolve to the container's alpha. |
 | `--bayer-size {4,8}` | Threshold-matrix size (default 8 — 64 levels against 4×4's 16, tracking intended alpha 2.5× more closely). |
 
@@ -212,11 +216,12 @@ Five modes replace "run it and hope":
 </details>
 
 <details>
-<summary><b>Format &amp; encoding</b> — 6 flags</summary><br>
+<summary><b>Format &amp; encoding</b> — 7 flags</summary><br>
 
 | flag | |
 |:--|:--|
 | `--format {auto,gif,webp,avif}` | Container. `auto` reads the output extension. |
+| `--allow-truncating-gif` | Write a GIF even when a frame comes out fully transparent. Pillow truncates the file there — measured **85 of 123 frames**; the default is to refuse and point at WebP/APNG. |
 | `--webp-lossy` · `--webp-quality <n>` | Lossy WebP (default 90). Lossless is usually **smaller** on flat vector art — measured 2109 KB against 3005 KB on the same asset. |
 | `--webp-method <0-6>` | Encoder effort (default 2 — costs 0.6–8.3% more bytes than m4 and encodes ~2× faster). |
 | `--avif-quality <n>` | AVIF quality (default 70). Fits roughly **3× the frames** of WebP under the same byte cap. |
@@ -229,13 +234,14 @@ Five modes replace "run it and hope":
 
 | flag | |
 |:--|:--|
-| `--target-kb <n>` | Walk optimize → medium → heavy, then escalate stride/scale, until it fits. |
+| `--target-kb <n>` | Fit a byte cap. GIF output walks optimize → medium → heavy, then escalates stride/scale. WebP/AVIF/APNG output runs a 120-rung grid (stride × scale × quality) ordered least-destructive-first, evaluated concurrently at a **probed** worker count (serial wherever the probe fails). A deep downscale ranks below frame-stride — on flat vector art, shrinking makes the file *bigger* (`references/lessons.md` §42). |
 | `--compress {optimize,medium,heavy}` | Named tiers: crop, resize to 512px, 1px erosion, `gifsicle -O3`, plus lossy/palette steps. |
 | `--resize-max-dim <px>` | Arbitrary downscale target, standalone. |
 | `--frame-stride <n>` | Keep every Nth frame, **folding dropped durations into the kept frame** so total length is unchanged. |
 | `--crop` | Crop to the transparent bounding box (automatic within any tier). |
 | `--square-pad` | Pad to a square with transparent margin — emoji slots are square. |
-| `--batch manifest.json` | Many files in one invocation, with per-file overrides. |
+| `--out-dir <dir>` | Treat EVERY positional path as an input and derive each output name (`<stem>_transparent.<ext>`, escalating to `_v2` rather than overwriting). This is how two files render in one call — with exactly two bare paths and no `--out-dir`, the second is still the output. |
+| `--batch manifest.json` | Many files in one invocation, with per-file overrides. Only needed when the files want DIFFERENT flags; when they share them, pass the paths positionally. |
 | `--preview sheet.png` | PNG contact sheet over a checkerboard for a fast visual check. |
 | `--no-gifsicle-optimize` | A documented no-op, kept so old invocations still parse. Don't reach for it. |
 

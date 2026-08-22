@@ -56,12 +56,14 @@ The four candidates and what each is a hypothesis ABOUT:
               share threshold with a single pixel, so min_share passes VACUOUSLY
               on small art and must not be read without it.
 """
-import argparse, json, os, sys, time, warnings, collections
+import argparse
+import concurrent.futures as cf, json, os, sys, time, warnings, collections
 import numpy as np
 from PIL import Image
 warnings.filterwarnings('ignore')
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from populations import iter_assets, score
+from machine import default_jobs as _default_jobs
 
 STRONG, MINP = 40, 2
 
@@ -223,24 +225,47 @@ def measure(path):
     return {k: round(med(k), 4) for k in rows[0]}
 
 
+def _measure_one(row):
+    """Module level ON PURPOSE. `ProcessPoolExecutor` pickles the callable, and macOS
+    uses `spawn`, so a nested `def` inside `__main__` fails every task with
+    "Can't pickle local object". The parallel default only works because this is here."""
+    k, path, pop, lab = row
+    rec = {'pop': pop, 'label': lab, 'path': os.path.relpath(path, os.getcwd())}
+    try:
+        rec.update(measure(path))
+    except Exception as e:
+        rec['error'] = f"{type(e).__name__}: {e}"
+    return k, rec
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', required=True)
     ap.add_argument('--only', default=None)
+    ap.add_argument('--jobs', '-j', type=int, default=_default_jobs(),
+                    help='parallel workers. Defaults to %(default)s; pass 1 to force serial. '
+                         'PROCESSES here, not threads: unlike the render harness this measures '
+                         'in-process with numpy rather than shelling out, so the GIL is held. '
+                         '⚠️ Timings under --jobs > 1 are wall clock for the RUN, not per-asset.')
     a = ap.parse_args()
     assets = list(iter_assets(a.only.split(',') if a.only else None, include_excluded=True))
-    print(f"{len(assets)} assets", flush=True)
+    print(f"{len(assets)} assets, {a.jobs} worker(s)", flush=True)
     out, t0 = {}, time.time()
-    for i, (k, path, pop, lab) in enumerate(assets):
-        rec = {'pop': pop, 'label': lab, 'path': os.path.relpath(path, os.getcwd())}
-        try:
-            rec.update(measure(path))
-        except Exception as e:
-            rec['error'] = f"{type(e).__name__}: {e}"
+
+    def emit(i, k, rec):
         out[k] = rec
         if i % 50 == 0:
             json.dump(out, open(a.out + '.partial', 'w'), indent=1)
             print(f"  {i}/{len(assets)} {time.time()-t0:.0f}s", flush=True)
+
+    if a.jobs > 1:
+        with cf.ProcessPoolExecutor(max_workers=a.jobs) as ex:
+            for i, (k, rec) in enumerate(ex.map(_measure_one, assets, chunksize=1)):
+                emit(i, k, rec)
+    else:
+        for i, row in enumerate(assets):
+            k, rec = _measure_one(row)
+            emit(i, k, rec)
     json.dump({'_seconds': round(time.time() - t0, 1), 'records': out}, open(a.out, 'w'), indent=1)
     os.path.exists(a.out + '.partial') and os.remove(a.out + '.partial')
     print(f"wrote {a.out} in {time.time()-t0:.0f}s")

@@ -6,11 +6,11 @@ This file holds the full evidence trail behind SKILL.md's rules: bug postmortems
 
 ## How to read this file — do NOT read it whole
 
-It is ~67,000 tokens across 29 sections. The median section is ~1180 and the largest ~11622. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
+This file is far too large to read whole, and it only grows — so the question is never "can I afford it?" but "which one section do I need?". Any single section is a small fraction of it, and the table of contents below is the live list. **Every numbered section carries an `**Also searched as:**` line** — synonyms, spelling variants and the words a frustrated user would type, chosen because the section does NOT already use them (a tag that repeats the body is dead weight, since `rg` finds that already). Grep those first if the obvious term returns nothing.
 
-**Find the one section you need and read only that**; reading the file end to end costs roughly 40x what the answer costs.
+**Find the one section you need and read only that**; reading it end to end costs orders of magnitude more than the answer does.
 
-Three routes, cheapest first:
+Four routes, cheapest first:
 
 1. **Symptom table below** — scan it for something resembling what you are seeing, then jump to that section.
 2. **Grep for the symptom in your own words.** Prose here is soft-wrapped (one line per paragraph) specifically so that multi-word phrases match on a single line:
@@ -21,8 +21,12 @@ Three routes, cheapest first:
    ```
    python3 -c "import re,sys;s=open('references/lessons.md').read();print(re.search(r'^## 16\..*?(?=^## \d+\.|\Z)',s,re.M|re.S).group(0))"
    ```
+4. **Print the real per-section sizes**, if you need to budget rather than guess. Derived on the spot, so it is always accurate — no size figure is stored in prose anywhere, because every version of that number went stale:
+   ```
+   python3 -c "import re;s=open('references/lessons.md').read();[print(f'{len(b)//4:>6} tok  {b.splitlines()[0][3:]}') for b in re.findall(r'(?ms)^(## \d+\..*?)(?=^## \d+\.|\Z)',s)]"
+   ```
 
-**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4`, `§26.5` …), so you can extract a part rather than the whole. §16 alone is ~6,500 tokens across 21 sub-anchors; one of them is usually what you actually want:
+**Long sections have numbered sub-anchors** (`§16.5`, `§21.4`, `§23.4`, `§26.5` …), so you can extract a part rather than the whole. §16 alone spans 21 sub-anchors; one of them is usually what you actually want:
    ```
    python3 -c "import re;s=open('references/lessons.md').read();print(re.search(r'^### 16\.5 .*?(?=^### |\Z)',s,re.M|re.S).group(0))"
    ```
@@ -59,6 +63,19 @@ If you are about to re-diagnose something that smells like a past case — a fri
 27. [Three roles for one colour: the structural route measured and ruled out](#27-three-roles-for-one-colour-the-structural-route-measured-and-ruled-out)
 28. [The fifth pixel-art discriminator, and what the first four never tested](#28-the-fifth-pixel-art-discriminator-and-what-the-first-four-never-tested)
 29. [A sixth discriminator, and a measure that had been reading a plane blank by construction](#29-a-sixth-discriminator-and-a-measure-that-had-been-reading-a-plane-blank-by-construction)
+30. [Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background](#30-two-defaults-judged-by-the-wrong-measurement-the-gifsicle-dither-and-the-leak-gates-background)
+31. [The source's own alpha was thrown away before the mask was computed](#31-the-sources-own-alpha-was-thrown-away-before-the-mask-was-computed)
+32. [A blanket label is a measurement of nothing, and the quantized twin is not the artwork](#32-a-blanket-label-is-a-measurement-of-nothing-and-the-quantized-twin-is-not-the-artwork)
+33. [Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin](#33-following-a-moving-hole-identity-by-continuity-when-nothing-in-a-single-frame-can-tell-it-from-its-twin)
+34. [What three fresh sessions on five real assets found that every automated gate missed](#34-what-three-fresh-sessions-on-five-real-assets-found-that-every-automated-gate-missed)
+35. [A cheap screen recommended a flag the renderer's own detector disagreed with](#35-a-cheap-screen-recommended-a-flag-the-renderers-own-detector-disagreed-with)
+36. [The background changed colour mid-animation, and every check said the render was fine](#36-the-background-changed-colour-mid-animation-and-every-check-said-the-render-was-fine)
+37. [Erosion damage measured and attributed, and two fixes that failed their own acceptance](#37-erosion-damage-measured-and-attributed-and-two-fixes-that-failed-their-own-acceptance)
+38. [The word `verified` was printed over a number that said otherwise](#38-the-word-verified-was-printed-over-a-number-that-said-otherwise)
+39. [A GIF whose later frames resize the canvas crashed deep inside `analyze()` with no indication why](#39-a-gif-whose-later-frames-resize-the-canvas-crashed-deep-inside-analyze-with-no-indication-why)
+40. [The soft glow was never invisible to the fade detector — it missed the gate by 0.02%](#40-the-soft-glow-was-never-invisible-to-the-fade-detector--it-missed-the-gate-by-002)
+41. [Recovering the glow works when you NAME the colour; deriving it does not, and the negative population says why](#41-recovering-the-glow-works-when-you-name-the-colour-deriving-it-does-not-and-the-negative-population-says-why)
+42. [Downscaling flat vector art makes the file BIGGER, so a size ladder that tries resolution before frames hands back the wrong file](#42-downscaling-flat-vector-art-makes-the-file-bigger-so-a-size-ladder-that-tries-resolution-before-frames-hands-back-the-wrong-file)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -107,6 +124,62 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--recommend`'s `--pixel-art` evidence cites numbers that do not match the verdict | §28.7 (fixed — it now names the rule that fired) |
 | `--analyze` / `--recommend` / `--verify` crashes on a static JPEG | §28.8 (`n_frames` on a bare attribute) |
 | The output file is EMPTY / fully transparent, but every check says it is clean | §28.9 (an empty output scores perfectly on all four quality measures) |
+| `--compress medium`/`heavy` output shimmers or crawls between frames | §30.1 (the Floyd-Steinberg dither, removed 2026-08-19) |
+| A GIF got BIGGER after `--compress heavy` than you expected | §30.1 (error diffusion fights inter-frame compression) |
+| An outline colour is rejected as a background leak and you cannot see the leak | §30.3 (the gate tested the largest bg component, which can be INTERIOR) |
+| An outline colour passes the leak gate but visibly swallows background | §30.3 (background that is not the biggest piece was invisible to it) |
+| A default was chosen on a measurement that cannot see what the feature is for | §30.2 (measure the thing the feature exists to do, then price it) |
+| A faded/glowing source comes out fully opaque | §31 (the source alpha never reached the output; now clamped) |
+| A specificity figure collapses on one population and nowhere else | §32 (check whether that population is a DERIVATIVE) |
+| A corpus label was applied to everything at once | §32 (a blanket label measures the labeller, not the code) |
+| Flat 2-3 colour vector art called pixel art | §32.3 (the 16-colour floor's first real negatives) |
+| Native-resolution (1:1) pixel art read as antialiased | §32.7 (plateau_cliff_ratio needs a scale factor) |
+| A hole to punch MOVES, and matching decoration must be kept | §33 (`--remove-region-track`) |
+| A GIF this tool wrote plays only part way through | §34.1 (a fully transparent frame truncates it) |
+| `gifsicle: unknown block type` on our own output | §34.1 |
+| A fade comes out as a sudden pop instead of a smooth ramp | §34.2 (`--recover-fade-alpha` saturates) |
+| A faded shape looks right over white and wrong over anything else | §34.2 (pale is not the same as translucent) |
+| `--recommend` called a real design region "incidental" background | §34.3 (check it before trusting it) |
+| An interior area of the design came out transparent | §34.3 |
+| `--tumble-safe` seems to do nothing | §34.4 (`--recover-fade-alpha` disables it) |
+| The outline looks soft or "not a clean polish" on a WebP/AVIF | §34.5 (that is the antialiasing, not a fringe) |
+| A measurement says erosion destroyed a huge share of the artwork | §34.5 (a perimeter cost over a shrinking area) |
+| `--auto` changed my erosion level and the docs said it would not | §34.5 (the docs were wrong, not the code) |
+| The whole frame comes out faintly see-through instead of cut out | §35 (`--recover-fade-alpha` with nothing to recover) |
+| The background is "removed" but every background pixel is alpha 1-9 | §35 |
+| `--recover-fade-alpha` was recommended and the output looks worse than no flags | §35 (the recommendation used a screen, not the detector) |
+| `--recover-fade-alpha` refuses with "no translucent colour to recover" | §35 (that is the fix working; drop the flag or name the colour with `--fade-color`) |
+| `--remove-region` hits the right spot on frame 0 and nowhere else | §33 |
+| Two identical same-coloured features, opposite treatment | §33 (seed one; identity is carried by continuity) |
+| A whole sprite pack detected at 20-25% while others are at 100% | §32.7 |
+| Pixel art in a lossy WebP/JPEG read as antialiased | §32.3 (the encode fills the plateaus in) |
+| Partial transparency in a PNG/WebP source disappears after `--auto` | §31 |
+| `SOURCE ALPHA HONOURED` printed, and the fade died anyway | §31 (the scope covers alpha==0 only) |
+| The background is one colour at the start and a different one later | §36 (a single `--bg-color` cannot key both) |
+| Background removed cleanly on the first frames, left solid on later ones | §36 |
+| `refusing to process ... BACKGROUND CHANGES COLOUR` | §36 (split the animation, or `--allow-changing-background`) |
+| `background_color_stability.changes` is `null` rather than true or false | §36 (UNVERIFIED — there was no reference plane to measure against) |
+| A thin stroke, wisp, antenna or whisker disappears from the output | §37.9 (edge-cleanup erosion; a component ≥25px is now exempted automatically — below that, try `--edge-cleanup-erosion 0`) |
+| `edge-cleanup erosion may have erased or badly shrunk N real detail(s)` | §37.9 (now acted on automatically; seeing this at all means the protection and the check disagree — report it) |
+| `erosion: protected N pixel(s) of art across M frame(s)` | §37.9 (working as intended — a thin component was exempted at the level already chosen) |
+| `this asset's curve is CONVEX at 2` | §37.10 (a genuinely two-pixel fringe earned one extra level; 4 of 336 assets do) |
+| A soft glow, halo or bloom loses its outer falloff on a dark background | §40 (the fade gate wants a colour that is almost never solid; a glow's colour is both) |
+| `fade_colors_detected` is empty on art that visibly fades out | §40 (check `partial_fraction` before concluding the detector is blind — one asset misses by 0.0002) |
+| One colour is both solid artwork and a translucent element | §40 (measured root of AUTONOMY BACKLOG item 5; still open) |
+| `EXPECT THE OUTER FALLOFF ... TO BE CUT` in `--recommend`'s evidence | §41 (it names the exact `--fade-color` value; re-run with it and a WebP/AVIF output) |
+| A glow comes back correctly with `--fade-color` but never automatically | §41 (deriving the colour is falsified against 91 assets; the named candidate is the product) |
+| `fade_ramp_candidate` is populated but no flag was recommended | §41 (evidence, deliberately not a decision — a threshold admitting it admits the catastrophic class) |
+| `--target-kb` came back at a quarter of the original resolution | §42 (deep downscale now ranks below frame-stride; on flat vector art it was never paying) |
+| Downscaling an icon made the WebP LARGER, not smaller | §42 (LANCZOS invents intermediate colours; the art stops being flat and lossless entropy jumps) |
+| `NOTE: downscaling made this file LARGER than full resolution` in the fit log | §42 (the ladder is telling you frame-stride is the only lever paying on this content) |
+| A `--target-kb` run takes minutes and prints dozens of `tried ...` lines | §42 (it walks a real 120-rung grid, now concurrently at a probed worker count) |
+| The output silhouette is clean but a detail is missing | §37 (the fringe metric has no term for what erosion costs) |
+| `--recommend` says an outline is VERIFIED and the region still comes out transparent | §38 (check the band — 35% of regions used to say "verified" at partial enclosure) |
+| `outline … verified across N frames (0% enclosed)` | §38 (two fields reading as one claim; fixed) |
+| An outline is called a COIN FLIP and you want to know what to do | §38 (it names what to check; partial enclosure still protects the frames it covers) |
+| A design region was dismissed as background on a value close to the bar | §38 (a narrow miss now reads as unsure, not as a decision) |
+| `operands could not be broadcast together` inside `analyze()` on a GIF | §39 (a later frame resized the canvas; now a clean refusal naming the frame) |
+| The output silhouette looks gnawed or nibbled rather than trimmed | §37 |
 | A monochrome/glyph PNG comes out blank, or reads as pixel art | §28.9 (an alpha-only mask — one flat RGB value, image in the alpha channel) |
 | `--auto` refuses with "nothing to do here" | §28.9 (alpha-only source: its background is already transparent) |
 | An already-background-removed file reads as hard-edged / pixel art | §29.1 (its empty transition band is guaranteed by the cutout, not by the art) |
@@ -126,6 +199,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A new measure scores perfectly and you cannot find its failure population | §29.12 (build it; the corpus had ONE antialiased asset at sprite scale) |
 | An output has fewer opaque pixels than its source and no flag explains it | §29.13 (count the FRAMES — a duplicate frame coalesced away is not art loss) |
 | A guard stopped firing and nothing in the diff looks like logic | §29.15 (it was armed by a string; a doc-pass reword disarms it) |
+| `--analyze` feels slow and you want to know where the time goes | §29.16 (profile first — `np.unique(axis=0)` was 7.5s of it, but fixing it bought 10%) |
 | Wondering whether the cleanup ring is safe on a given animation | §29.15 (`band_applied` is a value now, not a sentence to parse) |
 | A rendered image looks static and you are about to file an animation defect | §29.14 (test a known-animating file first — the preview pane animates nothing) |
 | An AI-upscaled sprite is not detected as pixel art | §28.10 (the upscale removed the blocks — the verdict is correct) |
@@ -1828,6 +1902,14 @@ Both P3 items the render baseline flagged and nobody had explained are closed, a
 
 **The transferable part:** an unexplained residual is worth chasing even when both directions are harmless, and the answer twice was in the denominator rather than in the pipeline. Establish what the source figure actually counts before treating a ratio as loss.
 
+### 29.16 `np.unique(axis=0)` sorts ROWS, and it was the largest line in an `--analyze` profile
+
+`build_art_palette` asked `np.unique(sample, axis=0, return_counts=True)` for the distinct colours in a stack of frames. On the 7.4-million-row sample a 138-frame 640x640 emoji produces, that call takes **7,524 ms**. Packing each pixel to a uint32 and uniquing a 1-D array takes **65 ms** — **115x** — and returns the same colours in the same order with the same counts, because `(r<<16)|(g<<8)|b` sorts lexicographically by `(r, g, b)` exactly as row-unique does. Asserted on real frames rather than argued, and `analyze()`'s entire output is byte-identical before and after.
+
+The reason is not that `axis=0` is poorly implemented: it builds a structured view over the rows and sorts THAT, so its cost tracks the pixel count. The 1-D form sorts 4-byte integers. **This is the same lesson `measure_composited_color_count`'s boolean sieve already records — `np.unique`'s cost is the SORT, so give it the smallest thing that can be sorted.** Applied at both `axis=0` call sites.
+
+**What it did NOT do is make `--analyze` fast**, and that is worth stating because the 115x invites the opposite conclusion: end to end the same asset went 16.4s to 14.7s, about 10%. The rest of the profile is genuine per-frame work — the outline-leak search at 3.2s, band-interior regions across every frame, connected-component labelling, binary erosions — where each further percent means restructuring passes on a pipeline that has already produced three data-loss classes. **A 115x on one line is a 10% on the run, and quoting the first number without the second would be the same overclaim this file keeps recording.**
+
 ### 29.15 A guard armed by a sentence is disarmed by an edit that looks like documentation
 
 The source-alpha work in §28.14 rests on one decision: is the 2px cleanup ring safe on this animation, or does it eat the artwork? Getting that wrong is measured at 100.0% survival against 68.1% on real sprite packs, because pixel art's outline sits directly against its padding, so the ring IS the outline.
@@ -1849,3 +1931,719 @@ A verification item was run and its FIRST result was wrong in the direction that
 What DID advance the item is an independent DECODER rather than a player: `ffmpeg`, which did not write the file, reads the APNG as **19 frames, 18 distinct**, exactly matching the same source rendered to GIF and decoded identically. That answers the round-trip objection — the animation is really in the bytes — while leaving the browser half honestly open.
 
 **The transferable part:** when a check returns the answer that implies work, ask what result the check would give on a case you already know. A pane that animates nothing returns a confident-looking value, and so does a pattern that matches nothing. A check that was proven once is a memory; only a check that proves itself on every run is a control.
+
+
+## 30. Two defaults judged by the wrong measurement: the gifsicle dither, and the leak gate's background
+**Also searched as:** shimmer · sparkle between frames · contouring · posterisation · colour steps · palette reduction · encoder default · false leak · flood fill rejected · protection lost for no reason · wrong control region · jitter · boiling
+
+Two unrelated defaults, one shape of error: in both cases the MECHANISM was fine and the MEASUREMENT that justified it was looking at the wrong thing. Both were found on 2026-08-19 by measuring the thing the feature actually exists to do, on a population that could contradict it.
+
+### 30.1 Floyd-Steinberg was chosen on flat art, where dithering barely engages
+`--compress medium` and `heavy` passed `--dither=floyd-steinberg` to gifsicle. The reasoning in the docstring was sound in the abstract — error diffusion spreads quantization error instead of banding it, which is the right idea for smoothly-shaded art. It was never tested on smoothly-shaded art. The only measurement behind it was a spot check on `love.gif`, a flat 6-colour vector asset where a 200-colour palette reproduces the source almost exactly, and where all five dither options landed within 0.7% file size and 0.013 colour error. That is not a close call; it is a measurement with no dynamic range.
+
+Re-measured across **23 purpose-built gradient assets** (the `gradient_beds` population — a smooth alpha ramp built with Dior's Builds' actual nameplate-bed curve, because gradient-heavy source material is genuinely hard to find in the wild) and, as a falsifier, **5 flat animated vector sources**, at both tiers:
+
+| axis | gradient corpus | flat vector art |
+|---|---|---|
+| file size vs no dither | **+11% to +24% larger** | **+4% to +10% larger** |
+| mean colour error | **+8% to +12% worse** | **+13% to +14% worse** |
+| static-region frame-to-frame instability | **2.80% / 3.56%** vs 1.08% / 0.66% | ~0.01% either way |
+| banding: plateau run, step height | **~6% better** | — |
+
+Removed from both tiers. The flat-art column is the falsifier and it did not save the default — dropping the dither improves flat art too, so this is not a trade between content types.
+
+**The decisive axis is temporal instability, and the precedent was already in this repo.** Error-diffusion dithering is explicitly refused for ALPHA here because it changed 8.1% of pixels in a region that was byte-identical between frames, where both Bayer sizes changed 0. The identical crawl shows up in COLOUR quantization at 2.6x to 5x the no-dither rate, on content that is mostly static between frames. It also fights GIF inter-frame compression, which is where the size regression comes from — a dithered "static" region is no longer static, so it cannot be coded as unchanged.
+
+⚠️ `--auto` output does not change: no tier is applied unless `--compress` is passed, and `love.gif --auto` is still `2fd526b6fb3b191c`.
+
+### 30.2 The banding axis had to be measured, not assumed away — and the first attempt measured the artwork
+Colour error and file size both favour "no dither" almost by construction: dithering deliberately adds per-pixel noise. Deciding on those two alone would have been judging the feature by metrics blind to its purpose. So banding was measured directly, along the gradient axis: mean plateau run length between quantization contours, and mean step height at a contour.
+
+**The first version of that measure was wrong, and its output looked perfectly reasonable.** It counted every luma change in a row — and these assets have an icon composited on top of the bed, so the mean "step height" came back as **129/765**, which is an icon boundary, not a quantization contour. Restricting to steps of 12/765 or less, and counting a plateau only when BOTH its bounding steps are small, moved the reference from 6.08 px / 129.5 to **3.72 px / 5.22** — and only then did the numbers describe banding at all.
+
+With the corrected measure, Floyd-Steinberg does win the banding axis: plateau runs of **3.32 px** against **3.52 px** with no dither, on an unquantized reference of 3.72 px. Real, in the expected direction, and roughly an order of magnitude smaller than the costs. **A number that comes out plausible is not a number that measured the right thing**; the tell was the magnitude — a 129/765 "quantization step" from a 128-colour palette is arithmetically impossible.
+
+### 30.3 The leak gate tested the LARGEST background component — and the probe that "proved" it was measuring my own inputs
+`detect_outline_background_leak` decides "does this outline colour's filled shape swallow real background?" by intersecting the filled shape with `largest_bg_component_mask`. That is a category error: the largest bg-COLOURED component need not be background at all. On `DMZRecon_Gamemode_Icon_CoDM (1).webp` the largest such component — 6,834 px of 143 — **does not touch the canvas border**; it is an interior black region of the artwork. The gate is structurally asking the wrong question, and it now tests the union of every bg-coloured component that DOES touch the border, using the same border-label technique `analyze()` already uses for `enclosed_by_frame`.
+
+⚠️ **The honest measured effect is ZERO, and the first version of this section said otherwise.** A standalone probe reported "117 outline-colour tests, 3 differ, 2 flip the verdict" and named two assets flipping in opposite directions. Both figures came from a probe that **reconstructed the background colour, the tolerance and the frame sampling itself** instead of asking the product. Run through `analyze()` PRE and POST across 153 assets, **exactly one changes and it changes nothing that matters**: `gaming.jpeg`'s `leaked_pixel_count` goes 1 → 6, `over_protects_background` stays False on both, and the recommended outline colours are identical. A PRE/POST render of the supposedly-flipped assets is byte-identical on the alpha plane.
+
+So the change is kept on structural grounds — the old gate could reject a good outline colour over a region that is not background — with **no demonstrated effect on any recommendation in this corpus**. That is a materially weaker claim than the one this section originally carried, and the reason is worth more than the fix: [[feedback_validate_through_the_product_entry_point]] exists in this project's memory precisely for this, and it was violated while writing a lesson about measuring the right thing.
+
+⚠️ **`largest_bg_component_mask` stays correct where it is used for REMOVAL.** It exists because border-touch is unsafe for deciding what to DELETE: a tumbling design that grazes the canvas edge gets flood-filled away. Here the question is the opposite one — "what is genuinely outside the design?" — and border contact answers it. The residual cost, stated rather than hidden: artwork that touches the border and matches the background colour is counted as background by this gate.
+
+### 30.4 The transferable rule
+Before trusting a default, ask three questions in order. **Does my measurement come from the PRODUCT, or from inputs I rebuilt myself?** — §30.3's probe rebuilt three of them and manufactured two flips that do not exist. **What is this feature FOR, and does my measurement move when that thing changes?** A dither judged on flat art, and a leak gate judged on whichever component happens to be biggest, both produce confident numbers that are about something else. And when the corrected measurement arrives, **check its magnitude against what the mechanism could physically produce** — a 128-colour palette cannot make a 129/765 step, and noticing that is what separated the artwork from the banding.
+
+
+## 31. The source's own alpha was thrown away before the mask was computed
+**Also searched as:** fade lost · glow flattened · soft shadow solid · translucency gone · semi-transparent became opaque · alpha promoted · 8-bit alpha not preserved · partial alpha zero
+
+`process()` builds its working frames with a bare `convert('RGB')`. From that point on, a pixel the source drew at 35% opacity is byte-identical to a solid one: its alpha is gone, and `estimate_alpha_and_defringe` re-derives alpha from RGB alone. Any such pixel whose flattened colour is not near the background therefore comes out at **255**. Only `alpha == 0` survived the trip, via `source_trans_masks`.
+
+**Measured 2026-08-19 over every corpus source carrying at least 50 partial-alpha pixels: 218 of 249 came out with under 10% of that partial alpha left.** 199 of the 218 had source-alpha scoping engaged, where `np.where(removal_scope, alpha, 255)` is the loudest expression of the promotion — but 19 lost the fade with no scope at all, which is what shows the scope is a symptom and the discarded plane is the cause. `love_emoji_128.webp` went in with 913 partial-alpha pixels and out with **0**, its 5,509 opaque pixels becoming 6,422: every faded pixel promoted to solid.
+
+**The control that had to be run first.** `--pixel-art` implies `--no-feather`, which produces a binary alpha BY DESIGN, so a destroyed fade under that verdict is documented behaviour and not a defect. Of the 45 largest cases, **20 were binary by design and 25 had feathering ON and lost the fade anyway**. Without that split the headline number would have been half artefact.
+
+**The fix is a minimum, not an assignment:** `alpha = np.minimum(alpha, source_alpha_plane)`. The colour path may still make a pixel more transparent — that is its job — it may never invent opacity the source did not have. Guarded by a once-per-file check for any partial alpha at all, so a 1-bit source (every GIF, every hard cutout) does not pay for it. After the change, **207 of 249 keep 90% or more of their partial alpha**, and the 28 still at zero are dominated by the binary-by-design group. An opaque source is untouched: `love.gif --auto` is still `2fd526b6fb3b191c`.
+
+### 31.1 The fix moved a number the erosion calibrator was reading, and that cost 6,844 pixels
+`--auto` auto-calibrates `--edge-cleanup-erosion` by measuring each asset against itself: the outer opaque ring's background-coloured fraction at erosion 0, 1, 2, 3, picking the smallest level already at that asset's own floor. **A restored antialiasing ramp IS pale near-background pixels in the outer ring.** On `CODM BP Icon.png` the curve moved from `(0:0.0885, 1:0.0, 2:0.0, 3:0.0)` to `(0:0.2549, 1:0.1852, 2:0.0296, 3:0.0)`, the calibrator duly chose erosion **3 instead of 1**, and 6,844 real pixels were shaved off the artwork — a bigger loss than the bug being fixed.
+
+A skip-guard for exactly this already existed, and it did not fire: it was keyed on the source-alpha SCOPE engaging, while its own stated reasoning is about **the source carrying its own antialiasing**. Those are different sets — this asset has 2,917 partial-alpha pixels and the scope does not engage on it. The guard now reads `_sa_engaged or _src_has_partial_alpha`. Afterwards: four failing assets became two, and 6,844 lost pixels became 105.
+
+**Those last 105 are not a regression, and checking rather than assuming is the point.** Every one of them has a source alpha of **1 to 3 out of 255** — under 1.2% opacity — and PRE was rendering them at a mean alpha of 254.7, i.e. fully opaque. The clamp correctly drops them to 1–3 and the AVIF encoder rounds that to 0. The acceptance criterion as originally written ("no asset loses opaque pixels") predates knowing this failure mode; the criterion that survives contact with it is **no asset loses a pixel the SOURCE declared meaningfully visible**.
+
+⚠️ **This is the render gate's own lesson recurring:** a correctness fix reached one code path while a *calibrator* downstream read the changed values and made a worse decision. `analyze()`-level numbers all said the fix had landed. Only rendering found it.
+
+### 31.2 The other half: the flags were chosen from one image and the removal acted on another
+`analyze()` has composited partial-alpha frames before measuring since §28.5. `process()` did not: it built `rgb_frames_raw` with a bare `convert('RGB')`, so `color_mask` and `estimate_alpha_and_defringe` compared against **the colour stored underneath a translucent pixel** — whatever the encoder happened to leave there — rather than against what the pixel looks like. Measured at 41 of 338 partial-alpha sources disagreeing at the real removal reach, worst 18.41% of a frame.
+
+`compute_alpha_mask` and `estimate_alpha_and_defringe` now take `rgb_key`, defaulting to `rgb` so every existing caller is unchanged. **Every colour COMPARISON reads the key plane; every pixel returned still comes from the raw plane.** That split is the whole design: recolouring from the composite would bake the background into the output, which is the one thing the output must not carry, and `rgb_frames_key` is built only for frames that actually have partial alpha, so an opaque or 1-bit source shares the raw array and pays nothing.
+
+**The measured effect, and the question that had to be answered before keeping it.** Over the 249-asset reachable population: 47 assets change, **opaque pixel counts are identical on every one of them**, and what moves is partial alpha — 5,166 pixels removed in total. Removing partial alpha is exactly what a corrected key plane should do *if* those pixels were near-invisible, and artwork destruction *if* they were not, so the source alpha of every removed pixel was read:
+
+| source alpha of removed pixels | share |
+|---|---|
+| 0–7 (under 2% opaque) | **65.0%** |
+| 8–25 (3–9%) | 18.7% |
+| 26–63 (10–24%) | 15.6% |
+| 64–127 (25–49%) | 0.7% |
+| **128–255 (50%+)** | **0.0%** |
+
+Nothing above half opacity is touched, and two thirds of it is under 2% — pixels whose composited appearance genuinely is the background. **"Partial alpha went down" is not by itself a verdict; the distribution is.**
+
+⚠️ **Deliberately NOT applied to the `--recover-fade-alpha` branch.** That feature exists to RECONSTRUCT a fade the source already flattened, so there the source alpha is 255 by definition — clamping to it would be a no-op at best and would delete the feature at worst.
+
+**The transferable part:** this is `--pixel-art`'s inverse-spelling failure one level down. `get_source_transparency_mask` was carefully written to run BEFORE `convert('RGB')` because flattening destroys information — and then the very next line threw away the rest of the same channel. **A guard that protects one value of a field is not a guard on the field.** `alpha == 0` was handled with a docstring's worth of care; `alpha == 137` was not handled at all.
+
+
+## 32. A blanket label is a measurement of nothing, and the quantized twin is not the artwork
+**Also searched as:** ground truth wrong · mislabelled corpus · label noise · provisional labels · derived population · palette reduced twin · specificity collapse · montage · thumbnail grid · hand-checked · visual audit · sanity-check the labels
+
+267 assets arrived as a new corpus and every one was labelled `antialiased` in a single pass, with 8 inspected. Scoring the code against that produced **62 disagreements**, a `small_aa` specificity of 0.887 and a `small_aa_quantized` specificity of **0.615** — a number that looks exactly like a detector falling over, and was not.
+
+### 32.1 What eye inspection actually changed
+Every disagreement was rendered to a 4x nearest-neighbour contact sheet (then 6x for the final calls) and judged against one **operational** criterion, because "looks blocky" is not one:
+
+> **Is the pixel grid the artwork?** If nearest-neighbour is the right way to enlarge it, it is `pixel_art`. If the shapes are curves that merely have hard edges at this size, it is `antialiased` — because `--pixel-art` switches the resize filter to nearest and would jag every curve.
+
+| | before | after |
+|---|---|---|
+| `small_aa` specificity | 0.887 (133/150) | **0.970 (130/134)** |
+| `small_aa` recall | no figure — no positives existed | **0.667 (6/9)** |
+| `small_aa_quantized` specificity | 0.615 | 0.623 |
+
+**9 assets were real pixel art the blanket pass got wrong** — a lightning bolt, four flame sprites, a tiny character sprite and three isometric stars, all with unmistakable staircase diagonals at 6x. **7 more are genuinely undecidable at 32–128px** and were set to `ambiguous` on purpose, which excludes them from every recall and specificity figure. Guessing them would have moved the score of the very thing that raised the question ([[feedback_do_not_relabel_when_a_measure_objects]]).
+
+### 32.2 The finding that only came from checking the ORIGINALS
+The disagreement list under-samples by construction: an original often scores "antialiased" (agreeing with a wrong label) while its quantized twin scores "pixel art" (disagreeing). So the families the twins implicated were pulled and inspected directly — and **the entire Blox-Fruits item family, 16 assets, is smooth soft-shaded 3D-style rendering in the original and chunky flat blocks in its 16-colour twin.** Those labels are correct as they stand.
+
+That is what the 0.615 was: **not 45 false positives, but the quantization hazard measured at scale for the first time.** Palette reduction manufactures exactly the structure `plateau_cliff_ratio` and the 16-colour floor exist to detect. Relabelling that population to match the code would have been fitting the ground truth to the answer; moving a threshold to "fix" it would have broken detection on real pixel art. The honest handling is a note on the population saying its specificity is a measurement OF the hazard, plus the fact that **it is not independent of `small_aa` — every asset shares a source with one.**
+
+### 32.3 The four false positives and three misses that survive, which are the real work
+With the labels honest, `small_aa` leaves seven errors, and each names a specific mechanism:
+
+| asset | verdict | why |
+|---|---|---|
+| `FlyingHearts.gif` (cc **2**) | false positive | the 16-colour flat-palette floor. **Its first real negatives:** flat 2–3 colour vector art with curved shapes. |
+| `PrettyGay.gif` (cc **3**, pcr 0.536) | false positive | the floor AND `plateau_cliff_ratio` — brush strokes with no ramp at all |
+| `boost.gif` (cc 25, pcr 0.449) | false positive | `plateau_cliff_ratio` on a flat-shaded gem |
+| `CryPepe.png` (cc **4376**, pcr 0.0) | false positive | the thin-band + no-blend-pixels rule, on an image with 4,376 colours |
+| `star1.gif`, `star3.gif` | miss | hard-alpha cutouts; the band is empty and correctly not counted (§29), leaving the colour rules alone to decide |
+| `star2.webp` (cc **1502**, pcr 0.0) | miss | **lossy WebP filled the plateaus in.** Its two siblings are the same artwork at 239 and 253 colours. |
+
+`star2.webp` is the cleanest demonstration this corpus offers of the re-encoding hazard: one artwork, three files, and the lossy one is the only one that hides.
+
+### 32.5 The 16-colour floor tested against real negatives at last — and the answer is DO NOT MOVE IT
+The floor ("the composited frame holds N distinct colours, at or under the 16 of a flat pixel-art palette") had rested on a sample of one. With the labels honest it finally has a real negative class, and the obvious read of the corpus is that it should come down:
+
+| floor | recall | specificity | tp/fn/fp/tn |
+|---|---|---|---|
+| **cc ≤ 16 (current)** | 0.8912 | 0.8763 | 303/37/49/347 |
+| cc ≤ 14 | 0.8824 | 0.9015 | 300/40/39/357 |
+| cc ≤ 12 | 0.8794 | **0.9268** | 299/41/29/367 |
+
+Four true positives for twenty false positives, in a project whose stated asymmetry is that `--pixel-art` on antialiased art is the destructive direction. It looks like an easy call.
+
+**⚠️ It is an artefact, and one line of falsifier says so: all 20 of the removed false positives are in `small_aa_quantized`.** Every one is a DERIVED asset — an antialiased original re-exported at 16–64 colours — so "lowering the floor improves specificity" means "lowering the floor stops detecting the quantization I applied myself". Scored on the independent populations alone:
+
+| floor | recall | specificity |
+|---|---|---|
+| cc ≤ 16 | 0.8932 | **0.9787** |
+| cc ≤ 14 | 0.8872 | **0.9787** |
+| cc ≤ 12 | 0.8843 | **0.9787** |
+| cc ≤ 10 | 0.8427 | **0.9787** |
+
+**Specificity does not move at all.** No threshold between 10 and 16 removes a single independent false positive; the floor's total independent cost is 6, and every candidate change is pure recall loss. The three real detections it would have cost are named — `Free City Enemies Pixel Art` 1/Hurt, 3/Hurt, 3/Hurt2, at cc 13–15.
+
+The floor stays at 16. **The measurement that would have justified moving it was run, and it came out the other way** — which is the only kind of evidence that settles a threshold. And the check that saved it was one `Counter` over the populations of the assets that changed: [[feedback_falsifier_population]], applied to a win rather than to a loss.
+
+### 32.7 The seventh discriminator: a REAL but narrow band is not an EMPTY one
+Six structural discriminators had been tried and falsified before this. The seventh is different in kind: it is not a new measure, it is a **refinement of an existing suppression**.
+
+`_band_measures_are_vacuous` silences both transition-band rules on a hard-alpha cutout whose transparency is its background, because there an empty band is guaranteed by the export (§29). That is right, and it was applied to every such source — including the ones whose band is **not** empty. Among the 378 labelled assets the gate silences:
+
+| ratio_max | pixel art | antialiased |
+|---|---|---|
+| 0.000 (guaranteed empty — stays silent) | 46 | 40 |
+| **0 < ratio < 0.20** | **49** | **9** |
+| ratio ≥ 0.30 | 118 | 75 |
+
+A band that EXISTS on a cutout is real evidence, and its **width** separates the classes: native-resolution pixel art carries a thin one — the artist's own 1px shading against the silhouette — while antialiasing carries a wide one. Measured on the independent populations: **recall 0.8932 → 0.9644 for specificity 0.9787 → 0.9681**, and the pack that motivated it goes **0.235 → 0.941 (32/34)**. The prediction made before implementing matched the measured result exactly.
+
+**Why `plateau_cliff_ratio` could never have caught these.** It requires flat runs of 2px or more. Tiny Swords sits at 197/197 because it is UPSCALED pixel art — each art pixel is several screen pixels. The Orc and Soldier sheets are 100×100 at 1:1, so every art pixel is one screen pixel and there are no multi-pixel plateaus to find, by construction. Their cliff ratios are 0.07–0.28 against a 0.30 floor. **A measure that needs a scale factor is blind to art drawn at native resolution**, which is most of what a sprite sheet actually contains.
+
+⚠️ **Two caveats kept with the rule rather than buried.** The 0.20 threshold is chosen from this corpus; the reason to trust it is that independent specificity is FLAT at 0.9681 across 0.10, 0.15 and 0.20 and only falls at 0.25 — a plateau, not a knife-edge. And 22 of the 24 new detections are one pack, so it is pack-concentrated by construction, that pack being the population it was built for. What makes it a rule rather than a fit is that it names a **mechanism** instead of a signature, and that it was scored on the independent populations *before* being kept — which is exactly the check that killed the 16-colour change in §32.5.
+
+### 32.6 The star family: one artwork, six files, and the encode decides the verdict
+`star1.gif`, `star2.webp` and `star3.gif` are the same isometric pixel-art star. All three are MISSED. Their quantized twins are CAUGHT:
+
+| file | colours | plateau_cliff_ratio | detected |
+|---|---|---|---|
+| star1.gif | 239 | 0.011 | ✗ |
+| star2.webp | **1502** | 0.000 | ✗ |
+| star3.gif | 253 | 0.020 | ✗ |
+| star1__q64.gif | 30 | 0.038 | ✗ |
+| star2__q16.gif | **12** | 0.109 | ✓ |
+| star3__q24.gif | **16** | 0.099 | ✓ |
+
+The originals carry gradient bevel shading, so they have hundreds of colours and almost no flat plateaus — pixel art that looks, to every current measure, exactly like antialiased art. **Re-encoding runs in both directions**: a lossy WebP hides pixel art by filling its plateaus in (§29.9 records the same hazard pointing the other way, where a GIF export manufactures plateaus on antialiased art). Neither direction is fixable by a threshold on either measure, because the artwork moves across the boundary while the label does not.
+
+### 32.4 The transferable rule
+**A label applied to a whole population in one pass is a measurement of the labeller, not of the code** — and it fails in the direction that flatters, because "everything is a negative" makes specificity the only computable number and recall undefined. Two questions before quoting any figure from a new corpus: *how many of these did someone actually look at?*, and *is this population DERIVED from another one in the same run?* A derivative shares its errors with its source and cannot serve as an independent check on it.
+
+
+## 33. Following a moving hole: identity by continuity, when nothing in a single frame can tell it from its twin
+**Also searched as:** moving target · per-frame tracking · follows the animation · hole that drifts · rotating cutout · same colour opposite treatment · centroid tracking · region follows · keeps up with the animation
+
+Filed 2026-08-08 as the one case with no answer. Two solutions existed and neither reaches it: §14's geometric gate needs the hole and the decoration to differ measurably in size or aspect on EVERY frame, and §15's `--remove-region` is static — on a real tumbling asset a fixed circle missed the true target in **76% of frames**. The remaining option was writing a bespoke tracking script per asset, and the live session that hit it reached for `cv2.HoughCircles`.
+
+**The insight is that the seed supplies what no single frame can.** Two identical holes are indistinguishable in one frame and completely distinguishable across an animation, because only one of them is where the seeded one just was. `--remove-region-track` takes the same spec syntax as `--remove-region`, treats it as a frame-0 SEED, and carries identity forward by continuity — centroid distance from a predicted position, gated at a fraction of the frame diagonal, with area and aspect ratios (relative to the seed, so a hole that foreshortens through a rotation still matches) as tie-breakers.
+
+**Measured on an asset built to make the premise true** — a rotating card with two byte-identical white holes, both orbiting, so neither geometry nor a static region can work:
+
+| | target hole punched | decoy wrongly punched |
+|---|---|---|
+| `--remove-region` (static seed) | **1 / 24** | 1 / 24 |
+| `--remove-region-track` | **24 / 24** | **0 / 24** |
+
+with a control confirming the falsifier could fail: with both holes protected and no region flag, the target stays opaque on 24/24 frames.
+
+⚠️ **A constructed asset is legitimate here for the same reason `gradient_beds` is** — the question is "does the tracker follow the seeded region", not "what kind of art is this". It is deliberately built so that the item's own premise holds: same colour, same radius, both moving. A real asset should still be run through it when one appears; what this measurement establishes is that the mechanism works, not that it has met the wild.
+
+⚠️ **Losing the target is REPORTED, not hidden.** When no candidate passes the continuity gate on a frame, the mask is carried forward along the last motion vector and those frame indices are printed. A tracker that quietly emits a plausible-looking mask after losing its target is the failure this project refuses everywhere else; the alternatives — dropping the frame (a visible flicker) or falling back to the frame-0 mask (wrong by exactly the distance travelled) — are both worse and both silent.
+
+### 33.1 A detector for "this file is our own output", attempted and measured — it does not work
+The re-encoding hazard (§29.9) would stop being a documented warning and become a verdict the tool could reach by itself if it could recognise its own output. There is a plausible signature: this tool dithers the alpha transition band with a FIXED 8×8 Bayer matrix, and source art never does. Correlating the transparent/opaque pattern in the boundary band against BAYER8's threshold ordering should separate the two.
+
+**It does not.** Thirty third-party transparent GIFs against thirty of our own GIF renders:
+
+| | min | median | max |
+|---|---|---|---|
+| third-party (never touched by us) | −0.0045 | **+0.0010** | +0.0150 |
+| our own output | −0.0156 | **−0.0006** | +0.1148 |
+
+One of thirty of our own files clears a 0.02 threshold. The medians are indistinguishable and the distributions overlap almost completely. The signature does not survive to the file — `--auto`'s edge-cleanup erosion trims the dithered ring, and gifsicle re-quantizes the boundary on the way out. A principled idea, tested, falsified.
+
+⚠️ **Three attempts were needed to get a measurement that meant anything, and the first two both returned confident-looking answers.** Attempt 1 compared already-transparent sources against our output of them — but `--auto` correctly does nothing to those, so it scored each file against itself and reported "identical, not separable". Attempt 2 switched to opaque sources, which have no alpha boundary at all, so the score was undefined and it returned zero pairs. Only the third had two groups that both carry a boundary band and only one of which we wrote. **A negative result is only worth having once you have checked that the test could have produced a positive one.**
+
+**No new dependency.** `scipy.ndimage.label` plus centroids does what HoughCircles was reached for, which is what the deferred item asked for: a script-native primitive rather than bespoke external tooling every time.
+
+
+## 34. What three fresh sessions on five real assets found that every automated gate missed
+**Also searched as:** truncated animation · stops halfway · plays partially · pops instead of fading · sudden jump in opacity · design region deleted · flag ignored · flags conflict · unattended run shipped a broken file · soft outline · not a clean polish · perimeter versus area · shrinking subject · denominator collapsed · metric artefact · style choice not a defect
+
+Three simulated fresh sessions were each handed this package and five real animated icons, under three tiers of user request. **Five defects, three of them severe, on a build that had just passed a 797-asset corpus score, an xhigh code review and a full PRE/POST render gate.** The full write-up, methodology and caveats live in the development repo; what follows is what a live session needs in order to recognise and route around each one.
+
+### 34.1 A fully transparent frame truncates a GIF, and the file is written anyway
+An output frame in which **every pixel is transparent** breaks Pillow's GIF writer. `gifsicle` reports `unknown block type 71`, and the file stops there: measured **85 of 123 frames written (31% of the frames lost), and 1700ms of 2920ms of playback (42% of the duration)** — two different denominators, both real. Reproduced with three independent synthetic controls, at defaults and under `pngquant` and `--dither-mode none` alike, so it is not a flag you chose wrongly.
+
+⚠️ **Measured on Pillow 12.3.0, and NOT yet confirmed on the claude.ai sandbox.** If you are reading this in a live session, your Pillow may differ. Treat the version as a strong hypothesis rather than the settled cause — but treat the SYMPTOM as real regardless, because the check costs nothing: read the frame count the script prints against the count you expected.
+
+✅ **CLOSED in v6.0.0.** `--analyze` now reports `has_fully_transparent_frame` and the offending frame indices, scanned on EVERY frame rather than on `sample_idxs` — growth's blank frame is a single frame in 123, and the changing-background case filed the same day is the record of what a spread does to a transient (a 10-frame scan over 30 read 78.6% at frame 10 while frame 12 was 0.0%). `--recommend` puts `FORMAT: .webp or .apng -- NOT GIF` at the top of its evidence, ahead of the fade check, because a blank frame is a container impossibility rather than a quality preference. And the render **refuses** instead of writing the truncated file, checked on the FINAL alpha planes after every stride/resize/tier transform — `--frame-stride` can legitimately skip the blank frame, so the source-side prediction steers the recommendation while the render-side check is the one that cannot be wrong. `--allow-truncating-gif` overrides.
+
+⚠️ **The script already printed `WARNING: total playback length changed on write` and `Saved (85 frames written from 123 intended)` — and wrote the file anyway.** That is the lesson worth keeping: a warning emitted after an irreversible write is not a gate, and an autonomous run has already shipped by the time anyone could read it.
+
+⚠️ **This is how the symptom presents to a viewer, and it does not look like truncation.** A second asset — a paper plane that flies off the canvas at frame 41 of 98 — was reported as the animation *freezing mid-flight*, with the pixels "stuck" before the subject flew back in. It is the same bug: the decoder stops at the unreadable block and the last good frame stays on screen for the remainder of the loop. The same asset produced the same symptom across three major versions of this skill, because nothing between them ever looked for a blank frame. **If an output appears to stall or freeze part way through, count its frames before theorising about timing.**
+
+**When it happens:** any animation where the subject leaves the canvas entirely, even for one frame. **The fix is the container** — WebP and APNG use a different encoder and keep every frame. Do not work around it by duplicating the previous frame; that produces a visible stall.
+
+### 34.2 `--recover-fade-alpha` is a cliff, not a ramp — and *pale* is not *translucent*
+Measured on a badge that fades toward white, sampling the same region each frame:
+
+| frame | source colour distance from white | recovered alpha |
+|---|---|---|
+| 0 | 347.8 | 255 |
+| 12 | 258.7 | **255** |
+| 20 | 197.8 | 140.5 |
+| 32 | 105.1 | 70.5 |
+| 40 | 44.3 | 24.2 |
+
+The source colour moves smoothly while alpha holds flat at full opacity and then falls off a cliff. Reviewed by eye as glitchy and popping against a source that fades smoothly.
+
+⚠️ **The deeper problem, which no setting fixes.** `--recover-fade-alpha` infers alpha from how pale a pixel is. That is right for an element the GIF export FLATTENED. It is wrong for an element the artist drew getting lighter — a solid pale shape becomes see-through, which composites identically over white and visibly wrongly over anything else. **Before reaching for it, decide which of the two you have:** a flattened fade (the source once had alpha) or a painted fade (it never did). §16 has the flattened case in full.
+
+**The mechanism was found, and the obvious fix was built, measured and REJECTED. Recorded here so nobody spends the day re-deriving it.** The palette is a *fade ladder*. `build_art_palette` normally rejects a colour already explained as "background blended with an accepted colour", but `protect_parents` exempts every colour the fade detector flagged — and on this asset the detector flags **8 of 10**, so the exemption inverts and the fade's own intermediate stages survive as palette entries. The final palette is one navy at distances **356.2, 316.5, 267.3, 223.5, 195.7, 155.6 and 105.8** from the background: six rungs, each within cosine 0.97–0.999 of a farther rung, while the two unrelated art colours sit at 0.55 and 0.69. Every faded pixel then unmixes against its OWN rung at t≈1.0 and renders fully opaque, which is exactly the cliff.
+
+**Collapsing the ladder — dropping any fading colour collinear with a farther fading colour — was implemented and measured, and it made the asset WORSE.** It correctly dropped four rungs, and the fade-coherence score went **0.688 → 0.477**, with the background-removal (0.390) and edge (0.000) figures unchanged, i.e. no gain on any other axis. The acceptance criterion had been fixed in advance at >0.90, so the change was reverted rather than kept for looking principled. **The ladder is real and is not the whole cause**, and a fix that removes a genuine defect can still leave the output further from correct than it started.
+
+✅ **CLOSED in v6.0.0, by declining the flag rather than by fixing the unmixing.** `detect_fade_ladder()` recognises the palette shape described above — a run of one colour's blends collinear with the background — and `recommend()` now declines `--recover-fade-alpha` when it fires. Scored through the real CLI on the motivating asset: `fade_coherence` **0.688 → 0.998**, and `bg_removed_worst` **0.3902 → 0.9983**, i.e. the filed "glitchy fade" was also keeping 61% of the background as a translucent ghost. Better on every axis, not just the one the rule targets. It fires on **2 of 266** assets across five populations, and the one case outside the motivating asset is explicitly NOT a clean win — see §35 for both tables, including the axis that cannot adjudicate it.
+
+⚠️ **One coupling to know about, measured rather than predicted: declining the flag also flips the FORMAT verdict to `gif-ok`, and GIF then costs a little artwork through the EROSION path.** On the motivating asset a WebP render keeps `art_kept_worst` 1.0000 while a GIF render of the same decision reads 0.9487, because 8-bit alpha resolves the erosion default to 0 and GIF resolves it to 2. Both are far better than the ghost the flag produced, so this is a trade inside an improvement and not a regression — but for a painted fade WebP still measures better than GIF, and the `gif-ok` verdict answers "can GIF represent this?" (yes — the art is opaque), never "is GIF the better choice?".
+
+**The standing advice is therefore unchanged and is a boundary, not a workaround:** for a PAINTED fade, prefer keeping the art opaque with its own pale colours (a plain cutout) over reconstructing alpha from paleness. Reach for `--recover-fade-alpha` when the source genuinely once had alpha.
+
+✅ **RESOLVED 2026-08-20 — and not by fixing the ramp. The tool can now TELL THE TWO APART, so it declines the flag instead.** The advice above was a boundary a human had to apply; an autonomous run cannot apply advice. The discriminator falls straight out of `build_art_palette`'s own arithmetic, and once seen it needs no threshold tuning:
+
+> A **flattened** fade is `bg*(1-a) + c*a` **by construction**, so every intermediate stage lies EXACTLY on the background-to-colour line and pass 1's blend rejection (`residual < FADE_RESIDUAL_TOLERANCE`, 10.0) deletes all of them. One flattened element therefore contributes **exactly one** colour to `fade_colors_detected`. A **painted** fade carries the artist's own hue drift, so its stages sit just OFF that line, survive pass 1, and appear as a chain of near-collinear colours at descending distances — a LADDER.
+
+Measured through `analyze()` on the four assets `--recover-fade-alpha` exists for and on the filed defect:
+
+| asset | fading colours detected | ladder members |
+|---|---|---|
+| `crystal_ORIGINAL.gif` | 1 (`fdcb50`) | 0 |
+| `gift_ORIGINAL.gif` | 1 (`fd6050`) | 0 |
+| `love_ORIGINAL.gif` | 1 (`fdcb50`) | 0 |
+| `heart_ORIGINAL.gif` | 1 (`384998`) | 0 |
+| `hurricane.gif` | **8** | **5**, cosine ≥ 0.968, at distances 316.5 / 267.3 / 223.5 / 195.7 / 105.8 |
+
+That is a categorical gap, not a tuned constant. The measured residual that produces it is visible by hand: hurricane's `5a4f8c` sits **13.8** off the white→`2f377d` line, against a 10.0 tolerance — just far enough to survive, which is exactly what a hand-picked tint looks like and exactly what an arithmetic blend never is.
+
+**What declining the flag is worth, scored through the real CLI on hurricane** (same other flags each time, `--tumble-safe --erosion-exempt-max-size 28`):
+
+| | `fade_coherence` | `bg_removed_worst` | `edge_cleanliness` | `art_kept_worst` |
+|---|---|---|---|---|
+| with `--recover-fade-alpha` (.webp) | **0.688** | **0.3902** | **0.0000** | 1.0000 |
+| without, .gif | 0.962 | 1.0000 | 1.0000 | 0.9487 |
+| without, .webp | **0.998** | 0.9983 | 0.9262 | 1.0000 |
+
+⚠️ **Better on EVERY axis, not just the one the rule targets — and `bg_removed_worst` 0.3902 says the filed "glitchy fade" was also keeping 61% of the background as a translucent ghost**, the same failure §35 measured on `_ (7).gif`. The defect was never only a cliff. The acceptance was fixed in advance at `fade_coherence` ≥ 0.90 (the same bar §34.2's reverted ladder-collapse failed at 0.477) and both no-flag variants clear it.
+
+`detect_fade_ladder()` has **three call sites and one implementation**, because the two-consumer split is what §35 and §36 both were: `analyze()` reports `fade_palette_is_ladder`, `recommend()` declines the flag and stops calling the format `webp-or-avif *with* --recover-fade-alpha`, and `recover_fade_alpha_frames()` REFUSES outright so a run that never called `--recommend` is stopped too. `--fade-color` still bypasses all of it — naming the colour is the user overriding detection, not asking detection to try harder.
+
+**How often it fires, measured over 266 assets across five populations.** The screen fires on 66 of them and 24 would have been handed `--recover-fade-alpha`; the ladder rule fires on **2**. Per population: `corpus` 4 flag / **0 ladder**, `labelled` 5 / **0**, `trial` 3 / **1** (hurricane), `dark_bg` 12 / **1**, and `small_aa_quantized` — 117 assets deliberately re-exported at 16-64 colours — 0 / **0**. ⚠️ That last population is the falsifier that mattered most and it was chosen before the survey ran: quantization error could plausibly push a genuinely flattened stage more than `FADE_RESIDUAL_TOLERANCE` off the line and manufacture a ladder out of nothing. It does not; the hazard is real in principle and absent in 117 measured cases.
+
+⚠️ **The one firing outside the motivating asset is NOT a clean win, and saying otherwise would be the easy lie.** One dark-background asset from the development repo's corpus (which is not part of this package, so this is provenance rather than something you can re-run here) has a 3-rung ladder — cosine 0.969, distances 365.5 / 321.3 / 296.8. Rendered to `.webp` through `--auto` on both sides:
+
+| | `fade_coherence` | `bg_removed_worst` | `edge_cleanliness` | `art_kept_worst` |
+|---|---|---|---|---|
+| with the flag | 0.492 | 0.8748 | 0.3349 | 1.0000 |
+| declined | 0.444 | **0.9863** | **0.5915** | 0.8188 |
+
+Background removal and edge quality both improve clearly; artwork retention falls; and `fade_coherence` is **below the 0.90 bar on BOTH sides**, so the axis the rule was accepted on cannot adjudicate this asset at all. Note that the flag's perfect `art_kept_worst` is the same artefact as its poor `bg_removed_worst`: this render path never zeroes anything, so it "keeps" the background along with the art (§35). **Reporting the sensitivity is the answer here, not raising the rung floor to 4 to make the awkward case disappear** — three is the principled floor, because two collinear colours are just a colour and a lighter version of it, and moving a documented threshold because one measurement objects is how a corpus gets fitted to a conclusion.
+
+### 34.3 `--recommend` can name a real design region as background — check it before trusting it
+Observed verbatim on a rocket whose white body sits inside a navy outline: `Region 1: enclosure_ratio 0.825 looks incidental, leaving as background.` **That region was the artwork.** Two of the three sessions followed the recommendation and deleted **83% of the body**; both reported success afterwards, because every mechanical check they ran agreed.
+
+⚠️ **This is the failure mode that documentation cannot reach**, and it is worth understanding rather than just avoiding: a session that reads the evidence, follows it, and verifies the result will still ship the broken file, because the verification measures the removal it was told to perform. The one session that got it right had been handed a per-region list by the user.
+
+✅ **CLOSED in v6.0.0 — the threshold moved, so the burden is no longer on the reader.** `enclosure_ratio` is the share of sampled frames on which a candidate region is actually enclosed; the verdict used to be a bare `ratio >= 0.9` with no reference to how big the region is. It is now: **enclosed on 90%+ of frames at any size, OR enclosed on 50%+ of frames while covering 2.5%+ of the canvas.**
+
+**Both constants sit in a measured gap, and the ratio really is the wrong axis.** Over 26 real assets, 22 regions at or above 0.5% of the canvas, every ambiguous one inspected by eye. The decisive pair: a gap between a character's two legs at **1.2% of canvas, ratio 0.625 — background** — against a rocket's wing panel at **3.9%, ratio 0.650 — design**. They are 0.025 apart in ratio and on opposite sides of the answer; nothing in the ratio separates them. Confirmed design ran 3.9–26.1% of canvas at ratios 0.650–0.825; confirmed background ran 0.007–41.8% at ratios 0.050–0.625. So the area gap is 1.2% → 3.9% and the ratio gap is 0.286 → 0.650, and neither constant was fitted to a boundary case.
+
+⚠️ **An earlier version of this section said "a region above roughly 1% of the canvas is not incidental at any ratio". That is measurably false and has been removed** — the leg-gap above is 1.2% of canvas and is background, and a pocket under a raised arm is 8.1% of canvas at ratio 0.286 and is also background. An area-only rule protects real background; it takes both.
+
+⚠️ **The honest limit, deliberately not covered.** A badge that FADES toward the background colour reads as background-coloured only in the last frames of its fade, so its ratio is 0.050 while it occupies 41.8% of the canvas — real design that no area rule should rescue, because an area-only rule at that size would protect nearly half of every canvas. That asset needs `--recover-fade-alpha` (§34.2), not region protection.
+
+When a region IS dismissed, the message now names its pixel count, its share of the canvas, both bars it failed, and the warning that this verdict has been wrong on a large pale region before. The fix for a wrong one is `--protect-outline-color` on the outline colour; §26 covers the selection failures around it.
+
+### 34.4 `--recover-fade-alpha` silently disables every protection flag
+The render path for recovered alpha takes its own branch and never applies `protected_masks`, so `--tumble-safe`, `--protect-outline-color` and `--protect-region` are ignored when combined with it. Measured on an asset that needs fade recovery AND tumble protection: only the first happens. **If you need both, you cannot currently have both** — pick the one the asset needs more, and say which in the delivery note.
+
+⚠️ **BOUNDED in v6.0.0, not fixed, and the distinction is the point.** Composing the two render paths is a real design question and a much larger change. What v6.0.0 did instead is make the limit LOUD: the run now prints `WARNING: --recover-fade-alpha takes its own render path and does NOT apply …` naming every protection flag it is about to ignore. That is the difference between a known limit and a silent one — and per this project's own rule, a warning is not a fix, so this stays on the open list rather than being marked closed.
+
+### 34.5 Two erosion settings disagreed — and both filed items were wrong about which
+Two findings from the trial contradicted each other. One: `--auto` calibrates `--edge-cleanup-erosion` by default while SKILL.md said `--auto-erosion` was what enabled it, and the calibration costs 2,878 art pixels on one asset by overriding the documented WebP default of 0. The other: erosion 0 leaves visible outline artefacting a reviewer noticed on three of five assets. Settled together 2026-08-20, and **neither said what it appeared to say.**
+
+**Measured on the calibrator's own fringe metric — the pale-near-background share of the outer opaque ring, an RGB measure — at erosion 0 / 1 / 2, with what the calibrator actually picked:**
+
+| asset | 0 | 1 | 2 | picked | correct? |
+|---|---|---|---|---|---|
+| galaxy | 0.0000 | 0.0000 | 0.0000 | 0 | ✅ no fringe exists |
+| satellite | 0.0000 | 0.0000 | 0.0000 | 0 | ✅ no fringe exists |
+| hurricane | 0.0521 | 0.0362 | 0.0358 | 0 | ✅ gain within tolerance |
+| growth | 0.1548 | 0.0219 | 0.0219 | 1 | ✅ real fringe, 7× reduction |
+| rocket | 0.1462 | 0.0371 | 0.0373 | 1 | ✅ real fringe, 4× reduction |
+
+**Five out of five, and it genuinely ran on all five** — the two flat-zero curves were checked for vacuity rather than assumed: 11/11 and 10/10 frames measured, exactly 0.0000 on every individual frame. So **the code is right and the SKILL.md sentence was the bug**, which is the opposite of how the first item reads.
+
+**The 2,878 pixels are the price of a correct decision** — 0.27% of that asset's opaque pixels, buying a 0.155 → 0.022 fringe reduction.
+
+⚠️ **The second item is a PREFERENCE, not a defect.** On the two assets whose outlines the reviewer disliked, the fringe metric is a hard zero at every level: there is nothing to trim. Erosion 1 improves the *look* only by deleting the antialiasing ramp — which is exactly what the 8-bit-alpha rule exists to preserve. It stays available as `--edge-cleanup-erosion 1` and is documented in SKILL.md as a style choice.
+
+⚠️ **The trap this section really exists for: "report the WORST frame, never the mean" has a boundary, and it is easy to walk straight into.** An alpha-based edge score said erosion 1 was a large win on the two zero-fringe assets — because a soft antialiased edge legitimately carries partial alpha, so a metric counting partial alpha as "unclean" *rewards destroying antialiasing*. And a worst-frame **fraction** said erosion 1 destroyed 21% of one asset's artwork. Both were artefacts:
+
+**Erosion removes a PERIMETER (O(r)) while "art pixels present" is an AREA (O(r²)), so a fixed 1px trim costs a fraction that grows without bound as the subject shrinks.** That asset's worst frame is one where the rocket has nearly left the canvas: it holds **1,149 art pixels against a 90,004-pixel peak — 1.3% of the animation's own artwork** — and loses 695 of them. The largest fraction in the set sits on the frame with almost nothing in it.
+
+**The discriminator is cheap and decisive: compare the lost pixels to the object's PERIMETER at that frame.** A 1px erosion cannot cost more than about one perimeter ring; anything beyond that means something THIN was bitten from both sides. Measured across the trial assets, `lost / perimeter` ran **0.70–0.97** — always under one full ring. **A defect's absolute magnitude stays large as the denominator shrinks; a geometric cost shrinks with it.**
+
+✅ **This is fixed in the measurement, not just written down here.** The output grader used during development (it lives in the development repo's measurement harness and is not part of this package, like the corpora in §23) now reports, alongside the worst-frame kept-fraction, **how much of the animation's peak artwork was present on that frame** — 0.013 for the case above against 0.789–0.993 for every other asset in the set — and **the loss divided by that frame's perimeter**, which is the scale-free version. Reading a worst-frame fraction as damage without its denominator is no longer possible by accident. Keep reporting the worst frame — a 16-frame background wedge averaging to 99.9% is why that rule exists — just never read a worst-frame FRACTION as damage without checking what it is a fraction OF.
+
+### 34.6 The transferable part
+All five defects live in the space between *"the measurement is correct"* and *"the output is what the user wanted"*, and every automated gate here inspects only the first. A corpus tells you the classifier is right; a render diff tells you nothing changed; neither tells you the product is right. **When something looks wrong to a human and every number says clean, the numbers are answering a different question.**
+
+## 35. A cheap screen recommended a flag the renderer's own detector disagreed with
+
+**Also searched as:** ghost image · everything translucent · washed out output · nothing was removed · faint background remains · alpha 1 to 9 · barely transparent · screen versus detector · necessary but not sufficient · second opinion · flag recommended for no reason · unmix found nothing · solid art only · no fade present · why was webp recommended
+
+**The symptom.** `--recommend` asked for `--recover-fade-alpha`, an autonomous run took it verbatim, and the output was a translucent ghost of the entire image: every background pixel alive at a low alpha tracking its own distance from the background colour. Measured 2026-08-20 on a flat black source, `bg_removed_worst` **0.0000** — 86.4% of true-background pixels came out at alpha 1-9 and 13.6% at 10-39, **none at 0**.
+
+**The cause was not the fade detector.** The obvious hypothesis was that `detect_fading_colors` over-flags against a dark background, because "distance from the background" there *is* brightness, so every lit pixel looks like a fade stage. That was measured and is **false**: on the three worst assets the detector flagged **nothing at all**. Background luminance does not separate the recommendation either — among flat-keyable assets whose screen fires, the flag was emitted on 61% of dark ones and 55% of white ones.
+
+**The cause was that the recommendation and the renderer consulted different things.** The recommendation keyed on `band_interior_regions`' `gradient_fade` verdict — a band-interior region whose colour distance from the background *moves* across the frames it appears in. That is a genuine **necessary** condition for a flattened fade and nowhere near a sufficient one. The renderer never reads it: it keys on `detect_fading_colors` over the art palette. Measured across the 34 assets where the flag was being emitted, the two **disagree on 16**, and that disagreeing half holds every catastrophic output in the set.
+
+**Why the disagreement is destructive rather than merely useless.** With no fading colour there is nothing to recover, so the flag ought to be a no-op. It is not, because fade recovery takes its own render path: it derives protection topologically and **ignores every protection flag** (§34.4), and it zeroes alpha only below 1/255 instead of at `--tolerance`. On any background carrying dither or JPEG noise, that leaves every background pixel alive at alpha 1-9 — visually a ghost, arithmetically "removed nothing".
+
+**The fix is a confirmation step, not a new measure.** The cheap screen is kept — it is cheap and it is a real necessary condition — and when it fires, the detector the renderer actually uses is run to confirm it. Three states, and the fall-through is deliberately the unverified one: confirmed, refuted, or *not run because the screen never fired*, which is never read as a pass. `--recommend` emits the flag only on `confirmed`, and says plainly what happened on `refuted`. Separately, the renderer now **refuses** rather than ghosting, because a run that never called `--recommend` must still be stopped — the same prediction/prevention split the truncating-GIF refusal uses.
+
+**Measured outcome**, on the two populations together, because a fix that trades one family for another is not a fix:
+
+| | before | after |
+|---|---|---|
+| worst dark asset | 0.0000 | 0.5043 |
+| second worst | 0.0004 | 0.7241 |
+| third worst | 0.1759 | 0.9176 |
+| one asset that would not render at all | exit 1 | 0.9945 |
+| assets with a CONFIRMED fade | — | **byte-identical, all 17** |
+| white-background controls | — | **9 of 10 byte-identical, 1 improved** |
+
+**The honest cost, which is real.** Suppressing the flag routes those assets onto the normal removal path, and on one of them — a soft neon glow on black — the harder cutout loses the glow's outer falloff (`art_kept_worst` 1.000 → 0.761, `art_lost_over_perimeter` 2.972). The old output preserved that falloff only because it preserved *everything*, at partial alpha, with `edge_cleanliness` 0.466. A glow spanning many colours is not one flat palette entry, so `detect_fading_colors` cannot see it; that is a real limit and it is the same "pale is not translucent" boundary §34.2 records. A second asset looked like a large interior loss (8,634 px) and turned out, on inspection of the actual frames, to be correct removal between strands of hair — a metric mis-grading, not damage.
+
+**The transferable part.** When a recommendation and the code it recommends key on **different signals**, the recommendation can be confidently wrong in a way no amount of tuning the signal it uses will fix. Check what the consumer actually reads before tuning what the advisor computes — and where the cheap signal is only a necessary condition, confirm it with the expensive one instead of promoting it to sufficient.
+
+## 36. The background changed colour mid-animation, and every check said the render was fine
+**Also searched as:** rainbow · strobe · flashing backdrop · hue shift · disco · party mode · alternating background · colour cycling · multicoloured backing · half the frames wrong · psychedelic
+
+**The defect.** `--bg-color` is a single value and `detect_bg_color` reads one frame, so an animation whose background is RECOLOURED partway through cannot be processed at all. Every frame after the change keys against a colour that is no longer on the canvas, so its entire background survives into the output as opaque artwork. Nothing reported it: the file is written, it has plenty of opaque pixels, `_refuse_empty_render` is satisfied, and `--verify` reads a healthy render. The output is silently and totally wrong, and the failure is invisible in every number the tool prints.
+
+**Measured on a 30-frame asset** whose background runs magenta, pink, red, orange, yellow and green across frames 11–15: the frame-0 colour covers **2.37% of the canvas on frame 0 and 0.00% on frames 11, 12, 13 and 15**. Half of the output frames would keep their background.
+
+⚠️ **A SPREAD CANNOT SEE A TRANSIENT.** The first attempt at this measurement sampled 10 frames of that 30-frame asset and read **78.6% coverage at frame 10 while frame 12 was 0.0%** — the whole colour change lasts five frames and the sample stepped straight over it. The scan therefore runs on EVERY frame, for the same reason the blank-frame scan does (§34.1). The cost is below the noise floor rather than literally zero, and it is worth stating which: the scan rides the per-frame loop `analyze()` already runs and reuses the background mask that loop already computed, so a frame costs four pixel reads and one `.mean()`, plus a second mask only where the corner colour has actually moved — 52 of the 65 constant-background control assets never pay that second mask at all, and the other 13 pay it on the handful of frames where art crosses a corner. Timed as min-of-3 whole-`analyze()` runs on three long assets (250, 309 and 123 frames), the change measured −3.0%, +6.5% and −1.3%, against a run-to-run spread on one of those assets of 61.6–82.8s. The +6.5% is the worst case by construction: it is the 309-frame asset whose background really does change, so the second mask runs on 220 of its frames — an asset that is about to be refused anyway.
+
+⚠️ **AND IT FIRED ON 9 OF 37 ALREADY-BACKGROUND-REMOVED ASSETS, every one a false positive.** The rule was validated on 71 OPAQUE animated assets, so a source whose background is already transparent was outside its control entirely — and a REFUSAL is the most disruptive thing this tool can do. Caught only by a PRE/POST render diff; every `analyze()`-level number looked fine. Two distinct causes, and fixing the first left the second: under `alpha == 0` the RGB is whatever the encoder left there, and for a GIF that is a palette entry which can differ frame to frame, so voting on a transparent corner reads noise as a background colour (`diorpop.gif` read `#ac5f40` then `#000000`; another read `#00aaff` then `#ffffff` on 46 of 48 frames) — and separately, a large piece of ARTWORK touching three corners on frame 0 reads as a background and then animates away. So transparent corners are excluded from the vote, an unreadable frame 0 reports UNVERIFIED rather than a verdict, and a source whose own transparency IS its background is not asked the question at all. After both: **0 of 37 fire, 6 of 6 positives still do, 0 of 105 dark negatives do.**
+
+⚠️ **AND A DUPLICATED GUARD CAN DISAGREE WITH ITSELF.** The refusal deliberately lives in two places — `analyze()` predicts, `process()` prevents — because a run that never calls `--recommend` must still be stopped. Gating only `analyze()` on "this source is already a cutout" therefore produced the worst of both: `--analyze` reported UNVERIFIED for `diorpop.gif` while the render path went on refusing it. **When a guard is duplicated on purpose, a fix to it is not done until every copy has it**, and the render diff is what showed the second copy still failing after the first was fixed. Third time this session that a fix reached one of two consumers and looked complete (see §35 and §37).
+
+**The rule, and why it needs two halves.** A frame counts as recoloured when BOTH hold: its corner-majority colour is more than **40** units (max-channel) from the reference colour, AND the reference colour's coverage has collapsed below **15%** of what it held on frame 0. **Each half alone has a measured false positive** in the 65-asset animated control. A corner move alone fires wherever art sweeps across a corner — one control asset reads 11 distinct corner colours with a perfectly constant background. A coverage collapse alone fires wherever art briefly fills the canvas — two control assets bottom out at 0.0% and 0.7% of their frame-0 colour while their corners never move at all.
+
+**40 is a margin of KIND, and deliberately not the run's `--tolerance`.** On that same asset, frames 1 and 3 read a corner **16** units from the reference — the identical magenta, re-quantized by the GIF's palette — while the first genuinely recoloured frame reads **63** and the rest 161–242. A threshold at `--tolerance` (15) would call palette drift a background change, which is the trap §23 and §18 both record.
+
+**Scored on 71 real animated assets: 6 with a changing background, 65 without. All 6 fire; all 65 have ZERO qualifying frames** — not a threshold the control merely clears, one it never reaches. The verdict is invariant over a distance threshold of 24–120 and a collapse threshold of 0.05–0.50, so the numbers are not shaped around the six positives. Those corpora live in the development repo and are not re-runnable from this package, as in §23.
+
+**Three places, because prediction and prevention are different jobs.** `--analyze` reports `background_color_stability`; `--recommend` returns `not_applicable_reason` with `suggested_command: null`, so `--auto` refuses; and `process()` refuses independently, for the run that never called `--recommend` — a hand-written command line, a batch manifest, a session that went straight to processing. Same three-place shape §34.1 used for the truncating GIF, and the render-side half is the one that catches an autonomous run that skipped the recommendation.
+
+**The fall-through is UNVERIFIED, never PASS.** When the detected background colour covers essentially none of frame 0 there is no reference plane for a collapse to be measured against, so the rule would silently never fire — a vacuous pass dressed as a clean bill of health. `background_color_stability.changes` is `null` in that case, with an `unverified_reason`; `--recommend` says so in its evidence and `process()` warns on stderr. §13, §16 and §17 are the precedent: a check that cannot run has to say so rather than return the answer that happens to be convenient.
+
+**What to do when you see it.** Split the animation at the colour change and process each run with its own `--bg-color`, or re-export the source with a constant background. `--allow-changing-background` keys the frame-0 colour anyway, and is only right when the recoloured frames genuinely do not matter — it does not fix them, it accepts them.
+
+## 37. Erosion damage measured and attributed, and two fixes that failed their own acceptance
+
+**Also searched as:** antenna · whisker · tendril · spark · hairline · one-pixel stroke · detail eaten · feature vanished · nibbled edge · over-trimmed · shaved too far · single objective · tried and backed out · dead end · sliver · filigree · cut to nothing · vanished stroke · one pixel is not enough · needs a stronger trim · protect what is kept · bend in the curve
+
+⚠️ **This section records a measurement and TWO REJECTED FIXES. The defect is real and OPEN.** It is written down so the next attempt starts from the evidence rather than from the same two ideas.
+
+**The defect.** Edge-cleanup erosion removes real artwork, not fringe. On the motivating asset a flame wisp came out with **24.0% of the animation's artwork surviving on its worst frame**, and `art_lost_over_perimeter` read **1.977** — nearly two full perimeter rings, against 0.70–0.97 across the white-background assets. `calibrate_edge_cleanup_erosion` picks the smallest erosion whose outer-ring fringe fraction is within a tolerance of the asset's own floor: a good rule for the thing it measures, with **no term at all** for what erosion costs.
+
+**How broad, measured.** 149 assets rendered through the real `--auto` CLI and scored: **47 of 148 exceed `art_lost_over_perimeter` 1.1** — 42% of the dark corpus against 10% of the labelled set and 0% of the trial and WebP-original sets.
+
+⚠️ **That metric counts art lost for ANY reason, so it had to be attributed before it could drive a change.** Every asset over 1.1 was re-rendered with erosion explicitly off: **36 of 46 fall back under 1.1, and 10 do not**. Those ten are a different defect — the keyer removing artwork that matches the background — and no erosion change would touch them. A single metric that looks like it names a cause usually does not.
+
+⚠️ **And "just erode less" is refused by its own control.** Of 41 assets already under 1.1, turning erosion off made `edge_cleanliness` **worse on 9** — `for-you.gif` 1.000 → 0.688, `explosion` 1.000 → 0.831, `rocket` 0.999 → 0.891 — and left background behind on 7. Erosion earns its place on that population.
+
+### 37.1 Rejected fix 1: reuse `check_erosion_damage` as a gate
+`check_erosion_damage` detects exactly this failure — it labels components before erosion and reports any that lose most of their pixels — and it only WARNS, which an autonomous run cannot act on. Wiring it into the calibrator so a damaging level is rejected outright is the obvious fix, and it **fails its own acceptance**: across 147 rendered assets it made `edge_cleanliness` **worse on 40 and better on 2**, trading one asset family for another.
+
+**Why:** its 25px floor and 30%-survival bar were tuned for a warning, and a warning may be noisy. As a gate they fire on exactly the dither speckle erosion is *supposed* to remove. **A warning's threshold is not a gate's threshold**, and reusing one as the other is a silent change of contract.
+
+### 37.2 Rejected fix 2: a scale-free perimeter-overreach measure
+Eroding *n* rings should not cost much more than *n* perimeters, so `lost / perimeter` at the worst frame looked like a tuning-free statement of "it ate features, not fringe". Derived from 87 render pairs it separates cleanly — the FINE population never exceeds **1.00**, the DESTROYED population reaches **2.98**, and a cut at 1.2 catches 16 of 36 with **zero** false positives.
+
+⛔ **It is arithmetically incapable of firing, and the separation was a proxy.** For one iteration, the pixels erosion removes *are* the boundary ring, so `lost` and `perimeter` are the same set and the ratio is **exactly 1.000 on every possible input** — verified directly on four constructed masks. The clean split was therefore not measuring damage at all: it was separating assets that had used erosion 2 or 3 from assets that had used erosion 1. **A perfect separation on a derived quantity is a reason to check what the quantity actually varies with**, and a synthetic unit test caught this where the 87-asset corpus had endorsed it.
+
+### 37.3 What the next attempt should know
+The cost term has to compare erosion's loss against something that is **not** a function of erosion itself. Candidates not yet tried: loss measured against the frame's own artwork AREA rather than its boundary; per-component survival with a floor derived from the asset's own component-size distribution rather than a constant 25px; or accepting that this is a per-asset judgement and having `--recommend` say so. Whatever is tried, the acceptance is fixed and both halves are required: the 36 erosion-caused assets must improve, and `edge_cleanliness` must not fall on the 41 controls.
+
+### 37.4 What closed it: measuring the ANSWER instead of arguing about the rule
+Both rejected fixes were attempts to add a cost term to the calibration RULE. What settled it was rendering every reachable asset at every level and reading the answer off real outputs: **112 assets whose calibration actually runs, each rendered through the real `--auto` CLI at erosion 0, 1, 2 and 3 and scored — 448 renders.** Three facts came out of it, and none of them is a threshold:
+
+1. **NO asset anywhere lost LESS artwork at a higher erosion level — 0 of the 104 assets that produced a score at all four levels, and at ZERO margin rather than a tolerance.** The other 8 of the 112 scored at no level at all (three are documented refusals), so they neither support nor contradict it — a claim of this shape is only as good as the denominator it is a fraction of. Erosion is monotonically destructive, so every level above the smallest one that works is pure cost.
+2. **Going above 1 improved `bg_removed_worst` by at most 0.021**, on 10 assets — and 6 of those 10 never escalated anyway. The three a cap actually costs are assets whose background removal has already failed: 0.009 → 0.030, 0.516 → 0.535, 0.980 → 0.995.
+3. **Going from 0 to 1 buys a great deal** — +0.622, +0.198, +0.187 `bg_removed_worst` on three real assets. Erosion earns its place exactly once.
+
+So the fix is a restriction of the SEARCH SPACE, not a constant inside a formula: `EROSION_MAX_AUTO = 1`. Every level is still MEASURED — the table is the evidence a human audits, and the post-render check reads the in-memory value at the level actually used — but only 0 and 1 may be selected, and the log says what was rejected and why.
+
+**Measured PRE/POST through the real CLI on 186 assets across five populations.** 37 assets move (2→1 on 17, 3→1 on 15, 3→0 on 4, 2→0 on 1); 149 are untouched.
+
+| | result |
+|---|---|
+| erosion-caused population (51) | `art_lost_over_perimeter` **better on 28, worse on 0**, unchanged on 23 |
+| artwork recovered | median **0.614** perimeter rings, max **2.079** |
+| `art_kept_worst` | median **+0.0146**, and it never falls on any asset |
+| controls (54 already under 1.1) | worse on **0** for `art_lost_over_perimeter`, `art_kept_worst`, `bg_removed_worst` AND `edge_cleanliness` |
+| `bg_removed_worst`, all 186 | worse on 5, worst **−0.021**; better on 0 |
+| already-background-removed (37) | score-identical on **37 of 37** |
+
+⚠️ **THE SECOND CONSUMER, and it was the whole point.** `--auto`'s post-render correction escalates to `used + 1` on its own, bypassing calibration entirely — §37 records a previous fix that reached the calibrator and left this path escalating straight back into the level calibration had just rejected. The cap therefore lives in ONE constant read by BOTH, and the escalation now reports an unresolved disagreement rather than acting on it once it is already at the ceiling. Measured on `dark_bg/_ (10).gif`, whose calibrated level did not change at all: PRE escalated 1 → 2 and POST declines, `art_lost_over_perimeter` **3.684 → 3.223**. That asset is invisible to any check that only looks at what the calibrator picked.
+
+⚠️ **And the post-render check was re-anchored, because the cap makes the old anchor wrong.** It compared the encoded fringe fraction against the GLOBAL floor of the calibration table. Once the calibrator is allowed to decline a lower reading on purpose, that gap measures OUR OWN decision rather than the encoder's, and would fire on every asset whose curve keeps falling past the ceiling. It now compares against the in-memory value **at the level actually used**, which is the only thing that answers the question the check is asking.
+
+⚠️ **Every number above is from a GIF-container render, and the cap binds on WebP/AVIF too.** `EROSION_MAX_AUTO` restricts the calibrator whatever the output container, but the 112-asset table is entirely GIF. The direction is safe by argument — the cap only ever LOWERS a level, and an 8-bit output has even less use for erosion than a GIF does, since it has no 1-bit cutoff fringe to hide, which is why its resolved default is already 0 — but safe by argument is not measured. Read these figures as "on GIF output", not "on every container".
+
+⚠️ **The third consumer is covered by the resize pass, and that is evidence rather than an assumption.** Beyond the calibrator and the post-render correction there is a fixed 1px erosion applied after a resize. It sits at 1 already, so the cap cannot bind on it — but "cannot bind" is a signature argument, and the behavioural check is the render gate's ` [resize]` pass, which moved on exactly the three assets whose calibrated level moved, in the same direction (more opaque pixels), and on nothing else.
+
+⚠️ **What this does NOT close, stated plainly.** Of the 51 erosion-caused assets, **42 are still over 1.1 at the level that now ships** — 23 of them did not move at all, because their calibrated level was already 1. ⚠️ 42 is the corrected figure: this paragraph first published **23**, which is the count of assets whose ratio did not CHANGE, not the count still above the line. Two different quantities, one number. And a further **20 damaged assets are attributable to the KEYER, not erosion** (their damage survives erosion 0 entirely), which no erosion change will ever touch. The motivating asset, a neon glow on flat black, goes `art_lost_over_perimeter` **6.823 → 4.972** and `art_kept_worst` **0.667 → 0.788** — a real improvement and not a fix. The remaining loss is the keyer cutting a soft falloff it cannot tell from background.
+
+⚠️ **`edge_cleanliness` CANNOT vary on a GIF output, and the original acceptance criterion did not say so.** It counts pixels at an alpha the encoder never asked for — neither ~0 nor ~255 — and a 1-bit container has none by construction, so it reads exactly 1.000 on every GIF render. Measured: **0 of the 104 assets scored at all four levels show any variation.** "edge_cleanliness did not fall on the controls" is therefore true here and nearly vacuous; the field that actually carries the control's meaning on a GIF is `bg_removed_worst` (background left behind), and it is worse on 0 of 54 controls. **Check that an acceptance metric can move on the population you are about to measure it on**, or it will report a pass it was never able to withhold.
+
+⚠️ **`score_outputs` is NOT valid on the already-background-removed population.** It derives its ground truth from the SOURCE's RGB, and under `alpha == 0` that is whatever the encoder left there (§36). On `alphas` it reports `art_lost_over_perimeter` values of 19, 29, 63 and 71 on assets that are rendering correctly. The honest acceptance for that population is the alpha FINGERPRINT, not the score; the scores are reported only as a determinism check (identical on 37 of 37).
+
+### 37.5 The other 20 were attributed to the KEYER, and 14 of them were the METRIC
+§37.4 left 20 damaged assets whose loss survives erosion 0 entirely, filed as a keyer defect no erosion change could touch. Attributing them BEFORE trying to fix them dissolved most of the population.
+
+`_truth` calls every source pixel more than `TOL` (30) from the background "art". A flattened fade's faint stages are therefore artwork by that definition — and truncating them at a 1-bit cutoff, **the only thing a GIF can do**, then scores as destruction. The tell was in the list itself: `love` and `heart`, whose outputs have been accepted for months, sat in it at `art_lost_over_perimeter` 2.572 and 4.098.
+
+Rendering all 20 at erosion 0 and splitting the lost pixels by their SOURCE distance from the background gives a completely bimodal answer with nothing in between:
+
+| | assets | median distance of the lost pixels | share ≤ 3×TOL | largest solid component removed |
+|---|---|---|---|---|
+| fade truncation | **14** | 33–71 | **98.7–100%** | **0** |
+| real loss | **6** | 145–420 | 0.0–27.8% | 2,072–164,804 px |
+
+⚠️ **And 4 of the remaining 6 are content this tool does not claim to handle.** Border flatness — the share of the 1px border ring within tolerance of its own modal colour — reads **0.201, 0.523, 0.665 and 0.777** on them, against the ≥0.90 bar for "flat-keyable" and 1.000 on every fade-truncation control. Two of those four also come out with `bg_removed_worst` of 0.009 and 0.003, i.e. the keyer removes almost no background at all: photographs with a dark cast, not flat-background art.
+
+**So the population is 20 → 14 metric artefact → 4 out of scope → 2 genuine.** Two assets is not enough to build a discriminator against — the same call this project made about a 3-asset sprite pack whose misses are real but too few to build a measure against — so the close here is the MEASURE, not a product change: `score()` now reports `art_lost_faint_share` and `art_lost_solid_largest_component` beside the ratio, read at the frame the RATIO is worst rather than as a mean or at the worst-art frame. Both cut points are read off the split above, not chosen; 90 is 3×TOL, the band a truncated fade occupies. A falsifier PAIR covers them: one synthetic source containing both a faint ramp and a saturated blob, scored twice, differing only in which of the two the output removes.
+
+**The transferable part, and it is now four for four in this file.** `bg_removed_worst`, `interior_kept_worst`, `art_kept_worst` and now `art_lost_over_perimeter` were each caught punishing a correct answer, and every one failed the same way: **a binary ground truth cannot grade a fade.** When a measure indicts a population, check whether the tool's own accepted reference outputs are in it before believing the measure — they were here, and they were the whole clue.
+
+**The transferable part.** A calibrator that optimises one objective will spend everything the other objectives were worth — that much is real, and the measurement above is the evidence. But two plausible cost terms both failed, one on a population and one on arithmetic, and the second had passed an 87-asset corpus check first. **When a fix and its measurement are built by the same reasoning, the corpus can only tell you they agree.**
+
+### 37.6 The "outlier" was the scorer's own frame-alignment bug — closed, `Cut loop.gif` rejoins the ring population
+§37.4 left 41 of the 42-asset residue reading as a genuine 1px silhouette ring — mixed faint/solid share, which is what a correct erosion bite looks like. Exactly one was filed as not fitting that shape: `Cut loop.gif`, reported at 98.4% solid, a 2,925px component, lost-pixel median distance 438. **That number was always the frame-coalescing bug described in §37.8** — the archive read original frame 68 while believing it was reading frame 67. With the bug fixed and re-scored through the corrected `score_outputs`: `art_lost_over_perimeter` **1.196** (not 2.88), `art_lost_faint_share` **0.508** (mixed, not the 98.4% solid the archive reported), `art_lost_solid_largest_component` **141px** (not 2,925), true `worst_frame_index` **3** (not 67). Every one of those numbers reads as an ordinary member of the 41-asset ring population, not an outlier. **`Cut loop.gif` is CLOSED as a distinct case — it never was one.**
+
+**Two things survive regardless, because both are code facts independent of any frame-indexing bug, and they still describe a real gap even though it turned out not to be what `Cut loop.gif` needed.** `check_erosion_damage`'s post-erosion WARNING does fire on this asset at the shipped level (15 real ≥25px components at 0–20% survival across earlier frames than the one this section originally focused on) — read directly off the in-memory pre-encode alpha arrays, so immune to the encoding-stage bug — and it is print-only: nothing in `--auto` reads it back into a decision (`scripts/remove_gif_background.py:6842-6854`). And **no existing mechanism protects a small KEPT (opaque) component from erosion** — only the mirror case exists (`find_tiny_removed_regions` / `erode_alpha_edge_exempting_tiny_regions`, which protects small REMOVED regions from inflation). Whether any real asset actually needs that gap closed is now genuinely open again, with no motivating case — building it without one would be solving a problem no measured asset has.
+
+**Decision (Harkirat, 2026-08-20): scope and document, defer implementation** of the proposed opaque-component exemption — the premise it was deferred pending re-verification of has now resolved to "not needed for this asset." The other 41 assets' underlying product question — is a one-ring bite carrying 22–60% solid edge pixels acceptable at all — is untouched by any of this and remains fully open.
+
+### 37.7 The two keyer survivors do NOT share a mechanism, and one per-asset detail is unverified
+§37.5 narrowed the 20-asset keyer population to two genuine survivors: `dark_bg/_ (25).gif` and `dark_bg/_ (10).gif`. Diagnosed by hand per that section's own instruction: find which stage removes the blob, then ask whether the two share a mechanism.
+
+**Neither asset's own `--recommend` flags touch this specific loss — and this claim is immune to §37.8's bug, because it never involves the source at all.** Rendered each at erosion 0 twice — bare `--auto`, and again with its own suggested flags (`--protect-outline-color f064f0 --erosion-exempt-max-size 3` for `_(25)`; `--tumble-safe --erosion-exempt-transient` for `_(10)`) — and diffed the two RENDERED OUTPUTS against each other frame-by-frame (not against source, so no source-alignment question arises). **Byte-identical alpha on both assets: 0 of 14 frames differ on `_(25)`, 0 of 60 on `_(10)`.** The recommended flags change nothing about either loss.
+
+`_(25).gif`: re-measured with duration-aware frame alignment against source, the lost component is **≈2,130px**, mean colour **(255,111,255)** — essentially the outline colour itself, `f064f0` = (240,100,240) — at **original frame 14** (not 12; the raw-position read that first reported frame 12 was itself off by the same coalescing bug as §37.8, since this render coalesced 28 frames down to 14). ⚠️ **The apparent tie to `--recommend`'s "Region 14 ... best frame 12: 19px, 51% of the footprint" evidence is RETRACTED** — both the frame number and the size (19px against a ≈2,130px loss, a 100x mismatch) fail to line up once checked properly; that was a coincidental match on a corrupted frame number, not a real correlation. The mechanism for this loss is genuinely unknown.
+
+`_(10).gif`: the raw-position read gives a near-black component (**37,8,9**) of 4,164px at stored index 48, reproduced identically by two independent methods (position-only and a full sequential walk) — but an attempted duration-aware correction for this asset hit an unresolved bug in the correction SCRIPT itself at the time (it returned zero solid loss anywhere, which contradicts both reproductions above). **So this asset's exact frame and colour are still UNVERIFIED against true source alignment as of this writing** — §37.8's fix corrects the general bug in `score_outputs` (proven by a falsifier and re-scoring `Cut loop.gif` above) but re-deriving `_(10).gif`'s own frame/colour through the fixed scorer was not done in the same pass; it is a cheap follow-up, not a re-open of the original mystery. What is confirmed regardless of any of this: whatever the true frame is, `--tumble-safe` and `--erosion-exempt-transient` do not change the render at all (the output-vs-output diff above), so those flags are not the fix.
+
+**So the two do not share a mechanism**, confirming the call already made about this population: two assets is not enough to build a measure against. Recorded as known limitations, each now correctly flagged by how much confidence its supporting numbers actually earned, rather than stated uniformly.
+
+### 37.8 `score_outputs` compared frames by POSITION, and GIF frame-coalescing broke that silently — fixed
+Found auditing this session's own diagnosis of §37.6 and §37.7, not by design. GIF encoders (including this project's own, via gifsicle) merge runs of pixel-identical consecutive frames into one stored frame with an extended duration, to save space — observed in **3 of 3 renders made this session**: `Cut loop.gif`'s auto render (76→75 frames), `_(25).gif` (28→14), `_(10).gif` (80→60). `score_outputs`'s scorer picks comparison indices as `min(src.n_frames, out.n_frames)` and reads both source and output by that same raw position — so past the first coalescing point, "frame i of the output" and "frame i of the source" are two different moments in the animation, compared as if they were the same one.
+
+**Measured directly on `Cut loop.gif`.** Its auto render coalesces original frames 66 and 67 into one stored frame (duration 60ms = 2×30ms) at stored index 66; every stored index from 67 onward is shifted by one relative to the original timeline. Reading "frame 67" by raw position therefore reads original frame **68**, not 67, from that render onward. Diffing against a duration-aware realignment (mapping each original frame index to its correct stored index via cumulative duration) changes the reported worst-frame loss from **2,943px of saturated red** to **814px of pale colour** — the archived erosion-residue record's number (2,925px, 98.4% solid) matches the WRONG reading almost exactly, which is the evidence that the archive itself was produced the same flawed way, not just this session's ad hoc re-check.
+
+**Scope, stated honestly: this is a real gap, not yet a measured blast radius.** It only matters for per-FRAME attribution (which frame, what colour, what shape) on a render that coalesces past the frame being read — corpus-level aggregate comparisons across many assets and many frames (the 448-render erosion table's monotonicity claims, the 186-asset PRE/POST pairs) are more likely to average out an occasional frame-shift than a single-asset, single-frame claim like `Cut loop.gif`'s is. But this was not measured, only reasoned about, and reasoning was exactly what produced the wrong `Cut loop.gif` number in the first place. **Do not trust a specific per-asset, per-frame number `score_outputs` reports without checking whether that asset's render coalesced frames before or at the index being read.**
+
+✅ **FIXED 2026-08-21.** `score_outputs` now maps sampled frames by time when (and only when) source and output frame counts differ — `_frame_start_times_ms`/`_stored_index_at_time`, keyed on each file's own cumulative frame durations. ⚠️ **The first version of the fix applied duration-based mapping UNCONDITIONALLY and broke 9 real fixture tests** (`test_a_known_good_file_is_not_flagged`, `test_growth_interior_survives_a_real_render`, and 7 more) — a source and its re-encoded output can report genuinely different per-frame durations for the exact same 1:1 frame sequence with no coalescing at all (measured: `in-love.gif`'s source states 40ms/frame, its rendered `.webp` states 30ms/frame, both 48 frames), and mapping by absolute time then reads the wrong frame despite the correspondence being trivial. **The fix is narrower than the diagnosis implied: use position when counts are EQUAL (the common, non-coalesced case), fall back to time only when they differ** (the actual signal that frames were dropped or merged). Proven non-vacuous against the OLD code directly, not just tested against the new: a two-frame synthetic source (blank, then a solid square) against a one-frame fully-transparent output reproduces the exact failure shape — the old scorer reports `frames_compared: 1` and `art_kept_worst: 1.0` (the erased square entirely invisible, because sampling was capped to the shorter output's frame count), the fixed scorer reports `frames_compared: 2` and `art_kept_worst: 0.0` (caught). Falsifiers: `test_stored_index_at_time_matches_a_real_alternating_duration_pattern` (hand-computed against `_ (10).gif`'s real 20/40ms alternating pattern, the exact case the first attempt broke on) and `test_a_defect_invisible_under_positional_indexing_is_caught_by_time_mapping`, both in this repo's own harness test suite for that scorer. Re-scoring `Cut loop.gif` through the fixed scorer is §37.6's resolution above; the 448-render erosion table and 186-asset PRE/POST pairs were NOT re-run, on the reasoning already stated above (aggregate claims average out an occasional shift more than a single-asset one) — re-run them if a specific per-asset per-frame figure from either becomes load-bearing again.
+
+### 37.9 The mirror exemption that did not exist: protecting a small KEPT component from erosion
+§37.4 capped erosion at 1 and left **42 assets still over `art_lost_over_perimeter` 1.1 at the level that ships**, 23 of them unreachable by any level policy because their calibrated level was already 1. Harkirat reviewed real before/after renders spanning the range and split that population by eye: `gift_ORIGINAL.gif` (~44% solid lost pixels) and `explosion_ORIGINAL.gif` (~60%) are **acceptable, ship as-is** — a plain 1px ring bite off a large silhouette is proportionally nothing. `Starters!.gif` is **a real defect**, and not the one it looked like: the lost pixels sit at median distance 117 from the detected background with only 1% within tolerance, so they are genuinely art-coloured. The pokeball's crescent rim is 2px wide, and a uniform 1px trim takes it to zero.
+
+**The gap was structural, and it is the exact mirror of a mechanism this file already documents.** `find_tiny_removed_regions` / `erode_alpha_edge_exempting_tiny_regions` (§11) protect a small **REMOVED** region from being *inflated* by the erosion of the opaque wall around it. Nothing protected the opposite polarity — a small or thin **KEPT** component being *erased* by the same trim. And `check_erosion_damage` had been measuring exactly that damage since §19, precisely and per-component, but it is **print-only**: nothing in `--auto` ever read it back into a decision. A warning nobody acts on is not a fix, because an autonomous run takes the flags verbatim and reads no stderr.
+
+**The fix acts on the diagnostic's own selection rule instead of merely printing it.** `find_erosion_damaged_components` returns per-frame masks of every opaque component at or above `min_component_px` (25) whose survival fraction under the erosion just performed falls below `min_survival_frac` (0.3) — the same two constants the warning already used — and `erode_alpha_edge_protecting_damaged_components` writes those components' own pre-erosion pixels back. Three properties make it safe rather than just lenient:
+
+* **It does not touch which LEVEL gets picked.** §37.1 and §37.2 were both attempts to add a cost term to the calibration rule and both failed their own acceptance. This is a per-COMPONENT exemption *at the level already chosen*, which is why it can reach assets no level policy can help at all: 39 of the 42 residue assets already calibrate to 1, so the cap has nothing left to give them, and the protection fires on **18** of those 39.
+* **Restoring after the fact is EXACT here, unlike the removed-region case.** Erosion only ever turns opaque pixels transparent, never the reverse, and it is computed once over the whole frame — so writing a component's own values back produces precisely "this component was not eroded", with no effect on any other component. §11's case needed exclusion from erosion's *input* because there the erosion of the surrounding wall *was* the damage, and undoing a spillover is not the same as preventing it.
+* **It runs on EVERY frame, unlike the diagnostic, which samples 40.** ⚠️ **A protection that inherited that sampling would be worse than the defect**: it would keep a thin stroke on the sampled frames and erase it on the rest, converting a uniform loss into a FLICKER. The sampling in `check_erosion_damage` is a cost decision about how much evidence to print; it was never a definition of where the damage is. This is the same class of error as §10's spot-check, arriving through a different door.
+
+**Measured PRE/POST through the real CLI on the whole 42-asset residue population**, with the harness left on its `auto` level mode, so the tool made its own decision both times:
+
+| | result |
+|---|---|
+| erosion WARNING fires | **20 → 0** |
+| assets logging a protection | **exactly the 20**, and none of the 22 |
+| calibrated level moved | **0 of 42** — this is not a level-policy change |
+| `art_kept_worst`, the 20 | better on **19**, worse on **0**, max **+0.1769** |
+| `art_lost_over_perimeter`, the 20 | better on **12**, worse on **0** |
+| `bg_removed_worst`, the 20 | worse on 8, worst **−0.0026** — the honest cost |
+| the 22 clean assets, all four measures | **score-identical, 22 of 22** |
+| the protected set vs the warned set | **identical, not merely equal in size** — checked as sets |
+
+⚠️ **The PRE run independently reproduced the filed 20/22 split**, which is what makes the 22 a real control rather than an assumed one — the split was originally derived from archived `erosion_lines`, and re-deriving it through a fresh render at the shipped decision was the check that it had not drifted.
+
+⚠️ **THE THIRD CONSUMER, and it is not the one §37.4 named.** Beyond the calibrator and `--auto`'s post-render correction there is a fixed 1px erosion applied *after a resize*. §37.4 correctly reasoned that `EROSION_MAX_AUTO` cannot bind on it — but component protection is not about the level, and a detail is at its THINNEST right after a downscale, which is exactly when a uniform 1px trim erases it. That call site had its own `check_erosion_damage` warning, printed and unread, for the same reason. It is routed through the protecting erosion too. **"The cap cannot bind here" was a correct argument about the wrong property**; check what each consumer is exposed to, not whether the last fix reached it.
+
+**What it costs, measured on the function rather than inferred from a contended run.** A connected-component labelling per eroded frame: on a 172-frame 640x640 asset the erosion pass goes **536ms → 2,509ms**, about **+2 seconds per asset of that size**. ⚠️ Vectorising the mask construction (`np.isin` over the label image instead of one full-array comparison per component) was expected to be the win and was measured at **11%** — the cost is `ndimage.label` itself, so reducing it further means labelling less often, not micro-optimising around it. The 336-asset render set went 1,272s → 2,001s, but that run shared the machine with a test suite, so read the function-level figure and not that pair. `--no-erosion-component-protection` turns it off and reproduces the unprotected result exactly.
+
+### 37.10 Erosion 2 made reachable without reopening §37.4, by testing the SHAPE of the curve
+**Harkirat's call, 2026-08-21:** *"i wouldn't cap erosion at 1, some items genuinely do need an erosion-2. I'd make erosion 2 available, just for very rare cases."* §37.4's measurement stands and is not contradicted by this — it measured that going above 1 improved `bg_removed_worst` by at most 0.021 *on the metric*, and the call is that the metric is not capturing what a human sees on the rare asset with a genuinely two-pixel-thick fringe.
+
+**A raised constant is not what was asked for, and would be the old regression.** `EROSION_MAX_AUTO = 2` as a blanket ceiling puts 37 of 186 assets back at 2 or 3, which §37.4 measured as taking the median `art_lost_over_perimeter` from **1.400 to 2.232**. The reason is structural: the fringe metric keeps falling as erosion walks inward through ARTWORK, so *"level 2 reads better"* is the ordinary case, not the rare one, and cannot be the trigger.
+
+**What separates them is the SHAPE of the asset's own curve, not its level.** The metric walking into artwork is a smooth monotone slide — each extra pixel buys about as much as the last, or less. A genuine two-pixel fringe is **CONVEX at 2**: the first pixel barely helps because there is still fringe underneath it, and the second one clears the rest. So the test is `gain(1→2) > gain(0→1)`, plus an absolute floor (`EROSION_KNEE_MIN_GAIN = 0.05`) so a flat curve's noise cannot trip it, plus one guard — **the extra step is earned only from the routine ceiling**, i.e. the asset must already have been going to take every pixel level 1 allows. Without that last condition an asset whose curve is flat at 0 and 1 could jump straight from 0 to 2 on a knee it never earned by needing one pixel in the first place.
+
+**Measured on 336 assets rendered with the harness on its `auto` level mode.** Reading the PRE-fix curves, 114 produce a full curve, 8 show a knee at 2, and 4 of those sit at 1 and would promote. **In the shipped configuration 3 actually promote** — ⚠️ and the difference is the finding, not a rounding: the calibrator now measures its candidates through the PROTECTED erosion, so the curve itself moves, and `dark_bg/T.jpeg`'s knee disappears once the components erosion was destroying are no longer destroyed. **The two changes interact, and a rarity predicted off pre-fix curves is not the rarity that ships.** 3 of 336 is **2.6% of the assets whose calibration runs, 0.9% of the corpus** — rare, as asked. The guard is doing real work rather than decorating the rule: it blocks half the knees. The clearest case, `dark_bg/_ (13).jpeg`, gains **0.263** going 0→1 and a further **0.691** going 1→2 — the second pixel removes 2.6× what the first did, which no smooth curve does.
+
+⚠️ **ONE ceiling, read by BOTH automatic consumers off the SAME table.** `earned_erosion_ceiling(table)` is a pure function of the curve the calibrator already produced, and `auto_run`'s post-render escalation calls it on `diagnostics['erosion_table']` rather than on a constant. Reading `EROSION_MAX_AUTO` there instead would let the post-render path escalate into a level the calibrator was not willing to select — which is precisely the two-consumer split §35, §36 and §37.4 all were. The escalation also steps by one (`_used + 1`), so 0 → 2 is unreachable in a single corrective pass by construction.
+
+⚠️ **Level 3 is never earned, however convex the curve gets.** `dark_bg/T.jpeg`'s curve keeps accelerating (gains 0.115, 0.153, 0.359) and it still stops at 2. The ceiling moves by exactly one step; anything beyond that is an explicit `--edge-cleanup-erosion`.
+
+### 37.11 Erosion 2 needed a feather to come with it, and the reason is where the trim lands
+Reviewing the three assets §37.10's knee rule promotes, Harkirat's verdict was **both halves at once**: *"erosion 2 DOES fit better on these than erosion 1 BUT they need a very slight feather on their edges at erosion 2 to reduce the harshness a bit, especially since their originals weren't exactly the 'best quality' and had artifacting near the edges of the artwork."*
+
+**Why a second pixel changes the KIND of edge and not just its position.** One pixel of trim lands roughly where the source's own antialiasing already was, so what is left still reads as drawn. Two pixels cut past that ramp into flat colour — and flat colour meeting full transparency is a hard step no source art contains. The harshness is not erosion 2 being wrong; it is erosion 2 removing the only soft transition the image had, on sources whose edges were already carrying compression artefacts.
+
+**So the ramp is put back, as alpha only.** `soften_alpha_edge` scales each opaque pixel's alpha by how deep inside the opaque region it sits (`depth / (radius + 1)`), so at radius 1 the boundary ring lands at ~50% and anything at depth ≥ 2 is untouched. **A distance ramp rather than a blur, deliberately**: a blur also moves COLOUR and would reintroduce exactly the fringe `estimate_alpha_and_defringe` exists to remove. Every pixel keeps its own RGB. Measured on the strongest case: partial-alpha pixels **0 → 4,052**, transparent count **unchanged** — it softens, it never removes.
+
+⚠️ **8-BIT-ALPHA CONTAINERS ONLY, and this is a refusal rather than a caveat.** A GIF has no partial alpha, so the ramp is dithered, and a spatial dither across what should read as a soft edge is the visible mesh §12 documents. On `.gif` the softening is declined **with the reason printed**, and an explicitly typed `--edge-softening` is declined out loud rather than silently ignored — the standing contract in this file for an explicit flag that cannot be honoured.
+
+⚠️ **The protected components are EXEMPT from the ramp, and leaving them in would have half-undone §37.9.** A 2px-wide rim lies entirely within a 1px ramp, so softening it takes the whole component to half opacity — the fix that just saved it from erosion, quietly reversed by the step that follows it. Two mechanisms in the same pass can each be correct and still cancel; the falsifier that catches it (`test_a_protected_component_is_exempt_from_softening`) first asserts the component IS ramped without the exemption, so it cannot pass vacuously.
+
+⚠️ **The default is context-resolved, not a constant:** 1px whenever the resolved erosion is ≥ 2, else 0. That keeps every asset the tool renders at 0 or 1 — the overwhelming majority — byte-identical, and confines this behaviour to the population it was judged on.
+
+⚠️ **CONTAINER CHANGES THE ANSWER, and a review set can silently disagree with the corpus figure because of it.** The 336-asset run wrote GIF (the harness maps an unrenderable source extension to `.gif`), and 3 assets promoted to erosion 2. Rendering the same three to PNG for visual review, only ONE promotes — the fringe curve is measured on the actual output path, so a different container gives a different curve and a different verdict. Neither number is wrong; they answer different questions. Say which container a promotion rate was measured on.
+
+## 38. The word `verified` was printed over a number that said otherwise
+
+**Also searched as:** overconfident · weasel wording · overstated · says one thing shows another · partial enclosure · sometimes enclosed · two thirds of frames · trust the sentence · gibberish evidence · self-contradictory · misleading report
+
+**The symptom.** `--recommend` printed `Region 1: outline c83c78 verified across 144 frames (68% enclosed)`. The number is honest; the sentence is not. An autonomous run acts on flags and a human auditing the run reads the word — and the word said the check had passed when the number said it passed two frames in three. Separately, two assets printed `verified across 177 frames (0% enclosed)`, which reads as nonsense because it is **two different fields presented as one claim**: `anomalous_frame_count` (does the outline's own size behave oddly?) and `enclosure_ratio_all_frames` (does it actually close around this region?) answer different questions.
+
+**How big the mid band is, measured before any edge was picked.** 269 verified-outline regions across five populations: **168 (62.5%) sit at exactly 1.000**, 6 at exactly 0.000, and the remaining **95 — 35% of all regions — are spread almost evenly between**, with no cluster anywhere to justify subdividing them further. Every one of those 95 used to print "verified".
+
+⚠️ **The band edges are the distribution's, not a choice.** The ceiling is 1.000 because that is where 62.5% of the mass sits and because it is the only thing the word can honestly mean. The floor is 0.000 for the same reason. Picking an edge before looking is how a wrong figure got published once already (§34.3) — and note that the strict reading puts the 11 regions in 0.9–1.0 into the mid band, which is the intended outcome rather than a rounding accident.
+
+**Three bands, three sentences.** At 1.000: *verified, it encloses this region on all N frames*. Strictly between: *a COIN FLIP, not verified — it encloses this region on X of N frames*, plus **what to check** (whether the region stays opaque on the frames it is not enclosed on, and whether something else crosses the outline there). At 0.000: *it is a closed shape on the sampled frame but NEVER fully encloses this region* — and the recommendation still stands, because fill-based protection does not require full enclosure, with the output flagged for checking. That last one matters: on `rocket.gif` (0 of 177) and `satellite.gif` (0 of 120) the advice is correct in the end, protected coverage 0.999 and 1.0, so the fix is to state what is known rather than to withdraw the advice.
+
+**The same shape, one level up.** A region that misses the intentional-design bars *narrowly* — 0.85 enclosure at 2.4% of canvas against bars of 0.9 and 2.5% — was dismissed in exactly the same voice as one that missed by a mile. A near miss now says it is unsure and quotes both margins.
+
+**The transferable part.** This changed no output pixel and cost no new analysis; every value involved was already computed. What it changes is whether a wrong recommendation is **auditable** — and confident wording over a hedged number is the one defect that makes every other defect harder to find. **When a sentence and the number beside it disagree, the sentence is the bug**, because the number is what you would have had to read to notice.
+
+### 38.1 The same defect one function along: a three-state field whose fall-through was a PASS
+Found 2026-08-20 while working in the same gate. `fade_colors_confirmed` is deliberately tri-state and its own comment reads *"unverified, never a pass"* — the None arm is what a confirmation step that RAISED leaves behind. But `recommend()`'s gate tested only `_fade_ok is False`, so None fell through to the branch that **emits `--recover-fade-alpha`** — the destructive path, taken on no evidence whatsoever, and taken silently because the comment three lines above said the opposite. §35 had just finished measuring what that flag does when there is nothing to recover: `bg_removed_worst` **0.0000**, a translucent ghost of the whole frame.
+
+**A tri-state field is only tri-state where it is READ.** Writing three states and then testing one of them with `is False` collapses it back to two, and it collapses toward whichever branch happens to be last — which is how an "unverified" reading became a recommendation. Both the flag gate and the FORMAT gate had the same hole and both are fixed; the format branch now says GIF is *not disqualified* rather than *acceptable*, because "we could not check" and "we checked and there is nothing" are different claims and only one of them was true.
+
+**The check that finds this class:** for every tri-state or nullable verdict, find its reader and ask what the None arm actually does — not what the comment beside the writer says it does. The two had been written months apart here.
+
+## 39. A GIF whose later frames resize the canvas crashed deep inside `analyze()` with no indication why
+
+**Also searched as:** frame size changes mid-animation · inconsistent frame dimensions · canvas grows or shrinks · numpy shapes disagree · width height mismatch
+
+**The symptom.** A real dark-corpus GIF raised `ValueError: operands could not be broadcast together with shapes (650,500) (650,501) (650,500)` at `union_mask |= enclosed` deep inside `analyze()` — a numpy broadcasting error with no file name, no frame number, and no hint that the real cause was three frame-shapes back from where the traceback pointed. `H, W` is fixed from frame 0's shape; a later frame that is even 1px wider or taller (this file's frame 4 is 501x650 against frame 0's 500x650) produces an `all_rgb_frames[i]` whose shape silently disagrees with every mask sized off `(H, W)`, and the disagreement only surfaces wherever the two first get combined — far downstream of the frame that actually caused it.
+
+**The fix: refuse loudly, at the actual frame, instead of crashing obscurely three call-frames later — never silently pad or crop.** Checked right where each frame is appended to `all_rgb_frames` (`scripts/remove_gif_background.py`, in `analyze()`'s frame-loading loop): a shape mismatch now raises `SystemExit` naming the file, the offending frame index, and both sizes, with the same tone as this codebase's other refusals (`_refuse_empty_render`) — what happened, the likely cause, and what to do about it. **Deliberately not pad/crop**: the item that filed this said it plainly — "a crash is not the worst outcome here and a silent mis-align would be", and padding or cropping a frame to fit would misalign whatever the animator intended in a way no downstream check could ever catch. A clear refusal is the version of "do less" that is actually safe here.
+
+**Scope, measured, not assumed:** 1 of 105 dark-corpus assets. Low frequency is why this was a clean refusal rather than a feature (support resizing canvases) — not enough real assets need it to justify guessing at the right alignment semantics.
+
+## 40. The soft glow was never invisible to the fade detector — it missed the gate by 0.02%
+
+**Also searched as:** outer glow cut off · halo removed · bloom · falloff clipped · light spill · aura · radiance · gradient into black · soft edge on dark · additive light · why is my glow gone · edge stops abruptly
+
+**The filed cause was wrong, and it was wrong in the direction that would have sent the fix somewhere useless.** The repo's own deferred tracker recorded: *"A glow ramps through many colours, none of which is one flat entry, so it clears no threshold."* Measured on the motivating asset — a neon streak with a soft outer glow on flat black, one of 111 dark-background files supplied for the development corpus, which lives in the development repo and is not re-runnable from this package (§23) — the glow ramps through **exactly one** palette colour, and the detector unmixes it cleanly:
+
+| | measured |
+|---|---|
+| art palette `analyze()` builds | **2 colours** — `(1,251,255)` cyan, `(255,11,216)` magenta |
+| pixels unmixing cleanly against the cyan, busiest frame | **33,912** at residual ≤ 10 |
+| of those, at `t < 0.5` (i.e. genuinely faint) | **15,822** |
+| `partial_fraction`, best of all 48 frames | **0.8997698263234987** |
+| the gate | `> 0.9` |
+
+**It misses by 0.00023 — about two pixels in 9,558.** Nothing about "many colours" is involved.
+
+**What actually blocks it is that `detect_fading_colors` classifies a COLOUR when translucency is a property of a PIXEL.** `partial_fraction > 0.9` asks that a fading colour be *almost never solid*. A glow's colour is necessarily both: the bright neon core is the same cyan at `t ≈ 1` and the falloff is that cyan at `t < 1`. Any asset where one colour is simultaneously solid artwork and a translucent element fails this gate by construction — **which is AUTONOMY BACKLOG item 5 verbatim** (gift's sparkle is the same navy as the box outline, drawn at partial opacity). The tracker suspected these two items shared a root; they do, and this is it, measured.
+
+⚠️ **A palette subtlety that will mislead anyone probing this by hand.** Building the palette from ONE frame yields 8 colours including a dim teal `(0,89,95)`, and `detect_fading_colors` fires on it immediately — which looks like the detector working. Building it the way `analyze()` does (all frames) yields 2, because pass 1's blend rejection correctly identifies the dim teal as the bright cyan blended with black and deletes it. **The one-frame probe is measuring a palette the product never uses.** Reproduce the product's palette, or the answer is about a different program (this repo's own rule: validate through the product entry point).
+
+⚠️ **A "wide partial band" replacement rule was built and FALSIFIED, so do not rebuild it.** The idea: antialiasing produces a 1-2px partial ring, a glow produces a deep ramp, so measure the distance of each partial pixel from the nearest solid pixel of the same colour and treat depth as the discriminator. The positive half is beautiful — **every solid-art-with-antialiasing colour across nine assets reads a median depth of exactly 1.00**, a categorical signature rather than a tuned threshold. The negative half kills it: `crystal` (20.2), `heart` (99.3), `explosion` (130.0) and `rocket` (135.7) all carry deep partial bands too, at `partial_fraction` 0.35-0.58 — the same band the glow sits in at 0.407. **Four of the reference assets the tool already handles correctly are indistinguishable from the defect under this rule.** The falsifier population is what found that, and it found it before a line of product code was written.
+
+**What is still open, stated as the question rather than the answer.** Harkirat's call, 2026-08-21: a multi-colour ramp **is** in scope for fade recovery. The promising shape is his — key on the *difference from the background* rather than on absolute colour. An additive glow on black is literally `bg + a·(C − bg)`, which is the exact arithmetic a GIF export performs when it flattens a fade, so the glow's ramp lies **on the ray** from the background to one endpoint colour and `a` falls straight out as position along it. That is the same geometry `detect_fade_ladder` already uses (§34.2) — so the machinery exists and what changes is looking for a RAY rather than for one colour at one flat alpha. ⚠️ **Whatever ships must leave §34.2's hurricane case alone**: a PAINTED fade sits *off* the ray and must keep being rejected. ⚠️ **And moving the `partial_fraction` gate is not a free way to admit this asset** — at 0.89977 it is one nudge away, which is exactly why the nudge has to be measured against the specificity of every asset in the table above rather than justified by the one file that motivated it.
+
+## 41. Recovering the glow works when you NAME the colour; deriving it does not, and the negative population says why
+
+**Also searched as:** name the fade myself · manual fade colour · glow came back · why is this not automatic · cannot tell them apart · overlapping distributions · no threshold works · evidence not a flag · told me but did not do it
+
+§40 established the mechanism: the fade gate asks whether a colour is *almost never solid*, and a glow's colour is necessarily both its solid core and its falloff, so it misses by **0.00023** — about two pixels in 9,558. Harkirat's call was that a multi-colour ramp IS in scope. This section is what carrying that out actually produced.
+
+**The naive option was tested first, end to end, and it WORKS.** `--fade-color` bypasses detection entirely, so naming the ramp's endpoint needs no new machinery at all. On the motivating asset, output to WebP:
+
+| | partial-alpha px | transparent px | `edge_cleanliness` |
+|---|---|---|---|
+| `--auto` (today) | 287,651 | 17,749,852 | 0.0000 |
+| `--fade-color 01fbff` | **779,583** | 17,684,341 | **0.4656** |
+
+⚠️ **Read those two columns TOGETHER, because partial alpha alone is the number a DISASTER also produces.** §35's catastrophic renders are "a translucent ghost of the whole frame" — enormous partial alpha. What separates a recovered falloff from a ghost is that `bg_removed_worst` held at **0.9882 → 0.9874**, i.e. the background is still being removed while the glow's ramp came back. Quoting the 2.7× on its own would have been the same mistake this repo has already made once, certifying an asset on a measure that cannot fail in the direction that matters. Visual confirmation is still the last word, and it was taken: Harkirat, 2026-08-21 — *"the falloff kept version looks much nicer."* The pixel counts and his eye agree, which is the pairing this repo's own history says to insist on. So the question was never "can this be recovered", it was "can the colour be DERIVED".
+
+⚠️ **IT CANNOT, AND THIS WAS MEASURED AGAINST THE RIGHT NEGATIVE POPULATION RATHER THAN ARGUED.** The branch this asset lands in — the cheap gradient-fade screen fires, `detect_fading_colors` returns nothing — holds **92 assets** across the dark, trial and reference corpora, 91 of which carry a measurable ramp candidate to rank. That is precisely the population §35 measured as catastrophic to recover: `bg_removed_worst` **0.0000** on its worst case, a translucent ghost of the entire frame. Three candidate statistics were computed over all 91 — how deep the partial band runs, how much pixel mass sits below half opacity, and what fraction of the colour that mass is:
+
+| asset | faint fraction | band depth | partial fraction | faint px |
+|---|---|---|---|---|
+| the glow (the positive) | 0.467 | 11.31 | 0.407 | 15,822 |
+| §35's asset at `bg_removed_worst` 0.1759 | 0.481 | 9.00 | 0.571 | 13,689 |
+| §35's asset at `bg_removed_worst` 0.0000 | 0.354 | 6.71 | 0.317 | 7,779 |
+
+**They interleave on every axis**, and the glow ranks **11th of 91** on faint-pixel mass — ten assets in the dangerous population carry a STRONGER ramp signal than the one asset the rule was meant to admit. Any threshold that lets the glow through lets those through with it. ⚠️ This is the second falsified candidate for the same question: §40 records the first (band DEPTH alone, killed by four reference assets that already work). **Both died the same way — a positive class of one against a negative class nobody had assembled until the rule was built.**
+
+**So the product is a named candidate, not an applied flag.** `strongest_background_ramp_candidate` runs on one busy frame and reports the colour, its faint pixel count and the frame it was measured on; `--recommend` prints it in place of the old "there is nothing for `--recover-fade-alpha` to reconstruct":
+
+> ⚠️ EXPECT THE OUTER FALLOFF OF ANY SOFT GLOW OR HALO TO BE CUT on this asset: 15822 pixels on frame 2 unmix cleanly as `01fbff` fading toward the background (below half opacity), and every one of them is removed as background. If that falloff is artwork, re-run with `--fade-color 01fbff` and a WebP/AVIF output…
+
+⚠️ **This is a real autonomy improvement even though it stops short of acting.** The old text told a run there was nothing to recover, which is false — there are 15,822 pixels of it, and the run had no way to find the colour. The new text is correct, names the exact flag and value verified to produce the good output, and states what will be lost if nobody acts. **A warning nobody can act on changes nothing; a warning that hands over the exact command is a different object** — and it is the honest one where the decision genuinely cannot be made from the numbers. The falsifier suite includes a guard that fails if a future change turns the candidate into an emitted flag.
+
+**The corpus gate, PRE/POST through `analyze()` on 910 assets, and the attribution matters as much as the numbers.** Exactly **4 of 910 records differ**: three are the assets the `--analyze` crash fix recovered (`pred: None → False`, all labelled `antialiased`, so all three become correct true negatives), and one is `Pixel Saber.gif`, whose nomination added 5 frames and moved `antialiasing_blend_ratio` 1.039 → 2.493 **without moving its verdict**. Recall is **identical, 0.9618 → 0.9618**; specificity **0.8529 → 0.8540**, which is precisely the three recovered assets; records carrying an error **4 → 1**.
+
+⚠️ **AND THE FIGURE THAT LOOKED LIKE A REGRESSION WAS A DENOMINATOR.** The POST run's 0.9618 sits below the 0.9644 this repo has published, which reads as a drop until the PRE run lands on the same 0.9618 — the published figure is over a different population set (797 assets against this run's 910, scoring 744). **Two recall numbers are not comparable until you have checked they are fractions of the same thing**, and the only reason that was caught rather than written up as a regression is that the PRE run was taken with the same harness rather than trusted from a document.
+
+⚠️ **A probe trap worth repeating from §40, because it will mislead anyone re-deriving this.** Building the art palette from ONE frame yields 8 colours here and the detector fires immediately, which looks like the rule working. `analyze()` builds it from all frames and gets 2, because pass 1 correctly deletes the dim stages as blends of the bright one. The one-frame probe measures a palette the product never uses.
+
+## 42. Downscaling flat vector art makes the file BIGGER, so a size ladder that tries resolution before frames hands back the wrong file
+
+**Also searched as:** shrinking made it bigger · resize did not help · smaller image larger file · target-kb picked a tiny image · why is my sticker 160px · lost resolution to hit a size cap · downscale backfired · resolution versus frame rate · which compression lever pays · ladder order · cascade order wrong · resampling added colours · flat colour stopped being flat · quarter resolution · size search · step of the ladder · byte cap · fit the limit
+
+**The measurement, on `galaxy.gif` — 640x640 flat vector art, 2026-08-21.** Every rung of `--target-kb`'s WebP ladder was encoded and measured, all 120 of them. At native resolution:
+
+| scale | lossless | q95 | q90 | q80 | q70 | q60 |
+|---|---|---|---|---|---|---|
+| 1.0 (640px) | **2333 KB** | 3681 | 3056 | 2340 | 2022 | 1901 |
+| 0.75 (480px) | **5367 KB** | 3996 | 3492 | 2875 | 2598 | 2479 |
+| 0.5 (320px) | 3500 | 2609 | 2310 | 1927 | 1746 | 1670 |
+| 0.375 (240px) | 2656 | 1942 | 1715 | 1436 | 1305 | 1247 |
+| 0.25 (160px) | 1642 | 1263 | 1118 | 946 | 861 | 823 |
+
+⚠️ **Downscaling to 75% made the file 2.3x LARGER.** It stays larger than the native baseline at 0.5 and 0.375 too; only 0.25 — a sixteenth of the area — finally beats it. The mechanism is not mysterious: LANCZOS interpolation of flat colour invents intermediate colours at every edge, so the art stops being flat and lossless WebP's entropy jumps. `--pixel-art` uses NEAREST and does not have this problem, which is a good check that the explanation is the right one.
+
+**Meanwhile frame-stride 2 at full resolution is 1183 KB** — smaller than every one of those scale rungs except the 160px ones, at no resolution cost at all. So on this content **stride 2 strictly dominates 480px, 320px and 240px on BOTH size and resolution**, and the old ladder tried all three of them first.
+
+**The consequence, computed over the same measured table.** The ladder returns the first rung that fits, walking quality, then resolution, then frames. Five of seven realistic targets changed once deep downscale was demoted below frame-stride:
+
+| target | old order delivered | new order delivers |
+|---|---|---|
+| 2400 KB | 640px, all frames, lossless (2333) | unchanged |
+| 2000 KB | 640px, all frames, q60 (1901) | unchanged |
+| 1500 KB | 240px, all frames, q80 (1436) | **640px, half the frames, lossless (1183)** |
+| 1200 KB | 160px, all frames, q90 (1118) | **640px, half the frames, lossless (1183)** |
+| 1000 KB | 160px, all frames, q80 (946) | **640px, half the frames, q60 (958)** |
+| 900 KB | 160px, all frames, q70 (861) | **640px, a third of the frames, lossless (773)** |
+| 800 KB | 240px, half the frames, q80 (729) | **640px, a third of the frames, lossless (773)** |
+
+Every changed row keeps full resolution. The 1000 KB row is the honest cost of the trade: 958 KB instead of 946, i.e. a slightly larger file, for four times the linear resolution.
+
+**⚠️ `--pixel-art` keeps the OLD order, and that is the sharpest evidence that the explanation above is the right one.** The mechanism is the RESAMPLER, so it should vanish under NEAREST — and it does. Measured on one 500x500 pixel-art asset, native-lossless down the scale axis:
+
+| resampler | 1.0 | 0.75 | 0.5 | 0.375 | 0.25 |
+|---|---|---|---|---|---|
+| LANCZOS (default) | 2 KB | **34 KB** | 30 | 25 | 18 |
+| NEAREST (`--pixel-art`) | 2 KB | 2 | 2 | 2 | 1 |
+
+Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST the ladder is monotone, exactly as a size ladder assumes. So for pixel art, downscaling genuinely pays and demoting it would trade frames away for nothing. This carve-out exists because the reranking was very nearly applied to both — a conclusion measured on one content type, generalised to the other, which is the failure this project has a memory about. Check which resampler your content uses before quoting any of these numbers.
+
+**⚠️ Only the DEEP end moved.** 0.75 and 0.5 still rank above frame-stride, because "dropping frames is the most visible loss" is right about a MODERATE downscale and was only ever wrong about a drastic one. Reversing the whole axis would have been a different claim, and an unmeasured one.
+
+**⚠️ What was NOT wrong, and was nearly "fixed" anyway.** The first diagnosis was that non-monotone rung sizes break the search — that the ladder claims to pick the least destructive fitting rung and fails. It does not. First-fit over a TOTAL ORDER is the least destructive fitting element, whatever the sizes do, because any earlier rung that fitted would already have returned. Non-monotonicity costs **encodes**, not correctness: 24 of galaxy's 30 native-stride rungs came out larger than the baseline and were pure waste. The real defect was the ordering itself, which is a different and much bigger claim, and it needed a product decision rather than a bug fix.
+
+**The search is a real grid, and it now runs concurrently.** 120 rungs, ordered least-destructive-first by an explicit cost model (`_SCALE_COST`/`_STRIDE_COST` in the script). Because the order is total, evaluating a chunk of rungs at once and then taking the earliest-in-order that fits returns exactly what a serial walk returns — asserted by running the same asset both ways and comparing the chosen rung and the bytes, not by arguing that they structurally cannot differ. The worker count is **probed, never assumed**: a cgroup CPU quota first (a container's limit is invisible to `os.cpu_count()`), then Apple Silicon performance cores, then logical cores; memory from the cgroup limit, then `MemAvailable`, then `vm_stat`. **Anything that cannot be probed returns 1 worker**, i.e. the serial behaviour that existed before — because the deployment sandbox's profile is unknown and a guessed worker count could thrash a small container into swap. Per-worker memory is measured from the actual frame arrays rather than assumed, so a 64px sticker and a 640px 177-frame animation are not costed the same.
+
+**What the concurrency is actually worth, measured back to back in one process on the same 129-frame 640x640 asset: 528s serial -> 277s at 6 workers, a 1.90x speedup, with byte-identical results and the same chosen rung.** Not the 6x a core count suggests — the encoder holds the interpreter lock for part of each encode — so quoting the worker count as a speedup would be wrong by a factor of three. Both ends were re-measured in the same run rather than compared against an older snapshot.
+
+**If you see the fit log say `NOTE: downscaling made this file LARGER than full resolution`,** that is this section firing on your asset: the resolution lever is not paying, and the size will come from frames or from quality.

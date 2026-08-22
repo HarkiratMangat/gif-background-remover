@@ -28,12 +28,16 @@ set cannot express the change" (references/lessons.md SS29.10).
   python3 scripts/harness/render_baseline.py --out base.json --set standard
   python3 scripts/harness/render_baseline.py --compare base.json new.json
 """
-import argparse, hashlib, json, os, shutil, subprocess, sys, tempfile, time
+import argparse
+import concurrent.futures as cf, hashlib, json, os, shutil, subprocess, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from populations import iter_assets
 
 ROOT = "/Applications/Claude Code/Gif-Background-Remover"
 DEFAULT_SCRIPT = os.path.join(ROOT, 'scripts/remove_gif_background.py')
+from machine import default_jobs as _default_jobs   # noqa: E402
+from snapshot import freeze
+DEFAULT_JOBS = _default_jobs()
 # ⚠️ --script is REQUIRED for a comparison run, and this is why: the first
 # attempt at a pre-fix baseline read the working-tree script on every asset, and
 # the working tree was edited 15 minutes into the run. Forty assets were measured
@@ -44,8 +48,12 @@ SCRIPT = DEFAULT_SCRIPT
 # Only the alpha-carrying populations can regress on a source-transparency
 # change, and `labelled` is the opaque control that must NOT move.
 SETS = {
-    'standard': dict(labelled=None, alphas=None, sprites=40, corpus=None),
-    'fast': dict(labelled=8, alphas=8, sprites=8),
+    # `trial` is in BOTH sets and is never subsampled. Until 2026-08-20 the render gate did
+    # not contain a single asset a human had complained about, which is why a change to the
+    # incidental-region verdict could come back "214 vs 214, 0 changed" while visibly fixing
+    # the asset that motivated it. These 6 are the ones with a complaint attached.
+    'standard': dict(labelled=None, alphas=None, sprites=40, corpus=None, trial=None),
+    'fast': dict(labelled=8, alphas=8, sprites=8, trial=None),
     'full': dict(labelled=None, alphas=None, sprites=None, corpus=None, emoji=None),
 }
 
@@ -171,19 +179,21 @@ def run(a):
     # tree AGAIN, during a run whose whole purpose was to measure the edits being
     # made. "Be careful not to edit during a run" is not a fix -- freezing a copy
     # here is, because it cannot be forgotten.
-    snap = os.path.join(tempfile.mkdtemp(prefix='script_snapshot_'), 'under_test.py')
-    shutil.copy2(a.script, snap)
-    src_digest = hashlib.sha256(open(a.script, 'rb').read()).hexdigest()[:12]
-    a.script = snap
+    a.script, src_digest = freeze(a.script)
     print(f"{len(assets)} assets, set={a.set}, script frozen from {src_digest}", flush=True)
     out = {}; t0 = time.time(); partial = a.out + '.partial'
     tmp = tempfile.mkdtemp(prefix='render_baseline_')
-    for i, (key, path, pop, lab) in enumerate(assets):
+
+    def one(i_row):
+        """Everything for a single asset: the native render and, unless disabled, the
+        resize pass. Returns [(key, rec), ...]. Each asset owns its own `dst` path,
+        indexed by position, so two workers can never collide on the same file."""
+        i, (key, path, pop, lab) = i_row
         ext = os.path.splitext(path)[1].lower()
         dst = os.path.join(tmp, f"{i:04d}{ext if ext in ('.gif','.png','.webp','.avif') else '.gif'}")
         rec = {'pop': pop, 'label': lab, 'path': os.path.relpath(path, ROOT)}
         rec.update(render_once(a.script, path, dst))
-        out[key] = rec
+        pairs = [(key, rec)]
         # Second pass, same asset, through --resize-max-dim. Recorded under its own
         # key rather than as extra fields on the first record so the schema stays
         # uniform and `compare` needs no special case: against a pre-resize baseline
@@ -194,14 +204,28 @@ def run(a):
             if dim is None:
                 rrec['skipped'] = 'source smaller than 64px'
             else:
-                rrec.update(render_once(a.script, path, dst,
-                                        ['--resize-max-dim', str(dim)]))
-            out[key + ' [resize]'] = rrec
-        # Written EVERY asset, not every tenth: the partial file is the only
-        # honest progress signal, and a cadence of 10 made a 24-asset run look
-        # stalled at 1 record for two minutes.
-        json.dump(out, open(partial, 'w'), indent=1)
-        print(f"  {i+1}/{len(assets)} {time.time()-t0:.0f}s {key[:60]}", flush=True)
+                rrec.update(render_once(a.script, path, dst, ['--resize-max-dim', str(dim)]))
+            pairs.append((key + ' [resize]', rrec))
+        return pairs
+
+    # ⚠️ THREADS, not processes, and that is deliberate. Every unit of work here is a
+    # `subprocess.run` of the CLI, so the GIL is released for essentially the whole
+    # duration and threads get the same speedup a process pool would -- without the
+    # macOS `spawn` re-import trap that silently killed run_populations.py's first
+    # parallel version (the module re-executed its argparse at import and every worker
+    # died, and the only reason it was caught is that no output file appeared).
+    done = 0
+    with cf.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
+        futs = {ex.submit(one, (i, row)): row[0] for i, row in enumerate(assets)}
+        for f in cf.as_completed(futs):
+            for k, rec in f.result():
+                out[k] = rec
+            done += 1
+            # Written EVERY asset, not every tenth: the partial file is the only
+            # honest progress signal, and a cadence of 10 made a 24-asset run look
+            # stalled at 1 record for two minutes.
+            json.dump(out, open(partial, 'w'), indent=1)
+            print(f"  {done}/{len(assets)} {time.time()-t0:.0f}s {futs[f][:60]}", flush=True)
     json.dump({'_set': a.set, '_script': a.script, '_script_sha256_12': src_digest,
                '_seconds': round(time.time() - t0, 1), 'records': out},
               open(a.out, 'w'), indent=1)
@@ -228,8 +252,17 @@ def compare(pa, pb):
         head = f"  {k}  [{a.get('label')}/{a.get('pop')}]"
         if 'opaque_total' in d:
             x, y = d['opaque_total']
-            pct = (100.0 * y / x) if x else float('nan')
-            head += f"  opaque {x} -> {y} ({pct:.1f}%)"
+            # ⚠️ EITHER SIDE CAN BE None -- an asset that RENDERED on one side and was
+            # REFUSED on the other has no opaque count there, and `100.0 * None` is a
+            # TypeError that kills the whole comparison after the header has already
+            # printed "19 changed". Hit for real on 2026-08-20, the first time a release
+            # diff spanned a change that adds a refusal: the gate reported a number and
+            # then crashed before naming a single asset, which is the worst of both.
+            if x is None or y is None:
+                head += f"  opaque {x} -> {y}  (no output on one side)"
+            else:
+                pct = (100.0 * y / x) if x else float('nan')
+                head += f"  opaque {x} -> {y} ({pct:.1f}%)"
         elif 'alpha_sha256' in d:
             head += "  alpha CHANGED (same opaque count)"
         for f in ('returncode', 'no_output', 'frames', 'size'):
@@ -250,6 +283,14 @@ if __name__ == '__main__':
     ap.add_argument('--no-resize-pass', action='store_true',
                     help='skip the --resize-max-dim second pass (halves runtime, and blinds '
                          'the gate to the nearest-vs-LANCZOS filter switch)')
+    ap.add_argument('--jobs', type=int, default=DEFAULT_JOBS,
+                    help='parallel renders. Defaults to %(default)s (min(8, cpu_count)); pass 1 '
+                         'to force serial. Each unit is a CLI subprocess, so THREADS scale it '
+                         'without the macOS spawn re-import trap. Measured on the fast set: '
+                         '440s serial -> 212s at 8 (2.2x, floored by one 212s asset), and '
+                         '--jobs 1 vs --jobs 8 gives 46 vs 46 records, 0 changed. ⚠️ Timings '
+                         'printed under --jobs > 1 are wall clock for the RUN, never per-asset '
+                         'cost, and must not be quoted as the latter.')
     ap.add_argument('--compare', nargs=2, metavar=('A', 'B'))
     a = ap.parse_args()
     if a.compare:
