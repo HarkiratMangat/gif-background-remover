@@ -2625,6 +2625,15 @@ Found 2026-08-20 while working in the same gate. `fade_colors_confirmed` is deli
 
 Every changed row keeps full resolution. The 1000 KB row is the honest cost of the trade: 958 KB instead of 946, i.e. a slightly larger file, for four times the linear resolution.
 
+**⚠️ `--pixel-art` keeps the OLD order, and that is the sharpest evidence that the explanation above is the right one.** The mechanism is the RESAMPLER, so it should vanish under NEAREST — and it does. Measured on one 500x500 pixel-art asset, native-lossless down the scale axis:
+
+| resampler | 1.0 | 0.75 | 0.5 | 0.375 | 0.25 |
+|---|---|---|---|---|---|
+| LANCZOS (default) | 2 KB | **34 KB** | 30 | 25 | 18 |
+| NEAREST (`--pixel-art`) | 2 KB | 2 | 2 | 2 | 1 |
+
+Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST the ladder is monotone, exactly as a size ladder assumes. So for pixel art, downscaling genuinely pays and demoting it would trade frames away for nothing. This carve-out exists because the reranking was very nearly applied to both — a conclusion measured on one content type, generalised to the other, which is the failure this project has a memory about. Check which resampler your content uses before quoting any of these numbers.
+
 **⚠️ Only the DEEP end moved.** 0.75 and 0.5 still rank above frame-stride, because "dropping frames is the most visible loss" is right about a MODERATE downscale and was only ever wrong about a drastic one. Reversing the whole axis would have been a different claim, and an unmeasured one.
 
 **⚠️ What was NOT wrong, and was nearly "fixed" anyway.** The first diagnosis was that non-monotone rung sizes break the search — that the ladder claims to pick the least destructive fitting rung and fails. It does not. First-fit over a TOTAL ORDER is the least destructive fitting element, whatever the sizes do, because any earlier rung that fitted would already have returned. Non-monotonicity costs **encodes**, not correctness: 24 of galaxy's 30 native-stride rungs came out larger than the baseline and were pure waste. The real defect was the ordering itself, which is a different and much bigger claim, and it needed a product decision rather than a bug fix.

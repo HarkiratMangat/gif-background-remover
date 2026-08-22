@@ -5887,19 +5887,40 @@ def detect_worker_capacity(per_worker_mb, explain=False):
 _SCALE_COST = {1.0: 0, 0.75: 10, 0.5: 20, 0.375: 45, 0.25: 60}
 _STRIDE_COST = {1: 0, 2: 25, 3: 35, 4: 42}
 
+# ⚠️ PIXEL ART KEEPS THE OLD ORDER, and this is not a hedge -- the mechanism above is
+# specific to the RESAMPLER, and pixel art uses a different one. Measured on the same
+# 500x500 asset 2026-08-21, native-lossless down the scale axis:
+#     LANCZOS (default)     2 KB -> 34 -> 30 -> 25 -> 18   (0.75 is 17x the native size)
+#     NEAREST (--pixel-art) 2 KB ->  2 ->  2 ->  2 ->  1   (monotone, as a ladder assumes)
+# NEAREST cannot invent an intermediate colour, so the art stays flat and downscaling
+# genuinely shrinks the file. Demoting deep downscale there would trade frames away for
+# nothing.
+#
+# ⚠️ The stride costs are spaced far wider than the scale+quality range here ON PURPOSE:
+# the pixel-art ladder has to be strictly lexicographic (stride, then scale, then quality)
+# to reproduce the pre-2026-08-21 enumeration EXACTLY, and a first attempt that reused the
+# antialiased stride table did not -- at index 43 the gap between stride 3 (35) and
+# stride 4 (42) was narrower than the widest scale+quality rung (45), so stride-3 rungs
+# slipped in among stride-2's. The suite caught it; the arithmetic was not obvious by eye.
+_SCALE_COST_NEAREST = {1.0: 0, 0.75: 10, 0.5: 20, 0.375: 30, 0.25: 40}
+_STRIDE_COST_NEAREST = {1: 0, 2: 100, 3: 200, 4: 300}
 
-def _rung_cost(stride, scale, quality, lossless, quality_rank):
-    return (_STRIDE_COST.get(stride, 50) + _SCALE_COST.get(scale, 70)
+
+def _rung_cost(stride, scale, quality, lossless, quality_rank, scale_cost, stride_cost):
+    return (stride_cost.get(stride, max(stride_cost.values()) + 50)
+            + scale_cost.get(scale, max(scale_cost.values()) + 20)
             + (0 if lossless else quality_rank))
 
 
-def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4)):
+def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4), pixel_art=False):
     """Every (stride, scale, quality, lossless) rung, ordered least-destructive first.
 
     Returned as a total order, so "the first rung that fits" IS "the least destructive rung
     that fits" -- that equivalence is what lets the search evaluate rungs concurrently and
     still return exactly what a serial first-fit would.
     """
+    scale_cost = _SCALE_COST_NEAREST if pixel_art else _SCALE_COST
+    stride_cost = _STRIDE_COST_NEAREST if pixel_art else _STRIDE_COST
     rungs = []
     for stride in strides:
         for scale in scales:
@@ -5907,11 +5928,17 @@ def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4)):
                 ladder = [(q, False) for q in (95, 85, 75, 65, 55, 45)]
             elif fmt == 'apng':
                 # No quality knob at all: resolution and frames are the only levers.
+                # ⚠️ This used to be the same six-quality ladder as WebP, and `encode()`'s
+                # APNG branch ignores `quality` entirely -- so every (stride, scale) was
+                # encoded SIX TIMES to six byte-identical files, and the first fit was
+                # always the lossless one anyway. Collapsing it is a 6x saving on APNG that
+                # provably cannot change which file is delivered.
                 ladder = [(100, True)]
             else:
                 ladder = [(100, True)] + [(q, False) for q in (95, 90, 80, 70, 60)]
             for rank, (quality, lossless) in enumerate(ladder):
-                rungs.append((_rung_cost(stride, scale, quality, lossless, rank),
+                rungs.append((_rung_cost(stride, scale, quality, lossless, rank,
+                                         scale_cost, stride_cost),
                               stride, -scale, rank, quality, lossless))
     rungs.sort()
     return [(stride, -negscale, quality, lossless)
@@ -5924,8 +5951,10 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
     Shrink a WebP/AVIF/APNG under `target_kb`, preferring the least destructive lever
     first. Measured ordering (references/lessons.md SS16 and SS42), NOT guesswork:
 
-      * Quality before resolution before frames -- except that a DEEP downscale now ranks
-        below frames, on the galaxy measurement recorded above `_SCALE_COST`.
+      * Quality before resolution before frames -- except that a DEEP downscale ranks
+        below frames for ANTIALIASED art, on the galaxy measurement recorded above
+        `_SCALE_COST`. `--pixel-art` keeps the original order, because NEAREST resampling
+        cannot invent a colour and its scale ladder is measurably monotone.
       * For WebP at NATIVE resolution, lossy is worse than lossless on BOTH axes (2675 KB
         at q85 vs 2114 KB lossless), so the ladder only reaches for WebP lossy once the
         frames have been scaled down, where the ordering genuinely reverses (at 128px:
@@ -5966,7 +5995,8 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
     # fit, say so rather than quietly delivering a different size.
     _pinned = getattr(args, 'resize_max_dim', None) is not None
     _scales = (1.0,) if _pinned else (1.0, 0.75, 0.5, 0.375, 0.25)
-    rungs = build_target_rungs(fmt, _scales)
+    rungs = build_target_rungs(fmt, _scales,
+                               pixel_art=bool(getattr(args, 'pixel_art', False)))
 
     # Per-worker memory measured from the ACTUAL frames, not a constant: an encode holds a
     # resized copy of what it was handed, so a 64px sticker and a 640px 177-frame animation

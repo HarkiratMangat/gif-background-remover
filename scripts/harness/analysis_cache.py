@@ -40,6 +40,14 @@ def script_sha(script_path):
 
 ANALYSIS_ROOTS = ('analyze',)
 
+# ⚠️ Memoised on (path, mtime, size) because `_entry_path` calls the fingerprint ONCE PER
+# ASSET. Measured 2026-08-21: parsing this 9,000-line script costs 66.2 ms against
+# `script_sha`'s 0.33 ms, which on a 797-asset re-score is **52.8 seconds of pure overhead**
+# -- added to the run whose whole purpose is to be fast, and spent inside worker threads
+# competing with the real work. The memo key is the same (mtime, size) pair the cache
+# already trusts to tell one version of a file from another, so it cannot outlive an edit.
+_FINGERPRINT_MEMO = {}
+
 
 def _reachable(funcs, roots):
     """Every module-level function transitively reachable from `roots`, following both
@@ -111,6 +119,13 @@ def analysis_fingerprint(script_path, roots=ANALYSIS_ROOTS):
     `script_sha`; do not assume the closure found it.
     """
     try:
+        st = os.stat(script_path)
+        memo_key = (os.path.abspath(script_path), st.st_mtime_ns, st.st_size, tuple(roots))
+        if memo_key in _FINGERPRINT_MEMO:
+            return _FINGERPRINT_MEMO[memo_key]
+    except OSError:
+        memo_key = None
+    try:
         with open(script_path, 'rb') as fh:
             raw = fh.read()
         tree = ast.parse(raw.decode('utf-8'))
@@ -127,7 +142,10 @@ def analysis_fingerprint(script_path, roots=ANALYSIS_ROOTS):
         material = '|'.join(ast.dump(_strip_docstrings(n)) for n in ambient)
         material += '||' + '|'.join(ast.dump(_strip_docstrings(funcs[n]))
                                     for n in sorted(reach))
-        return 'a' + hashlib.sha256(material.encode()).hexdigest()[:15]
+        out = 'a' + hashlib.sha256(material.encode()).hexdigest()[:15]
+        if memo_key is not None:
+            _FINGERPRINT_MEMO[memo_key] = out
+        return out
     except Exception:
         # Any doubt at all -> the whole-file SHA, which invalidates on every byte.
         return script_sha(script_path)

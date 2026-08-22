@@ -197,3 +197,28 @@ def test_cached_analyze_hits_across_an_out_of_closure_edit_and_misses_across_an_
     inside = _copy_with_probe_in(REAL, str(tmp_path / 'inside.py'), IN_CLOSURE)
     _, hit = AC.cached_analyze(R, asset, inside)
     assert hit is False, 'an edit analyze() CAN reach must invalidate'
+
+
+# --------------------------------------------------------------------------
+# The memo -- an optimisation that must not be able to outlive an edit
+# --------------------------------------------------------------------------
+
+def test_the_fingerprint_is_memoised_and_the_memo_is_measurably_worth_it():
+    """Measured 2026-08-21: 66.2 ms per parse vs 0.33 ms for script_sha, and `_entry_path`
+    calls it once per asset -- 52.8s of pure overhead on a 797-asset run without this."""
+    import time
+    AC._FINGERPRINT_MEMO.clear()
+    t = time.time(); AC.analysis_fingerprint(REAL); cold = time.time() - t
+    t = time.time(); AC.analysis_fingerprint(REAL); warm = time.time() - t
+    assert warm < cold / 5, f'memo bought nothing: {cold*1000:.1f}ms -> {warm*1000:.1f}ms'
+
+
+def test_the_memo_cannot_serve_a_stale_fingerprint_after_an_edit(tmp_path):
+    """The whole failure mode this cache exists to avoid, one level down: a memo keyed on
+    the path alone would hand back the pre-edit key for the rest of the process."""
+    dst = str(tmp_path / 'prod.py')
+    shutil.copy(REAL, dst)
+    before = AC.analysis_fingerprint(dst)
+    _copy_with_probe_in(REAL, dst, IN_CLOSURE)      # same path, new contents
+    os.utime(dst, (0, 0))                            # force a distinct mtime
+    assert AC.analysis_fingerprint(dst) != before

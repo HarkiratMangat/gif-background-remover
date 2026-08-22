@@ -181,3 +181,51 @@ def test_an_unreachable_target_still_leaves_the_smallest_attempt_on_disk(tmp_pat
     assert hit is False
     assert os.path.getsize(out) == size
     assert any('Could not reach' in l for l in log)
+
+
+# --------------------------------------------------------------------------
+# Pixel art keeps the old order -- the reranking is a property of the RESAMPLER
+# --------------------------------------------------------------------------
+
+def _old_order(scales):
+    """The pre-2026-08-21 enumeration, written out longhand: stride outermost, then
+    scale, then quality. Reproduced here so the pixel-art claim is checked against the
+    real thing rather than against a description of it."""
+    out = []
+    for st in (1, 2, 3, 4):
+        for sc in scales:
+            out.append((st, sc, 100, True))
+            out += [(st, sc, q, False) for q in (95, 90, 80, 70, 60)]
+    return out
+
+
+def test_pixel_art_reproduces_the_original_ladder_exactly():
+    """Measured on a 500x500 pixel-art asset: NEAREST down the scale axis gives
+    2/2/2/2/1 KB (monotone) where LANCZOS on the SAME asset gives 2/34/30/25/18 -- 0.75 is
+    seventeen times the native size. The demotion is a property of the resampler, so
+    applying it to NEAREST would trade frames away for nothing."""
+    assert R.build_target_rungs('webp', SCALES, pixel_art=True) == _old_order(SCALES)
+
+
+def test_antialiased_art_does_NOT_get_the_original_ladder():
+    """The other half. Without this, the test above would pass against a build where the
+    reranking had been reverted outright."""
+    assert R.build_target_rungs('webp', SCALES, pixel_art=False) != _old_order(SCALES)
+
+
+def test_the_search_actually_reads_the_pixel_art_flag(tmp_path):
+    """Behaviour, not signature: the flag has to reach `build_target_rungs` from `args`."""
+    src = _asset(str(tmp_path / 'src.gif'))
+    rgb, alpha, dur = _frames(src)
+
+    class PA(_Args):
+        pixel_art = True
+
+    log_pa, log_aa = [], []
+    R.fit_to_target_bytes(rgb, alpha, dur, 0, str(tmp_path / 'pa.webp'), 0.0001,
+                          'webp', PA(), log=log_pa, jobs=4)
+    R.fit_to_target_bytes(rgb, alpha, dur, 0, str(tmp_path / 'aa.webp'), 0.0001,
+                          'webp', _Args(), log=log_aa, jobs=4)
+    order_pa = [l for l in log_pa if l.startswith('  tried')]
+    order_aa = [l for l in log_aa if l.startswith('  tried')]
+    assert order_pa != order_aa, 'pixel_art did not change the order the rungs were tried in'
