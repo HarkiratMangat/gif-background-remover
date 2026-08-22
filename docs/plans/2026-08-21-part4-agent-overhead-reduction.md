@@ -67,7 +67,9 @@ The COIN-FLIP enclosure wording (§38's fix, the other documentation confusion t
 All five of the 2026-08-19 trial's defects are already shipped or deliberately bounded (checked this session — see the outcome table in `docs/plans/2026-08-20-post-trial-defects.md`, cross-referenced above). **There is no remaining backlog item from that trial to re-fix.** What Task C actually is: the trial and tonight's own session (the frame-coalescing bug, the `Starters!` thin-rim finding) both demonstrate the same pattern — an agent burns many tool calls investigating something the tool could have flagged BEFORE the agent had to discover it by rendering and comparing. The blank-frame scan is the worked example of turning that into a proactive check.
 
 - [ ] **Standing practice, not a task list:** whenever a future live session (a real job, a trial, an audit) produces a multi-step investigation that resolves to "the tool could have said this up front," file it as a candidate pre-flight check the same way the blank-frame scan was filed and built — cheap, every-frame, no sampling gap. Do not wait for a batch of five to accumulate before acting on one.
-- [ ] **One concrete candidate already on the table from tonight:** the small/thin-art-component erosion exemption (validated against 20 of 42 residue assets this session) is exactly this pattern — `check_erosion_damage`'s WARNING already detects it, print-only, and nothing acts on it. **This lives in Part 2's scope, not Part 4's** — flagged here only so Part 4 doesn't accidentally re-propose it as new work when Part 2 picks it up next session.
+- [x] ~~**One concrete candidate already on the table from tonight:** the small/thin-art-component erosion exemption … **This lives in Part 2's scope, not Part 4's**~~ — ✅ **STRUCK 2026-08-21.** Part 2 shipped it (warnings 56 → 0 across 336 assets, 22 clean controls score-identical, `references/lessons.md` §37.9). Nothing for Part 4 to pick up here.
+
+**Task C's standing practice produced one candidate DURING Part 4 itself, and it was acted on rather than filed:** the `--target-kb` ladder's own fit log now says `NOTE: downscaling made this file LARGER than full resolution` when it detects the non-monotonicity — the tool saying up front what agent 2 spent 9 renders discovering by hand. That is the pattern this task describes, closed in the same session it was noticed.
 
 **Model + effort:** not applicable — this is a practice to carry forward, not a scoped implementation task. Re-evaluate model/effort per candidate when one is actually filed.
 
@@ -91,6 +93,17 @@ All five of the 2026-08-19 trial's defects are already shipped or deliberately b
 **Model + effort:** `Opus5-High`. Premise risk is the real cost here, not deliberation load — the framing "their version is better because it started from ours" is plausible and unverified, and the honest outcome may be that little transfers. Reading another repo's architecture and judging what genuinely applies across a sandbox boundary is exactly the premise-risk axis.
 
 ---
+
+## Outcome — executed 2026-08-21
+
+| Task | Outcome |
+|---|---|
+| **A** | ✅ Shipped. Positionals became a PATH list; `--out-dir` derives names; `--batch` and the new path share one per-job runner. Single-file `--recommend` stdout byte-identical to PRE apart from the script's own path; plain and `--auto` single-file renders byte-identical files. 13 falsifiers. Step 4 shipped as (a) — the `cat` warning — with the size question sidestepped rather than answered, because a counted size would rot the way four other counted claims in this repo already did. |
+| **B** | ✅ Shipped, with one premise corrected mid-flight. Step 1's check found the grid search ALREADY existed (`fit_to_target_bytes` for 8-bit alpha, `optimize_to_target` for GIF) and `--crop` already trims canvas — so Step 3 was not "build" but "re-order and parallelise". Step 2's ask-first gate is in SKILL.md verbatim as specified. Step 4's parallelism was justified by measurement, not assumed: the grid is up to 120 real encodes. Step 5's falsifier ("no constraint → full resolution, untouched") exists with a positive control. |
+| **C** | ✅ Struck above — Part 2 shipped the erosion exemption. The standing practice produced and closed one candidate during Part 4 itself. |
+| **D** | ✅ Investigated and partly adopted. Full write-up: `docs/investigations/2026-08-21-diors-builds-caching-transfer.md`. |
+
+⚠️ **The plan's own diagnosis of Task B was wrong, and the correction is worth keeping.** It framed the `--target-kb` problem as a missing search. The search existed. The first re-framing — that non-monotone rung sizes break first-fit — was also wrong: first-fit over a TOTAL ORDER is the least-destructive fitting element whatever the sizes do. Non-monotonicity costs **encodes**, not correctness. The real defect was the ORDERING (resolution degraded before frames), which is a product decision, and it went back to Harkirat rather than being fixed unilaterally.
 
 ## Self-Review
 

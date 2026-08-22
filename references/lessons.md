@@ -75,6 +75,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 39. [A GIF whose later frames resize the canvas crashed deep inside `analyze()` with no indication why](#39-a-gif-whose-later-frames-resize-the-canvas-crashed-deep-inside-analyze-with-no-indication-why)
 40. [The soft glow was never invisible to the fade detector — it missed the gate by 0.02%](#40-the-soft-glow-was-never-invisible-to-the-fade-detector--it-missed-the-gate-by-002)
 41. [Recovering the glow works when you NAME the colour; deriving it does not, and the negative population says why](#41-recovering-the-glow-works-when-you-name-the-colour-deriving-it-does-not-and-the-negative-population-says-why)
+42. [Downscaling flat vector art makes the file BIGGER, so a size ladder that tries resolution before frames hands back the wrong file](#42-downscaling-flat-vector-art-makes-the-file-bigger-so-a-size-ladder-that-tries-resolution-before-frames-hands-back-the-wrong-file)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -168,6 +169,10 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `EXPECT THE OUTER FALLOFF ... TO BE CUT` in `--recommend`'s evidence | §41 (it names the exact `--fade-color` value; re-run with it and a WebP/AVIF output) |
 | A glow comes back correctly with `--fade-color` but never automatically | §41 (deriving the colour is falsified against 91 assets; the named candidate is the product) |
 | `fade_ramp_candidate` is populated but no flag was recommended | §41 (evidence, deliberately not a decision — a threshold admitting it admits the catastrophic class) |
+| `--target-kb` came back at a quarter of the original resolution | §42 (deep downscale now ranks below frame-stride; on flat vector art it was never paying) |
+| Downscaling an icon made the WebP LARGER, not smaller | §42 (LANCZOS invents intermediate colours; the art stops being flat and lossless entropy jumps) |
+| `NOTE: downscaling made this file LARGER than full resolution` in the fit log | §42 (the ladder is telling you frame-stride is the only lever paying on this content) |
+| A `--target-kb` run takes minutes and prints dozens of `tried ...` lines | §42 (it walks a real 120-rung grid, now concurrently at a probed worker count) |
 | The output silhouette is clean but a detail is missing | §37 (the fringe metric has no term for what erosion costs) |
 | `--recommend` says an outline is VERIFIED and the region still comes out transparent | §38 (check the band — 35% of regions used to say "verified" at partial enclosure) |
 | `outline … verified across N frames (0% enclosed)` | §38 (two fields reading as one claim; fixed) |
@@ -2587,3 +2592,45 @@ Found 2026-08-20 while working in the same gate. `fade_colors_confirmed` is deli
 ⚠️ **AND THE FIGURE THAT LOOKED LIKE A REGRESSION WAS A DENOMINATOR.** The POST run's 0.9618 sits below the 0.9644 this repo has published, which reads as a drop until the PRE run lands on the same 0.9618 — the published figure is over a different population set (797 assets against this run's 910, scoring 744). **Two recall numbers are not comparable until you have checked they are fractions of the same thing**, and the only reason that was caught rather than written up as a regression is that the PRE run was taken with the same harness rather than trusted from a document.
 
 ⚠️ **A probe trap worth repeating from §40, because it will mislead anyone re-deriving this.** Building the art palette from ONE frame yields 8 colours here and the detector fires immediately, which looks like the rule working. `analyze()` builds it from all frames and gets 2, because pass 1 correctly deletes the dim stages as blends of the bright one. The one-frame probe measures a palette the product never uses.
+
+## 42. Downscaling flat vector art makes the file BIGGER, so a size ladder that tries resolution before frames hands back the wrong file
+
+**Also searched as:** shrinking made it bigger · resize did not help · smaller image larger file · target-kb picked a tiny image · why is my sticker 160px · lost resolution to hit a size cap · downscale backfired · resolution versus frame rate · which compression lever pays · ladder order · cascade order wrong · resampling added colours · flat colour stopped being flat · quarter resolution · size search · step of the ladder · byte cap · fit the limit
+
+**The measurement, on `galaxy.gif` — 640x640 flat vector art, 2026-08-21.** Every rung of `--target-kb`'s WebP ladder was encoded and measured, all 120 of them. At native resolution:
+
+| scale | lossless | q95 | q90 | q80 | q70 | q60 |
+|---|---|---|---|---|---|---|
+| 1.0 (640px) | **2333 KB** | 3681 | 3056 | 2340 | 2022 | 1901 |
+| 0.75 (480px) | **5367 KB** | 3996 | 3492 | 2875 | 2598 | 2479 |
+| 0.5 (320px) | 3500 | 2609 | 2310 | 1927 | 1746 | 1670 |
+| 0.375 (240px) | 2656 | 1942 | 1715 | 1436 | 1305 | 1247 |
+| 0.25 (160px) | 1642 | 1263 | 1118 | 946 | 861 | 823 |
+
+⚠️ **Downscaling to 75% made the file 2.3x LARGER.** It stays larger than the native baseline at 0.5 and 0.375 too; only 0.25 — a sixteenth of the area — finally beats it. The mechanism is not mysterious: LANCZOS interpolation of flat colour invents intermediate colours at every edge, so the art stops being flat and lossless WebP's entropy jumps. `--pixel-art` uses NEAREST and does not have this problem, which is a good check that the explanation is the right one.
+
+**Meanwhile frame-stride 2 at full resolution is 1183 KB** — smaller than every one of those scale rungs except the 160px ones, at no resolution cost at all. So on this content **stride 2 strictly dominates 480px, 320px and 240px on BOTH size and resolution**, and the old ladder tried all three of them first.
+
+**The consequence, computed over the same measured table.** The ladder returns the first rung that fits, walking quality, then resolution, then frames. Five of seven realistic targets changed once deep downscale was demoted below frame-stride:
+
+| target | old order delivered | new order delivers |
+|---|---|---|
+| 2400 KB | 640px, all frames, lossless (2333) | unchanged |
+| 2000 KB | 640px, all frames, q60 (1901) | unchanged |
+| 1500 KB | 240px, all frames, q80 (1436) | **640px, half the frames, lossless (1183)** |
+| 1200 KB | 160px, all frames, q90 (1118) | **640px, half the frames, lossless (1183)** |
+| 1000 KB | 160px, all frames, q80 (946) | **640px, half the frames, q60 (958)** |
+| 900 KB | 160px, all frames, q70 (861) | **640px, a third of the frames, lossless (773)** |
+| 800 KB | 240px, half the frames, q80 (729) | **640px, a third of the frames, lossless (773)** |
+
+Every changed row keeps full resolution. The 1000 KB row is the honest cost of the trade: 958 KB instead of 946, i.e. a slightly larger file, for four times the linear resolution.
+
+**⚠️ Only the DEEP end moved.** 0.75 and 0.5 still rank above frame-stride, because "dropping frames is the most visible loss" is right about a MODERATE downscale and was only ever wrong about a drastic one. Reversing the whole axis would have been a different claim, and an unmeasured one.
+
+**⚠️ What was NOT wrong, and was nearly "fixed" anyway.** The first diagnosis was that non-monotone rung sizes break the search — that the ladder claims to pick the least destructive fitting rung and fails. It does not. First-fit over a TOTAL ORDER is the least destructive fitting element, whatever the sizes do, because any earlier rung that fitted would already have returned. Non-monotonicity costs **encodes**, not correctness: 24 of galaxy's 30 native-stride rungs came out larger than the baseline and were pure waste. The real defect was the ordering itself, which is a different and much bigger claim, and it needed a product decision rather than a bug fix.
+
+**The search is a real grid, and it now runs concurrently.** 120 rungs, ordered least-destructive-first by an explicit cost model (`_SCALE_COST`/`_STRIDE_COST` in the script). Because the order is total, evaluating a chunk of rungs at once and then taking the earliest-in-order that fits returns exactly what a serial walk returns — asserted by running the same asset both ways and comparing the chosen rung and the bytes, not by arguing that they structurally cannot differ. The worker count is **probed, never assumed**: a cgroup CPU quota first (a container's limit is invisible to `os.cpu_count()`), then Apple Silicon performance cores, then logical cores; memory from the cgroup limit, then `MemAvailable`, then `vm_stat`. **Anything that cannot be probed returns 1 worker**, i.e. the serial behaviour that existed before — because the deployment sandbox's profile is unknown and a guessed worker count could thrash a small container into swap. Per-worker memory is measured from the actual frame arrays rather than assumed, so a 64px sticker and a 640px 177-frame animation are not costed the same.
+
+**What the concurrency is actually worth, measured back to back in one process on the same 129-frame 640x640 asset: 528s serial -> 277s at 6 workers, a 1.90x speedup, with byte-identical results and the same chosen rung.** Not the 6x a core count suggests — the encoder holds the interpreter lock for part of each encode — so quoting the worker count as a speedup would be wrong by a factor of three. Both ends were re-measured in the same run rather than compared against an older snapshot.
+
+**If you see the fit log say `NOTE: downscaling made this file LARGER than full resolution`,** that is this section firing on your asset: the resolution lever is not paying, and the size will come from frames or from quality.

@@ -59,6 +59,7 @@ Notes
 """
 
 import argparse
+import concurrent.futures
 import contextlib
 import copy
 import json
@@ -5744,21 +5745,200 @@ def square_pad_frames(rgb_frames, alpha_frames, bg_rgb):
     return out_rgb, out_alpha
 
 
-def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
-                        target_kb, fmt, args, log=None):
-    """
-    Shrink a WebP/AVIF under `target_kb`, preferring the least destructive lever
-    first. Measured ordering (references/lessons.md SS16), NOT guesswork:
+# ---------------------------------------------------------------------------
+# Worker capacity, and the destructiveness ranking the --target-kb search walks
+# ---------------------------------------------------------------------------
 
-      * Quality before resolution before frames. On a real 128x128 emoji, AVIF
-        held all 124 frames at 244 KB where WebP had to fall to 42 frames --
-        dropping frames is the most visible loss, so it goes last.
-      * For WebP at NATIVE resolution, lossy is worse than lossless on BOTH
-        axes (2675 KB at q85 vs 2114 KB lossless), so the ladder only reaches
-        for WebP lossy once the frames have been scaled down, where the
-        ordering genuinely reverses (at 128px: 650 KB lossy vs 1190 lossless).
-      * AVIF quality=100 is NOT lossless and is the biggest output of all --
-        never used as a rung.
+def _read_int(path, token=None, index=None):
+    """One integer out of a /proc or /sys file, or None. Never raises."""
+    try:
+        with open(path) as fh:
+            text = fh.read().strip()
+    except Exception:
+        return None
+    if token is not None:
+        for line in text.splitlines():
+            if line.startswith(token):
+                digits = ''.join(c for c in line if c.isdigit())
+                return int(digits) if digits else None
+        return None
+    parts = text.split()
+    if index is not None:
+        if index >= len(parts):
+            return None
+        text = parts[index]
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def detect_worker_capacity(per_worker_mb, explain=False):
+    """How many encodes this machine can genuinely run at once, RIGHT NOW.
+
+    ⚠️ This script runs in the claude.ai sandbox as often as on a developer machine, and
+    that container's CPU and memory profile is unknown and must never be assumed -- a
+    hardcoded worker count is the one thing this must not be. So every number here is
+    probed, and **anything that cannot be probed returns 1**, i.e. exactly the serial
+    behaviour that existed before this function, rather than a guess that could thrash a
+    small container into swap.
+
+    Probed, in order of how much they can lie about a container:
+      * cgroup v2/v1 CPU QUOTA -- a container with `cpu.max = 200000 100000` gets 2 cores
+        no matter what `os.cpu_count()` reports, and it commonly reports the host's.
+      * cgroup v2/v1 MEMORY limit minus current usage, then Linux `MemAvailable`, then
+        macOS `vm_stat` free+inactive+speculative (inactive pages are reclaimable, so
+        counting them out under-provisions a machine that has been up for weeks).
+      * Apple Silicon PERFORMANCE cores, because a unit scheduled onto an E-core becomes
+        the run's long tail. This mirrors the development harness's own capacity probe,
+        which cannot be imported here -- that harness is not part of the packaged skill.
+
+    `per_worker_mb` is measured from the actual frame data, not a constant: an encode holds
+    a resized copy of the frames it was handed, so the estimate scales with the asset
+    instead of pretending a 64px sticker and a 640px 177-frame animation cost the same.
+    """
+    why = []
+    cores = None
+    q = _read_int('/sys/fs/cgroup/cpu.max', index=0)          # cgroup v2: "<quota> <period>"
+    period = _read_int('/sys/fs/cgroup/cpu.max', index=1)
+    if q is None:
+        q = _read_int('/sys/fs/cgroup/cpu/cpu.cfs_quota_us')   # cgroup v1
+        period = _read_int('/sys/fs/cgroup/cpu/cpu.cfs_period_us')
+    if q and period and q > 0 and period > 0:
+        cores = max(1, q // period)
+        why.append(f'{cores} cores from a cgroup CPU quota')
+    if cores is None:
+        try:
+            p = subprocess.run(['sysctl', '-n', 'hw.perflevel0.logicalcpu'],
+                               capture_output=True, text=True, timeout=5).stdout.strip()
+            cores = int(p)
+            why.append(f'{cores} performance cores')
+        except Exception:
+            cores = None
+    if cores is None:
+        cores = os.cpu_count()
+        if cores:
+            why.append(f'{cores} logical cores')
+    if not cores:
+        return (1, 'no CPU probe succeeded -- running serially') if explain else 1
+
+    avail_mb = None
+    lim = _read_int('/sys/fs/cgroup/memory.max') or _read_int(
+        '/sys/fs/cgroup/memory/memory.limit_in_bytes')
+    use = _read_int('/sys/fs/cgroup/memory.current') or _read_int(
+        '/sys/fs/cgroup/memory/memory.usage_in_bytes')
+    # A cgroup with no limit reports a sentinel near 2**63; treat that as "no limit".
+    if lim and use is not None and lim < (1 << 62):
+        avail_mb = max(0, (lim - use) / (1024 * 1024))
+        why.append(f'{avail_mb:.0f} MB left in the cgroup memory limit')
+    if avail_mb is None:
+        kb = _read_int('/proc/meminfo', token='MemAvailable')
+        if kb:
+            avail_mb = kb / 1024
+            why.append(f'{avail_mb:.0f} MB MemAvailable')
+    if avail_mb is None:
+        try:
+            out = subprocess.run(['vm_stat'], capture_output=True, text=True,
+                                 timeout=5).stdout
+            page, counts = 4096, {}
+            for line in out.splitlines():
+                if 'page size of' in line:
+                    page = int(line.split('page size of')[1].split('bytes')[0].strip())
+                if ':' in line:
+                    k, _, v = line.partition(':')
+                    v = v.strip().rstrip('.')
+                    if v.isdigit():
+                        counts[k.strip()] = int(v)
+            pages = sum(counts.get(k, 0) for k in
+                        ('Pages free', 'Pages inactive', 'Pages speculative'))
+            if pages:
+                avail_mb = (pages * page) / (1024 * 1024)
+                why.append(f'{avail_mb:.0f} MB free+reclaimable')
+        except Exception:
+            pass
+    if avail_mb is None:
+        return ((1, 'no memory probe succeeded -- running serially')
+                if explain else 1)
+
+    by_mem = int(avail_mb // max(per_worker_mb, 1))
+    jobs = max(1, min(cores, by_mem))
+    reason = (f'{jobs} worker(s): ' + ', '.join(why)
+              + f'; ~{per_worker_mb:.0f} MB per encode allows {by_mem}')
+    return (jobs, reason) if explain else jobs
+
+
+# Destructiveness weights for one rung of the --target-kb ladder. These are an ORDERING,
+# not a measurement -- but the ordering is not arbitrary, and one number in it was moved
+# on evidence rather than taste:
+#
+#   * Quality is cheapest, so it is degraded first (weights 0-5). Unchanged.
+#   * A MODERATE downscale (0.75, 0.5) still beats dropping frames. Unchanged.
+#   * ⚠️ A DEEP downscale (0.375, 0.25) now ranks BELOW frame-stride, which reverses the
+#     old ladder's "dropping frames is the most visible loss, so it goes last". Measured on
+#     `galaxy.gif` (640x640 flat vector art) 2026-08-21: at native resolution lossless is
+#     2332 KB, and descending the scale axis makes the file BIGGER -- 5367 KB at 0.75,
+#     3500 at 0.5, 2656 at 0.375 -- because LANCZOS interpolation of flat colour invents
+#     intermediate colours and the art stops being flat. Only 0.25 (1642 KB) beats native,
+#     at a SIXTEENTH of the area. Meanwhile stride 2 at native resolution is 1183 KB. So on
+#     this content stride 2 strictly dominates every scale rung above 0.25 on BOTH size and
+#     resolution, and the old order would hand back a 160px file where a full-resolution
+#     one of the same size existed. The 2026-08-19 trial's agent 2 measured the same thing
+#     independently on `growth` and said the cascade's order was wrong for the content.
+_SCALE_COST = {1.0: 0, 0.75: 10, 0.5: 20, 0.375: 45, 0.25: 60}
+_STRIDE_COST = {1: 0, 2: 25, 3: 35, 4: 42}
+
+
+def _rung_cost(stride, scale, quality, lossless, quality_rank):
+    return (_STRIDE_COST.get(stride, 50) + _SCALE_COST.get(scale, 70)
+            + (0 if lossless else quality_rank))
+
+
+def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4)):
+    """Every (stride, scale, quality, lossless) rung, ordered least-destructive first.
+
+    Returned as a total order, so "the first rung that fits" IS "the least destructive rung
+    that fits" -- that equivalence is what lets the search evaluate rungs concurrently and
+    still return exactly what a serial first-fit would.
+    """
+    rungs = []
+    for stride in strides:
+        for scale in scales:
+            if fmt == 'avif':
+                ladder = [(q, False) for q in (95, 85, 75, 65, 55, 45)]
+            elif fmt == 'apng':
+                # No quality knob at all: resolution and frames are the only levers.
+                ladder = [(100, True)]
+            else:
+                ladder = [(100, True)] + [(q, False) for q in (95, 90, 80, 70, 60)]
+            for rank, (quality, lossless) in enumerate(ladder):
+                rungs.append((_rung_cost(stride, scale, quality, lossless, rank),
+                              stride, -scale, rank, quality, lossless))
+    rungs.sort()
+    return [(stride, -negscale, quality, lossless)
+            for _cost, stride, negscale, _rank, quality, lossless in rungs]
+
+
+def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
+                        target_kb, fmt, args, log=None, jobs=None):
+    """
+    Shrink a WebP/AVIF/APNG under `target_kb`, preferring the least destructive lever
+    first. Measured ordering (references/lessons.md SS16 and SS42), NOT guesswork:
+
+      * Quality before resolution before frames -- except that a DEEP downscale now ranks
+        below frames, on the galaxy measurement recorded above `_SCALE_COST`.
+      * For WebP at NATIVE resolution, lossy is worse than lossless on BOTH axes (2675 KB
+        at q85 vs 2114 KB lossless), so the ladder only reaches for WebP lossy once the
+        frames have been scaled down, where the ordering genuinely reverses (at 128px:
+        650 KB lossy vs 1190 lossless).
+      * AVIF quality=100 is NOT lossless and is the biggest output of all -- never a rung.
+
+    ⚠️ **The rung sizes are NOT monotone**, which is why this walks a real grid rather than
+    a cascade that stops descending an axis. Because `build_target_rungs` returns a TOTAL
+    order, the first fitting rung is the least destructive fitting rung, and that stays
+    true however many rungs are evaluated at once -- so the concurrency below cannot change
+    which file is delivered, only how long it takes to find it. Proven in the development
+    harness by running the same asset both ways and comparing the chosen rung AND the
+    bytes, rather than by arguing that they structurally cannot differ.
 
     Leaves the best attempt on disk either way and returns (size_bytes, hit).
     """
@@ -5766,16 +5946,14 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
     target_bytes = target_kb * 1024
     resample = Image.NEAREST if getattr(args, 'pixel_art', False) else Image.LANCZOS
 
-    def encode(fr, al, dur, scale, quality, lossless):
+    def encode(fr, al, dur, scale, quality, lossless, path):
         if scale != 1.0:
             fr, al = resize_rgba_frames(fr, al, scale, resample=resample, binarize=False)
         if fmt == 'avif':
-            return render_frames_to_avif(fr, al, dur, loop, output_path, quality=quality)
+            return render_frames_to_avif(fr, al, dur, loop, path, quality=quality)
         if fmt == 'apng':
-            # Lossless only -- APNG has no quality knob, so the cascade can trade
-            # resolution and frames for it but not encoder quality.
-            return render_frames_to_apng(fr, al, dur, loop, output_path)
-        return render_frames_to_webp(fr, al, dur, loop, output_path,
+            return render_frames_to_apng(fr, al, dur, loop, path)
+        return render_frames_to_webp(fr, al, dur, loop, path,
                                      lossless=lossless, quality=quality,
                                      method=getattr(args, 'webp_method', 4))
 
@@ -5788,35 +5966,115 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
     # fit, say so rather than quietly delivering a different size.
     _pinned = getattr(args, 'resize_max_dim', None) is not None
     _scales = (1.0,) if _pinned else (1.0, 0.75, 0.5, 0.375, 0.25)
-    if fmt == 'avif':
-        rungs = [(sc, q, False) for sc in _scales for q in (95, 85, 75, 65, 55, 45)]
-    else:
-        rungs = []
-        for sc in _scales:
-            rungs += [(sc, 100, True)] + [(sc, q, False) for q in (95, 90, 80, 70, 60)]
+    rungs = build_target_rungs(fmt, _scales)
 
-    best = None
-    for stride in (1, 2, 3, 4):
-        fr, al, dur = (reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
-                       if stride > 1 else (rgb_frames, alpha_frames, durations))
-        for scale, quality, lossless in rungs:
-            size = encode(fr, al, dur, scale, quality, lossless)
-            desc = (f"stride={stride} scale={scale:g} "
-                    f"{'lossless' if lossless else f'q{quality}'}")
-            say(f"  tried {desc}: {size/1024:.1f} KB")
+    # Per-worker memory measured from the ACTUAL frames, not a constant: an encode holds a
+    # resized copy of what it was handed, so a 64px sticker and a 640px 177-frame animation
+    # must not be costed the same. x2.5 covers the resized copy plus the encoder's own
+    # buffers; the floor keeps a tiny asset from claiming unlimited workers.
+    try:
+        bytes_held = sum(getattr(f, 'nbytes', 0) for f in rgb_frames) + \
+            sum(getattr(f, 'nbytes', 0) for f in alpha_frames)
+    except Exception:
+        bytes_held = 0
+    per_worker_mb = max(64.0, (bytes_held / (1024 * 1024)) * 2.5)
+    if jobs is None:
+        jobs, why = detect_worker_capacity(per_worker_mb, explain=True)
+        say(f"  searching {len(rungs)} rungs with {why}")
+    jobs = max(1, int(jobs))
+
+    strided = {}
+
+    def frames_for(stride):
+        if stride not in strided:
+            strided[stride] = (
+                reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
+                if stride > 1 else (rgb_frames, alpha_frames, durations))
+        return strided[stride]
+
+    def evaluate(i, rung):
+        stride, scale, quality, lossless = rung
+        fr, al, dur = frames_for(stride)
+        # Each concurrent encode needs its OWN path: they all used to write to
+        # output_path, which is fine serially and races the moment two run at once.
+        path = output_path if jobs == 1 else f'{output_path}.rung{i}.tmp'
+        return i, encode(fr, al, dur, scale, quality, lossless, path), path
+
+    def desc_of(rung):
+        stride, scale, quality, lossless = rung
+        return (f"stride={stride} scale={scale:g} "
+                f"{'lossless' if lossless else f'q{quality}'}")
+
+    best = None          # (size, desc, rung)
+    winner = None        # (size, desc, rung, path)
+    largest_seen_at_native = None
+    grew_on_downscale = False
+
+    for chunk_start in range(0, len(rungs), jobs):
+        chunk = list(enumerate(rungs[chunk_start:chunk_start + jobs], chunk_start))
+        if jobs == 1:
+            results = [evaluate(i, r) for i, r in chunk]
+        else:
+            # Pre-build every stride this chunk needs BEFORE the workers start: the
+            # `strided` memo is not thread-safe, and two workers racing to build the same
+            # reduced-frame list would do the work twice and could interleave the write.
+            for _i, r in chunk:
+                frames_for(r[0])
+            with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+                results = list(pool.map(lambda a: evaluate(*a), chunk))
+        results.sort()
+
+        for i, size, path in results:
+            rung = rungs[i]
+            say(f"  tried {desc_of(rung)}: {size/1024:.1f} KB")
+            if rung[0] == 1 and rung[1] == 1.0 and rung[3]:
+                largest_seen_at_native = size
+            elif (largest_seen_at_native and rung[0] == 1 and rung[3]
+                  and rung[1] < 1.0 and size > largest_seen_at_native):
+                grew_on_downscale = True
             if best is None or size < best[0]:
-                best = (size, desc, (stride, scale, quality, lossless))
-            if size <= target_bytes:
-                say(f"Hit target: {size/1024:.1f} KB <= {target_kb} KB ({desc})")
-                return size, True
+                best = (size, desc_of(rung), rung)
+            if size <= target_bytes and winner is None:
+                winner = (size, desc_of(rung), rung, path)
+        if winner is not None:
+            break
+
+    def cleanup(keep=None):
+        # Matched on the BASENAME: `output_path` may be relative while the listing is
+        # absolute, and comparing the two forms leaves every temp file on disk.
+        d = os.path.dirname(os.path.abspath(output_path)) or '.'
+        prefix = os.path.basename(output_path) + '.rung'
+        for name in os.listdir(d):
+            if name.startswith(prefix) and name.endswith('.tmp'):
+                full = os.path.join(d, name)
+                if full == keep:
+                    continue
+                try:
+                    os.remove(full)
+                except OSError:
+                    pass
+
+    if grew_on_downscale:
+        say("  NOTE: downscaling made this file LARGER than full resolution -- flat "
+            "vector art stops being flat under interpolation. Frame-stride is the lever "
+            "that pays on this content (references/lessons.md SS42).")
+
+    if winner is not None:
+        size, desc, _rung, path = winner
+        if path != output_path:
+            os.replace(path, output_path)
+        cleanup()
+        say(f"Hit target: {size/1024:.1f} KB <= {target_kb} KB ({desc})")
+        return size, True
+
     # Nothing fit. Re-encode the SMALLEST configuration so the file left on disk
     # is the one we report -- otherwise the file is whatever the last rung
     # happened to produce, and the reported number describes a different file.
-    if best is not None and best[2] is not None:
+    cleanup()
+    if best is not None:
         stride, scale, quality, lossless = best[2]
-        fr, al, dur = (reduce_frame_count(rgb_frames, alpha_frames, durations, stride)
-                       if stride > 1 else (rgb_frames, alpha_frames, durations))
-        encode(fr, al, dur, scale, quality, lossless)
+        fr, al, dur = frames_for(stride)
+        encode(fr, al, dur, scale, quality, lossless, output_path)
     say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]})."
         + (" The output size was pinned by --resize-max-dim, so resolution was NOT "
            "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else ""))

@@ -234,7 +234,7 @@ Five modes replace "run it and hope":
 
 | flag | |
 |:--|:--|
-| `--target-kb <n>` | Walk optimize → medium → heavy, then escalate stride/scale, until it fits. |
+| `--target-kb <n>` | Fit a byte cap. GIF output walks optimize → medium → heavy, then escalates stride/scale. WebP/AVIF/APNG output runs a 120-rung grid (stride × scale × quality) ordered least-destructive-first, evaluated concurrently at a **probed** worker count (serial wherever the probe fails). A deep downscale ranks below frame-stride — on flat vector art, shrinking makes the file *bigger* (`references/lessons.md` §42). |
 | `--compress {optimize,medium,heavy}` | Named tiers: crop, resize to 512px, 1px erosion, `gifsicle -O3`, plus lossy/palette steps. |
 | `--resize-max-dim <px>` | Arbitrary downscale target, standalone. |
 | `--frame-stride <n>` | Keep every Nth frame, **folding dropped durations into the kept frame** so total length is unchanged. |
