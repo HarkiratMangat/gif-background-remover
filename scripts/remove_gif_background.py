@@ -8638,7 +8638,7 @@ def rank_sibling_outputs(records):
 
     Exists because the 2026-08-22 trial delivered a 120x128 / 36-frame WebP alongside a
     482x513 / 144-frame AVIF that was also SMALLER, printed "2/2 succeeded." and said
-    nothing at all. See docs/investigations/2026-08-22-v6-timeout-trial.md.
+    nothing at all. Written up in references/lessons.md SS44.8.
     """
     out = []
     for r in records:

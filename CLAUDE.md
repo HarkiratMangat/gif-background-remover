@@ -64,7 +64,7 @@ This repo uses dioreo's working agreement, git flow and conventions. They are th
 | Model/effort grid | `…-Diors-Builds/memory/reference_priority_tier_system.md` + `feedback_suggest_model_switch.md` |
 
 - **`main` only ever advances through a PR.** Never commit directly to `main`.
-- **Branch commits are free. Push, merge, and tag are each asked, every time** — approval never carries over, not even within one session.
+- **Branch commits are free. Push and merge are each asked, every time** — approval never carries over, not even within one session. **The TAG rides with the merge**; it is part of the same release act, not a separate ask (Harkirat, 2026-08-23). **A RELEASE is its own approval, every time** — see the merge-vs-release section below.
 - **Conventional Commits v1.0.0 as specified**, only the 11 standard types, `<type>(<scope>): <desc>` — colon and exactly one space, imperative, lowercase, no trailing period. Branches are `<type>/<kebab-description>`. Never rename a branch that has an open PR.
 - **Every merge gets a version — the judgement is the SIZE, never whether.**
 - **ONE commit + ONE tag per release.** The version bump is the final pre-merge checkpoint ON the branch, so the tag lands on a commit whose SKILL.md already reads the tagged version. Never a follow-up bump commit on `main` after merging.
@@ -79,7 +79,7 @@ This repo uses dioreo's working agreement, git flow and conventions. They are th
 
 ## Working rules for this repo
 These are the load-bearing ones; the full reasoning for each lives in the memory folder's `feedback_*.md` files, linked from `user_working_agreement.md`.
-- **Git flow follows Dior's Builds (dioreo) — adopted 2026-08-07, standing convention.** See the "Git workflow" section below for the full lifecycle. The gate that matters: **branch commits are free; push, PR-merge, and tag are each asked, every time, and approval never carries over.** ⚠️ This bullet used to read "never commit or push without asking first, every time." That predates the dioreo adoption and was superseded by it — the free-branch-commits half is the change; the asked-every-time half still holds for push/merge/tag.
+- **Git flow follows Dior's Builds (dioreo) — adopted 2026-08-07, standing convention.** See the "Git workflow" section below for the full lifecycle. The gate that matters: **branch commits are free; push and PR-merge are each asked, every time, and approval never carries over; the tag rides with the merge; a RELEASE is asked separately.** ⚠️ This bullet has been corrected twice. It first read "never commit or push without asking first, every time" (superseded 2026-08-07 by the dioreo adoption — branch commits became free). It then listed the TAG as a third separate ask, which was wrong: Harkirat, 2026-08-23 — *"tagging is not its own approval, its part of that merge convention/flow. RELEASE is it's own approval."*
 - **Check `local/` (especially `local/live-skill-drops/`) at session start** for anything new — see "Live skill sync workflow" above.
 - **Document at the time a real finding lands** — SKILL.md, `references/lessons.md`, memory, and the version bump all get updated in the same turn as the fix/discovery, not as a deferred cleanup pass.
 - **Check `references/lessons.md` before re-diagnosing** anything that smells like a past case (flicker, erosion damage, jagged edges, wrong duration, a tool/quantizer tradeoff) — this skill's development history is long and specific, and re-deriving a fix from scratch risks retrying an approach already known to regress.
@@ -143,7 +143,20 @@ Both are about scripts the `.skill` package does not contain, so a live claude.a
 **The closure-marker gate, and why it now tests itself.** `audit_docs.py`'s heading/body drift check matched a closure keyword anywhere in a body. Two defects, and the filed one was the smaller: there was no word boundary, so **`ENCLOSED` matched `CLOSED`** — in a repo whose main feature is outline ENCLOSURE and whose house style emphasises in caps. It now tests POSITION rather than presence: a keyword counts only at the start of a bold span or a line, separated from it by nothing but emoji, punctuation and ALL-CAPS qualifiers, which is how all 28 real markers in the two trackers are written and never how prose uses them. ⚠️ **The fix had its own defect, caught in a minute by the suite:** `\b` in front of the `✅` branch never matches, because `✅` is not a word character — so every real tick-marked closure silently stopped being detected. **A gate rewritten without a test suite would have shipped looking stricter and being blinder.** The suite — 11 cases, each one that happened or would have — now runs on EVERY invocation, and injecting a real closure marker into an open item still exits 1.
 
 ### Merge discipline — the failure that motivated writing this down
-`main` advances only through a PR, and **push, merge and tag are each asked, every time; approval never carries over.** On 2026-08-17 one authorization ("commit, push, pr, tag, and merge") was treated as covering three consecutive releases, two of which were merged while Harkirat still had open questions. Batch audit findings into ONE release; ask again for each subsequent one.
+`main` advances only through a PR, and **push and merge are each asked, every time; approval never carries over.** On 2026-08-17 one authorization ("commit, push, pr, tag, and merge") was treated as covering three consecutive MERGES, two of which happened while Harkirat still had open questions. Batch audit findings into ONE merge; ask again for each subsequent one. ⚠️ **That incident was about one approval spanning several merges — it was never about the tag**, and citing it to make the tag a third gate is the misreading corrected below.
+
+### A MERGE is not a RELEASE — this is why the version scheme has three parts *(corrected 2026-08-23 by Harkirat)*
+
+> *"tagging is not its own approval, its part of that merge convention/flow. RELEASE is it's own approval, like the release page … each *merge* carries a tag + .skill package in local/ and moving the old one to archive. but each merge/tag ≠ a release. however, a release does = a claude.ai upload."*
+
+**Every merge carries all three of these, as one act, under the merge's own approval:**
+1. an annotated **tag** on the squash SHA,
+2. a **built `.skill` package** in `local/`,
+3. the **previous package moved** to `local/skills-archive/`, so `local/` holds exactly the current one.
+
+**A RELEASE is a separate act needing its own approval, every time:** the GitHub Release page, and — the part that actually reaches users — **the manual claude.ai upload**. A release IS the upload; nothing else distributes the skill.
+
+**So versions are cheap and frequent; releases are rare.** That is the entire reason for `v{major}.{minor}.{correction}`: a merge that fixes one wording issue mints a correction bump, gets tagged and packaged, and is never published. Do not hesitate over "does this deserve a version" — every merge gets one, and the only judgement is the SIZE. ⚠️ **Never infer from a tag that an upload happened**, and never treat a merge approval as covering a release. As of 2026-08-23 the tag reads v6.1.0 and the live skill reads v6.0.0, on purpose — see "Validation status".
 
 ## Validation status
 

@@ -13,13 +13,19 @@ CMD=$(jq -r '.tool_input.command // ""' 2>/dev/null)
 MSG=""
 case "$CMD" in
   *"gh pr merge"*|*"git push"*|*"git tag"*)
-    MSG="RELEASE GATE — push, merge and tag are each ASKED, EVERY TIME; approval never carries over.
+    MSG="MERGE GATE — PUSH and MERGE are each ASKED, EVERY TIME; approval never carries over.
+⚠️ The TAG is NOT a separate ask. It rides with the merge, as part of the same act (Harkirat,
+2026-08-23: \"tagging is not its own approval, its part of that merge convention/flow\"). Each merge
+carries: the tag + a built .skill in local/ + the previous package moved to local/skills-archive/.
+⚠️ A RELEASE *IS* its own approval, every time — the GitHub Release page, and the manual claude.ai
+upload. A release = the upload. A merge and a tag distribute NOTHING. Never read a tag as an upload.
 On 2026-08-17 one authorization (\"commit, push, pr, tag, and merge\") was treated as covering THREE
-consecutive releases, two of them merged while Harkirat still had open questions. That produced
-v5.1.0 and v5.1.1 where one release would have done.
-  · Has Harkirat approved THIS action, in THIS turn? If not, stop and ask.
-  · Batch audit findings into ONE release instead of merging then finding more.
-Before tagging, gates 0-6 in CLAUDE.md must have RUN, not just been intended:
+consecutive MERGES, two of them while Harkirat still had open questions. That produced
+v5.1.0 and v5.1.1 where one would have done — it was about one approval spanning several merges,
+NEVER about the tag.
+  · Has Harkirat approved THIS push or merge, in THIS turn? If not, stop and ask.
+  · Batch audit findings into ONE merge instead of merging then finding more.
+Before merging, gates 0-6 in CLAUDE.md must have RUN, not just been intended:
   0. python3 scripts/audit_docs.py            (flags reachable from the BODY, not the changelog)
   1. build the .skill and gate the BUILT artifact, and RE-gate every rebuild
   2. every references/*.md pointer resolves INSIDE the zip

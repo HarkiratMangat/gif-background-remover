@@ -125,15 +125,38 @@ def main():
         for fl in fn:
             repo_basename.setdefault(fl, os.path.relpath(os.path.join(dp, fl), _repo))
     packaged_basenames = {os.path.basename(x) for x in packaged}
+    # ⚠️ BACKTICKS ARE NOT THE ONLY WAY TO NAME A FILE, and scanning only for them left
+    # this gate blind to the single place it matters most: a PYTHON DOCSTRING, which uses
+    # no backticks at all. Found 2026-08-23 by gating the BUILT ARTIFACT by hand --
+    # `rank_sibling_outputs` shipped "See docs/investigations/2026-08-22-v6-timeout-trial.md"
+    # in its docstring, an instruction the sandbox cannot follow, while this gate reported
+    # clean. The script is the file a live session reads most closely.
+    # ⚠️ AND A PATH THAT DOES NOT RESOLVE FROM THE REPO ROOT USED TO PASS SILENTLY. The
+    # test was `os.path.exists(t)`, so `others/README.md` -- a corpus file that exists only
+    # under gitignored local/ -- was neither "exists" nor a bare filename, and fell through
+    # both branches. A pointer is unreachable whether or not THIS machine can resolve it.
+    UNPACKAGED_DIRS = ('local/', 'docs/', 'scripts/harness/', '.remember', '.claude/',
+                       '/Users/', 'others/')
     for f in sorted(packaged):
-        for tok in sorted(set(re.findall(r'`([^`\n]{2,80})`', open(f).read()))):
+        body = open(f).read()
+        toks = set(re.findall(r'`([^`\n]{2,80})`', body))
+        # Unbackticked path-like tokens, for the files that have no backtick convention.
+        toks |= set(re.findall(r'(?<![`\w/.-])([\w][\w./-]{1,79}\.(?:md|py|json|sh|txt))\b',
+                               body))
+        for tok in sorted(toks):
             t = tok.strip().lstrip('./').split()[0].rstrip('.,:;')
             if t.endswith('/') or t in packaged or t in allowed_mentions:
                 continue
             if not re.search(r'\.(md|py|json|sh|txt)$|/', t):
                 continue
-            if os.path.exists(t) or t.startswith(('local/', '.remember', '/Users/', '.claude/')):
+            base = os.path.basename(t)
+            if os.path.exists(t) or t.startswith(UNPACKAGED_DIRS):
                 fails.append(f'{f}: points at `{t}`, which is NOT in the .skill package')
+            elif '/' in t and base not in packaged_basenames and base in repo_basename:
+                fails.append(f'{f}: points at `{t}`, whose basename is a repo file NOT in '
+                             f'the .skill package (really {repo_basename[base]}) -- a path '
+                             f'that does not resolve from the repo root is no more reachable '
+                             f'from the sandbox than one that does')
             elif ('/' not in t and t not in packaged_basenames
                   and t in repo_basename):
                 fails.append(f'{f}: names `{t}` (really {repo_basename[t]}), which is a repo '
