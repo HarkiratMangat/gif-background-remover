@@ -6033,6 +6033,95 @@ def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4), pixel_art=False):
             for _cost, stride, negscale, _rank, quality, lossless in rungs]
 
 
+#: Frame-encodes above which a fit is worth warning about BEFORE it starts. Measured
+#: 2026-08-22: the megaphone fit walked ~118 of 120 rungs at 144 frames -- 17,280
+#: frame-encodes -- and took 207.84s on 6 cores, while the first attempt died at a 120s
+#: tool timeout having produced nothing at all. A 120-rung fit on an 8-frame sticker is
+#: 960 and finishes in seconds, so the frame count is the axis that matters, not the rungs.
+_FIT_WARN_FRAME_ENCODES = 5000
+
+
+def estimate_fit_cost(n_rungs, n_frames, workers):
+    """A pre-flight cost estimate for the rung search.
+
+    Deliberately NOT in seconds. It does not need to predict a duration -- it needs to let
+    a caller decide to split the job before losing a tool call to it, which is what the v6
+    trial did twice. `serial_batches` is what a caller can actually act on: more workers
+    lower it, and the total WORK (`frame_encodes`) is unchanged by them.
+    """
+    workers = max(1, int(workers or 1))
+    frame_encodes = int(n_rungs) * int(n_frames)
+    return {
+        'encodes': int(n_rungs),
+        'frame_encodes': frame_encodes,
+        'serial_batches': max(1, -(-int(n_rungs) // workers)),
+        'warn': frame_encodes >= _FIT_WARN_FRAME_ENCODES,
+    }
+
+
+#: The full scale ladder the rung search may walk, least destructive first.
+_FIT_SCALE_LADDER = (1.0, 0.75, 0.5, 0.375, 0.25)
+
+
+def _describe_size_floor(args):
+    """The size floor flags actually in force, as the user typed them."""
+    parts = []
+    for name, flag in (('min_width', '--min-width'), ('min_height', '--min-height'),
+                       ('min_dimension', '--min-dimension')):
+        v = getattr(args, name, None)
+        if v:
+            parts.append(f'{flag} {v}')
+    return ' and '.join(parts) if parts else 'a size floor'
+
+
+def scales_for_fit(args, width, height):
+    """The scale rungs `--target-kb` may use on a `width` x `height` asset.
+
+    ⚠️ A byte cap is a CONSTRAINT; a requested resolution is a REQUIREMENT. That reasoning
+    already lived here for `--resize-max-dim`, which pins the ladder to (1.0,) after a
+    confirmed bug where the cascade shrank an explicit 128px emoji to 48x48. `--min-width`,
+    `--min-height` and `--min-dimension` are the same requirement with a weaker shape: a
+    FLOOR rather than an exact pin, so quality and frames are still traded freely and only
+    the rungs that would breach the floor are removed.
+
+    Every rung is a uniform scale, so aspect ratio is preserved throughout and "width >= N,
+    aspect preserved" needs nothing beyond testing the width. Dimensions are computed the
+    way `resize_rgba_frames` computes them -- `max(1, round(dim * scale))` -- so the filter
+    cannot disagree with the encoder about which rung is legal.
+
+    A bare `--min-dimension` constrains the SHORTER side (Harkirat's call, 2026-08-23): for
+    a sticker or emoji slot that is the safer reading of "at least this big", and it is the
+    stricter one -- a 600x100 asset passes a width test at 128 and fails a shorter-side one.
+    Name an axis with `--min-width`/`--min-height` when that is not what is wanted; when
+    several are set the tightest surviving constraint wins, because each is applied in turn.
+
+    1.0 is never filtered out. A floor above the source's own size is unreachable by
+    definition -- nothing here upscales -- and delivering no rungs at all would turn a
+    stated requirement into a crash instead of a report.
+    """
+    if getattr(args, 'resize_max_dim', None) is not None:
+        return (1.0,)
+    min_w = getattr(args, 'min_width', None)
+    min_h = getattr(args, 'min_height', None)
+    min_d = getattr(args, 'min_dimension', None)
+    if not (min_w or min_h or min_d):
+        return _FIT_SCALE_LADDER
+
+    def ok(scale):
+        w = max(1, round(width * scale))
+        h = max(1, round(height * scale))
+        if min_w and w < min_w:
+            return False
+        if min_h and h < min_h:
+            return False
+        if min_d and min(w, h) < min_d:
+            return False
+        return True
+
+    kept = tuple(sc for sc in _FIT_SCALE_LADDER if sc == 1.0 or ok(sc))
+    return kept
+
+
 def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
                         target_kb, fmt, args, log=None, jobs=None):
     """
@@ -6082,7 +6171,13 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
     # REQUIREMENT. Trade quality and frames instead, and if it still will not
     # fit, say so rather than quietly delivering a different size.
     _pinned = getattr(args, 'resize_max_dim', None) is not None
-    _scales = (1.0,) if _pinned else (1.0, 0.75, 0.5, 0.375, 0.25)
+    _src_h, _src_w = alpha_frames[0].shape[:2]
+    _scales = scales_for_fit(args, _src_w, _src_h)
+    _floored = (not _pinned) and _scales != _FIT_SCALE_LADDER
+    if _floored:
+        say(f"resolution floor: {len(_FIT_SCALE_LADDER) - len(_scales)} of "
+            f"{len(_FIT_SCALE_LADDER)} scale rungs are excluded by "
+            f"{_describe_size_floor(args)} -- quality and frames are traded instead.")
     rungs = build_target_rungs(fmt, _scales,
                                pixel_art=bool(getattr(args, 'pixel_art', False)))
 
@@ -6100,6 +6195,21 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
         jobs, why = detect_worker_capacity(per_worker_mb, explain=True)
         say(f"  searching {len(rungs)} rungs with {why}")
     jobs = max(1, int(jobs))
+
+    # ⚠️ PRINTED, not appended to `log`. The fit's log is flushed AFTER the search returns,
+    # which is precisely too late for a warning whose whole purpose is to let a caller
+    # decide not to start. Measured 2026-08-22: the first megaphone fit died at a 120s tool
+    # timeout having produced nothing, and neither --analyze nor --recommend said a word
+    # beforehand -- a session learns the cost by losing a tool call to it.
+    _est = estimate_fit_cost(len(rungs), len(alpha_frames), jobs)
+    if _est['warn']:
+        print(f"  NOTE: this fit may evaluate up to {_est['encodes']} rungs x "
+              f"{len(alpha_frames)} frames = {_est['frame_encodes']:,} frame-encodes in "
+              f"~{_est['serial_batches']} serial batches. On a 144-frame asset this "
+              f"measured 207s on 6 cores, and could not complete at all on a 1-core "
+              f"sandbox. If you are running under a tool timeout, render one file and one "
+              f"format per call, or pass the flags directly instead of searching. A "
+              f"background job is NOT a reliable workaround.", file=sys.stderr)
 
     strided = {}
 
@@ -6195,7 +6305,10 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
         encode(fr, al, dur, scale, quality, lossless, output_path)
     say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]})."
         + (" The output size was pinned by --resize-max-dim, so resolution was NOT "
-           "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else ""))
+           "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else "")
+        + (f" Resolution was floored by {_describe_size_floor(args)}, so it was NOT reduced "
+           f"below that to get there -- relax the floor to allow it, or accept the size."
+           if _floored else ""))
     return os.path.getsize(output_path), False
 
 
@@ -9013,6 +9126,22 @@ def main():
                          'clears the mis-colored ring on real test art). '
                          'Set to 0 to disable if the source has no such '
                          'fringing and you want to preserve every pixel.')
+    p.add_argument('--min-width', type=int, default=None, metavar='N',
+                    help='Never let --target-kb fit deliver an output narrower than N '
+                         'pixels. Aspect ratio is preserved, so this is the literal '
+                         '"at least N px wide x relative height" request. A byte cap is a '
+                         'constraint; a stated resolution is a REQUIREMENT -- quality and '
+                         'frames are traded instead, and if the target still cannot be met '
+                         'the tool says so rather than quietly delivering a smaller file.')
+    p.add_argument('--min-height', type=int, default=None, metavar='N',
+                    help='The mirror of --min-width, on the vertical axis.')
+    p.add_argument('--min-dimension', type=int, default=None, metavar='N',
+                    help='Never let --target-kb fit deliver an output whose SHORTER side is '
+                         'below N pixels. The convenient form when no axis is named: for a '
+                         'sticker or emoji slot it is the safer reading of "at least this '
+                         'big", and the stricter one (a 600x100 asset passes --min-width 128 '
+                         'and fails --min-dimension 128). Combine freely with --min-width / '
+                         '--min-height; the tightest constraint wins.')
     p.add_argument('--resize-max-dim', type=int, default=None,
                     help='Resize to fit N pixels on the longer side '
                          '(preserving aspect ratio, only ever downscaling). '
