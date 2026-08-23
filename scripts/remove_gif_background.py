@@ -2188,6 +2188,38 @@ def analyze(input_path, max_samples=40, tolerance=15):
 _FORMAT_RANK_EMITTED = False
 
 
+def _unprotect_hint(rid, bbox, ratio, checked):
+    """The counter-option an ambiguous enclosure verdict was never offering.
+
+    Every protection mechanism in this tool -- explicit outline, the fade path's
+    topological protection, the band-interior scan -- independently classifies an
+    ENCLOSED region of background colour as intentional design. Measured 2026-08-22 on a
+    broadcast-tower asset, `--protect-outline-color` and `--recover-fade-alpha` left the
+    SAME 8,569 enclosed near-white opaque px with the same bounding boxes: two mechanisms,
+    opposite routes, identical verdict. There was no way to say "this interior IS the
+    background", so a user who wanted it gone had no path at all -- and `--remove-region`,
+    the obvious workaround, force-deletes its whole box and took 73% of the artwork with
+    the white.
+
+    `--unprotect-region` is that path. It is offered here, never applied: which answer is
+    right is a statement about INTENT, not about pixels, and this file's own rule is that
+    an unverifiable check reports rather than guesses. Only ambiguous regions get the hint
+    -- a region enclosed on every frame is not in doubt, and a hint on every asset is
+    noise rather than guidance.
+    """
+    x0, y0, x1, y1 = (int(v) for v in bbox)
+    return (f"Region {rid}: if this enclosed interior is BACKGROUND rather than design "
+            f"(a gap showing through a lattice, the white inside a sparkle), protecting it "
+            f"is the wrong answer and no protection flag can express that. Add "
+            f"--unprotect-region rect:{x0},{y0},{x1 - x0},{y1 - y0} to re-key it as "
+            f"background while leaving the artwork there untouched. It is also the only "
+            f"region flag that composes with --recover-fade-alpha, which ignores every "
+            f"protection flag (references/lessons.md SS43). NOT applied automatically: "
+            f"whether an interior is design or background is the user's call, not "
+            f"something the pixels answer -- this region encloses on {ratio * 100:.0f}% "
+            f"of {checked} frames, which is why it is being asked about at all.")
+
+
 def _enclosure_verdict(rid, outline_hex, all_frames):
     """Three bands, three sentences -- because `verified` was being printed over a number
     that said otherwise, and an autonomous run reads the word, not the number.
@@ -2377,6 +2409,12 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                     and not (leak and leak['over_protects_background'])):
                 outline_colors.append(region['candidate_outline_color'])
                 anom = all_frames['anomalous_frame_count']
+                _ratio = ((all_frames.get('enclosure_ratio_all_frames') or 0.0)
+                          if isinstance(all_frames, dict) else 0.0)
+                if _ratio < 1.0 and region.get('bbox_xyxy'):
+                    region_notes.append(_unprotect_hint(
+                        rid, region['bbox_xyxy'], _ratio,
+                        all_frames.get('frames_checked', 0)))
                 region_notes.append(
                     _enclosure_verdict(rid, region['candidate_outline_color'], all_frames)
                     + ("" if anom == 0 else

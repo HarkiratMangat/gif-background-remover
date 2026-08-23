@@ -637,7 +637,9 @@ Fixing the shimmer with a colour ramp then created a **worse** defect: pale pixe
 
 ⚠️ **And a measurement lesson repeated from §13A.1:** the first ring comparison selected pixels *by alpha*, which selects a different population per render. Re-measured over a fixed 2,060 px population, and only then did the 12.4% opaque rim show up.
 
-⚠️ **Still manual.** Nothing yet *recommends* `--unprotect-region`, so an autonomous run cannot reach it. That is the remaining half, and it is the same missing capability behind megaphone's sparkles: the recommender has no notion of "the user considers this enclosed interior background." Plan Task 14b.
+✅ **The autonomy half is done too.** `--recommend` now emits a second note on any region whose outline does not enclose it on every frame, naming `--unprotect-region rect:x,y,w,h` from the region's own bbox — measured on broadcast as `rect:243,311,153,197` against the hand-measured `238,300,168,240`. Offered, never applied: intent is not a pixel question. Three falsifiers, the load-bearing one being that `secure.gif` (enclosure 1.000 on both regions) must **not** get the hint — a hint that fires everywhere means nothing.
+
+**This is what `CLAUDE.md`'s end-goal section actually asks for.** The manual flag was the investigation result; closing the gap that made the override necessary is the fix. Delivering the corrected broadcast render while leaving the skill unable to derive it would have been an unfinished job.
 
 ### 13A.3 `megaphone.gif` — `--auto` does not remove the sparkle interiors, confirmed twice
 

@@ -47,7 +47,7 @@ Two design answers also landed: the min-dimension floor must be able to express 
 | 8th | **Task 2** — format ranking | gated on open question 1 |
 | — | **Task 11** — recommend flag conflicts | do beside Task 10; both are about a recommendation the renderer will not honour |
 | ✅ | **Task 14** — `--unprotect-region` | DONE 2026-08-22, 4 falsifiers passing |
-| — | **Task 14b** — recommend it | the flag exists but nothing points at it, so `--auto` still cannot reach it |
+| ✅ | **Task 14b** — recommend it | DONE 2026-08-22, 3 falsifiers |
 | — | **Task 13** — diagnose `--fade-color` | **BLOCKS Task 12.** Investigation first, fix second; do not build a prompt around a flag that does not work |
 | last | **Task 12** — nameable fade asks | **blocked on Task 13.** Correct in shape, useless until the flag it prescribes works |
 
@@ -1438,20 +1438,13 @@ Four falsifiers in `scripts/harness/test_unprotect_region.py`, each asserting on
 
 ---
 
-### Task 14b: teach `--recommend` that an enclosed interior may be background
+### Task 14b: ✅ DONE 2026-08-22 — `--recommend` offers `--unprotect-region`
 
-**Files:** the recommendation assembler · **Test:** `scripts/harness/test_unprotect_is_offered.py`
+Any region whose outline does not enclose it on every frame now gets a second note naming `--unprotect-region rect:x,y,w,h`, derived from the region's own bbox. Measured on broadcast: `rect:243,311,153,197` against a hand-measured `238,300,168,240`.
 
-**Why.** `--unprotect-region` exists now but **nothing suggests it**, so an autonomous run still cannot reach it. This is the last piece of the root cause identified in §13A: every protection mechanism classifies an enclosed background-coloured region as design, and the recommender only ever offers to *protect*. It is the same gap behind megaphone's sparkles, where `--auto` prints `applying: --protect-outline-color f0c850,002864` and keeps interiors the user asked to remove.
+**Offered, never applied.** Which answer is right is a statement about intent, not about pixels. Three falsifiers in `scripts/harness/test_unprotect_is_offered.py`; the load-bearing one asserts `secure.gif` (enclosure 1.000) does **not** get the hint, since a hint that fires on every asset is noise.
 
-**Shape of the fix.** In the coin-flip enclosure branch (shared with Task 10), print **both** answers with ready-to-paste flags — the protect option as today, and `--unprotect-region rect:x,y,w,h` derived from the region's own bbox, which is already computed. Under `--auto`, this is one of the options the refusal offers.
-
-⛔ **Do not auto-apply either.** Which one is right is a statement about intent, not pixels — the finding this whole section rests on.
-
-- [ ] **Step 1:** falsifier — broadcast and megaphone recommendations must both mention `--unprotect-region` with a concrete bbox; `secure.gif` (enclosure 1.000 on both regions) must **not**, or the hint is noise on every asset.
-- [ ] **Step 2:** run, confirm the first two fail and the third passes.
-- [ ] **Step 3:** implement, reusing the bbox already in the region record.
-- [ ] **Step 4:** re-run; then `python3 scripts/harness/run_populations.py` and **report what fraction of the 797 now carry the hint.** A hint everywhere is not guidance.
+⚠️ **A test-harness bug worth recording:** the first version of that suite failed on all three assets while the feature worked, because it `json.loads`-ed output assuming the list shape a MULTI-input run emits. A single-input run does not emit that shape. **A parser that assumes one output shape is a test that can fail for reasons having nothing to do with the product.**
 
 ---
 
