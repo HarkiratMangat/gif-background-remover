@@ -2330,6 +2330,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     report = analyze(input_path, tolerance=tolerance)
     evidence = []
     region_notes = []
+    _ambiguous = []
     flags = []
 
     _eh = report['edge_hardness']
@@ -2462,6 +2463,22 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                 anom = all_frames['anomalous_frame_count']
                 _ratio = ((all_frames.get('enclosure_ratio_all_frames') or 0.0)
                           if isinstance(all_frames, dict) else 0.0)
+                if 0.0 < _ratio < 1.0:
+                    # ⚠️ KEYED ON THE VALUE, NOT THE MESSAGE. The coin-flip band is exactly
+                    # _enclosure_verdict's mid band -- everything strictly between 0.000 and
+                    # 1.000, edges taken from the measured distribution (95 of 269 regions,
+                    # 35%). Recording it as structured data is what lets --auto ACT on it: a
+                    # warning in an evidence string changes nothing for an autonomous run,
+                    # which reads flags. Keying a guard on the prose would also disarm it the
+                    # day the wording is edited.
+                    _ambiguous.append({
+                        'region_id': rid,
+                        'outline_color': region['candidate_outline_color'],
+                        'enclosure_ratio': round(_ratio, 3),
+                        'frames_enclosed': all_frames.get('frames_enclosed'),
+                        'frames_checked': all_frames.get('frames_checked'),
+                        'bbox_xyxy': region.get('bbox_xyxy'),
+                    })
                 if _ratio < 1.0 and region.get('bbox_xyxy'):
                     region_notes.append(_unprotect_hint(
                         rid, region['bbox_xyxy'], _ratio,
@@ -2937,6 +2954,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
         'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
         'not_applicable_reason': _not_applicable,
+        'ambiguous_protection': _ambiguous,
         'evidence': ([_not_applicable] if _not_applicable else []) + evidence + region_notes,
         'analysis': report,
     }
@@ -8826,6 +8844,33 @@ def post_render_fringe_check(input_path, output_path, tolerance=15):
     return round(float(np.mean(vals)), 4) if vals else None
 
 
+def _assumed_colors(args, dest):
+    """The hex colours named by --assume-protect / --assume-remove, as a lowercase set."""
+    raw = getattr(args, dest, None)
+    return {c.strip().lstrip('#').lower() for c in raw.split(',') if c.strip()} if raw else set()
+
+
+def _drop_outline_colors(tokens, drop):
+    """Remove `drop` from a --protect-outline-color token pair, dropping the flag if empty.
+
+    Operates on the TOKEN LIST rather than the command string: a colour list is
+    comma-joined, so a string replace would leave a stray comma or match a substring of
+    another hex value.
+    """
+    out = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == '--protect-outline-color' and i + 1 < len(tokens):
+            kept = [c for c in tokens[i + 1].split(',') if c.strip().lower() not in drop]
+            if kept:
+                out += ['--protect-outline-color', ','.join(kept)]
+            i += 2
+            continue
+        out.append(tokens[i])
+        i += 1
+    return out
+
+
 def auto_run(input_path, output_path, args, parser):
     """
     TWO PASSES, not a loop: analyse -> recommend -> render -> re-verify the
@@ -8865,7 +8910,53 @@ def auto_run(input_path, output_path, args, parser):
     if rec.get('not_applicable_reason'):
         raise SystemExit("ERROR: --auto has nothing to do here, and doing it anyway would "
                          "destroy the image.\n  " + rec['not_applicable_reason'])
+    # ⚠️ A COIN-FLIP PROTECTION DECISION IS A QUESTION, AND --auto USED TO GUESS AT IT.
+    # Measured 2026-08-22 on megaphone.gif: --auto printed `applying: --protect-outline-color
+    # f0c850,002864`, protected the sparkle interiors the user had explicitly asked to have
+    # REMOVED, and reported success. Every region on that asset sat in the coin-flip band by
+    # the tool's own evidence -- and an evidence string nobody reads changes nothing for an
+    # autonomous run, which reads flags.
+    #
+    # ⚠️ THIS IS IN TENSION WITH THE PROJECT'S AUTONOMY GOAL AND THE TENSION IS NOT SMOOTHED
+    # OVER. An unattended run has nobody to ask, so the question is made ANSWERABLE IN
+    # ADVANCE rather than dropped: --assume-protect and --assume-remove pre-answer it per
+    # outline colour. A run that is neither pre-answered nor willing to be asked STOPS. It
+    # does not guess. And a pre-answered run SAYS it acted on an assumption -- an assumption
+    # that leaves no trace is indistinguishable from a measurement.
+    _pending = [a for a in (rec.get('ambiguous_protection') or [])
+                if a['outline_color'] not in _assumed_colors(args, 'assume_protect')
+                and a['outline_color'] not in _assumed_colors(args, 'assume_remove')]
+    if _pending:
+        _lines = [
+            f"  region {a['region_id']}, outline {a['outline_color']}, bbox "
+            f"{a['bbox_xyxy']}: encloses on {a['frames_enclosed']} of "
+            f"{a['frames_checked']} frames ({a['enclosure_ratio'] * 100:.0f}%)"
+            for a in _pending]
+        _colors = ",".join(dict.fromkeys(a['outline_color'] for a in _pending))
+        raise SystemExit(
+            "ERROR: --auto will not guess a coin-flip protection decision.\n"
+            + "\n".join(_lines)
+            + f"\n  Is each of these an interior DESIGN element to protect, or BACKGROUND "
+              f"showing through to remove? Partial enclosure is evidence for neither.\n"
+              f"  Answer it in advance and re-run:\n"
+              f"    --assume-protect {_colors}   (treat them as design; what --auto used to "
+              f"do silently)\n"
+              f"    --assume-remove {_colors}   (treat them as background; drop the outline "
+              f"colour)\n"
+              f"  Either flag may name a subset; every listed colour must be answered.")
+    _removed = _assumed_colors(args, 'assume_remove')
+    if _removed or _assumed_colors(args, 'assume_protect'):
+        print(f"assumption applied: "
+              + ", ".join(filter(None, [
+                  f"protecting {','.join(sorted(_assumed_colors(args, 'assume_protect')))}"
+                  if _assumed_colors(args, 'assume_protect') else '',
+                  f"removing {','.join(sorted(_removed))}" if _removed else '']))
+              + " -- these were coin-flip regions the tool could not decide, answered by "
+                "flag rather than by measurement.", file=sys.stderr)
+
     rec_tokens = shlex.split(rec['suggested_command'])[4:]
+    if _removed:
+        rec_tokens = _drop_outline_colors(rec_tokens, _removed)
 
     base = parser.parse_args([input_path, output_path])
     rec_ns = parser.parse_args([input_path, output_path] + rec_tokens)
@@ -9634,6 +9725,16 @@ def main():
                         f"the source already declared transparent, i.e. changes nothing on a "
                         f"source whose cut is already clean. Ignored unless the source carries "
                         f"transparency that reads as its background.")
+    p.add_argument('--assume-protect', default=None, metavar='HEX[,HEX...]',
+                    help='Pre-answer --auto\'s coin-flip protection question: treat the '
+                         'regions these outline colours enclose as interior DESIGN and '
+                         'protect them. --auto REFUSES rather than guessing when a region\'s '
+                         'enclosure evidence is neither 0%% nor 100%%, and this is how an '
+                         'unattended run answers it in advance. The run says it acted on an '
+                         'assumption.')
+    p.add_argument('--assume-remove', default=None, metavar='HEX[,HEX...]',
+                    help='The other answer: treat those regions as BACKGROUND showing '
+                         'through, and drop the outline colour from the protection.')
     p.add_argument('--auto-erosion', action='store_true',
                    help='Choose --edge-cleanup-erosion by measuring THIS asset against '
                         'itself (its own erosion 0/1/2/3 curve) instead of a fixed default. '
