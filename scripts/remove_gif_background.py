@@ -8512,6 +8512,70 @@ def _run_one_job(job_input, job_output, base_args, arg_parser, overrides=None,
             process(job_input, job_output, job_args)
 
 
+def rank_sibling_outputs(records):
+    """Mark any output that another output of the SAME source beats on every axis.
+
+    STRICT DOMINATION only -- larger-or-equal on width, height and frame count,
+    smaller-or-equal in bytes, and strictly better on at least one. A genuine tradeoff
+    ("smaller file, fewer frames") is left unranked, because choosing between smaller and
+    smoother is the user's call and the tool has no basis for it. Domination involves no
+    weighting and no taste, so this reports a FACT, not a preference -- which is why it is
+    a ranking and a warning rather than a refusal (Harkirat's call, 2026-08-23: rank and
+    warn, write every file, let an autonomous run read the ranking).
+
+    Exists because the 2026-08-22 trial delivered a 120x128 / 36-frame WebP alongside a
+    482x513 / 144-frame AVIF that was also SMALLER, printed "2/2 succeeded." and said
+    nothing at all. See docs/investigations/2026-08-22-v6-timeout-trial.md.
+    """
+    out = []
+    for r in records:
+        best = None
+        for o in records:
+            if o is r or o.get('source') != r.get('source'):
+                continue
+            ge = (o['width'] >= r['width'] and o['height'] >= r['height']
+                  and o['frames'] >= r['frames'] and o['kb'] <= r['kb'])
+            gt = (o['width'] > r['width'] or o['height'] > r['height']
+                  or o['frames'] > r['frames'] or o['kb'] < r['kb'])
+            if ge and gt:
+                best = o
+                break
+        rec = dict(r)
+        rec['dominated_by'] = best['output'] if best else None
+        rec['reason'] = (
+            f"{best['width']}x{best['height']}, {best['frames']} frames, "
+            f"{best['kb']:.1f} KB beats {r['width']}x{r['height']}, "
+            f"{r['frames']} frames, {r['kb']:.1f} KB on every axis"
+        ) if best else None
+        out.append(rec)
+    return out
+
+
+def _summary_records(results):
+    """Comparable records for the ok outputs, MEASURED ON THE DELIVERED FILES.
+
+    Dimensions and frame count are read back from what was written rather than carried
+    down from what was requested, for the same reason `_delivered_dimensions` exists: a
+    fit records what it asked for, the encoder records what it wrote. An output that
+    cannot be read back is dropped rather than defaulted -- a record invented from a
+    guess would rank a file nobody measured.
+    """
+    recs = []
+    for r in results:
+        if r.get('status') != 'ok' or not r.get('output'):
+            continue
+        try:
+            with Image.open(r['output']) as im:
+                w, h = im.size
+                n = getattr(im, 'n_frames', 1)
+            kb = os.path.getsize(r['output']) / 1024
+        except Exception:
+            continue
+        recs.append({'source': r.get('input'), 'output': r['output'],
+                     'width': w, 'height': h, 'frames': int(n), 'kb': kb})
+    return recs
+
+
 def _print_job_summary(results, header='Batch summary'):
     print(f"\n=== {header} ===", file=sys.stderr)
     ok_count = sum(1 for r in results if r['status'] == 'ok')
@@ -8523,6 +8587,11 @@ def _print_job_summary(results, header='Batch summary'):
             print(f"  SKIPPED {r.get('input')}: {r['reason']}", file=sys.stderr)
         else:
             print(f"  ERROR   {r['input']}: {r['reason']}", file=sys.stderr)
+    for _r in rank_sibling_outputs(_summary_records(results)):
+        if _r['dominated_by']:
+            print(f"  ⚠ {_r['output']} is STRICTLY WORSE than {_r['dominated_by']}: "
+                  f"{_r['reason']}. Keep {_r['dominated_by']} unless you need this "
+                  f"container specifically.", file=sys.stderr)
     print(f"{ok_count}/{len(results)} succeeded.", file=sys.stderr)
     return ok_count
 
