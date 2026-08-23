@@ -12,6 +12,7 @@ which resolves differently depending on where pytest is invoked from.
 """
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -69,8 +70,22 @@ def rendered(asset, *flags):
         # ...and the temp name keeps the .webp suffix: the script picks its output format
         # FROM THE EXTENSION, so a bare `.tmp` fails with `unknown file extension`.
         tmp = out + f'.{os.getpid()}.tmp.webp'
-        r = subprocess.run([sys.executable, SCRIPT, _p(asset), tmp, '--auto', *flags],
-                           capture_output=True, text=True)
+        cmd = [sys.executable, SCRIPT, _p(asset), tmp, '--auto', *flags]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        # ⚠️ Since v6.1.0 --auto REFUSES a coin-flip enclosure rather than guessing, and
+        # several corpus assets land in that band. These tests were written against the old
+        # behaviour -- silently protect -- so reproduce exactly that by answering the
+        # question the refusal asks, with the colours it names. Answering it here rather
+        # than adding a blanket "protect everything" flag keeps the product honest: the
+        # harness is a caller like any other, and it has to answer like one.
+        if r.returncode != 0 and 'COIN-FLIP PROTECTION' in (r.stdout + r.stderr):
+            log = r.stdout + r.stderr
+            m = re.search(r'--assume-protect (\S+)', log)
+            assert m, f'the refusal named no colours to answer with\n{log[-2000:]}'
+            extra = ['--assume-protect', m.group(1)]
+            if 'NAMEABLE FADE' in log:
+                extra.append('--assume-no-fade')
+            r = subprocess.run(cmd + extra, capture_output=True, text=True)
         assert r.returncode == 0 and os.path.exists(tmp), \
             f'rendering {asset} {flags} failed rc={r.returncode}\n{r.stderr[-2000:]}'
         os.replace(tmp, out)
@@ -137,7 +152,12 @@ def test_fade_recovery_is_still_recommended_where_there_is_a_real_fade():
     """The negative half. A gate that suppresses the flag everywhere is not a gate -- and
     satellite.gif carries a genuine flattened fade (#fdcb50) the detector confirms."""
     j = _recommend(_p('satellite.gif'))
-    assert '--recover-fade-alpha' in j['suggested_command'], j['suggested_command']
+    # Since v6.1.0 the recommender never emits --recover-fade-alpha ALONGSIDE a protection
+    # flag, because the renderer ignores the protection (SS34.4) -- protection wins, and the
+    # fade-first command is published complete in `alternative_command`. Either field
+    # carrying it satisfies what this test is actually about: the flag is not suppressed.
+    _cmds = ' '.join(filter(None, [j['suggested_command'], j.get('alternative_command')]))
+    assert '--recover-fade-alpha' in _cmds, (j['suggested_command'], j.get('alternative_command'))
 
 
 @needs_dark

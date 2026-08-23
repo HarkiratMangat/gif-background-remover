@@ -469,15 +469,19 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 
 ---
 
-## 12. Findings, ranked
+## 15. Findings, ranked
 
 **Severity rule:** *high = ships wrong artwork, or a false claim about it, silently.* Everything else is medium or below regardless of how annoying it is.
 
 | # | finding | severity | fixable in-tool |
 |---|---|---|---|
 | 1 | Edge-cleanup erosion defaults to 0 on every 8-bit-alpha output, leaving a ~1px light fringe; `edge_fringe_check` reports it clean | **high** — visible on every WebP/AVIF the manual path has ever produced, and the check that should catch it does not | yes |
-| 1 | `--auto` applies `--protect-outline-color f0c850` and protects the sparkles the user asked to remove | **high** — the autonomy path produces wrong art, silently | partly |
+| 1a | `--auto` applies `--protect-outline-color f0c850` and protects the sparkles the user asked to remove | **high** — the autonomy path produces wrong art, silently | partly |
 | 1b | Frame-stride damage is priced by file size, not by visible damage; stride 3-4 is plainly choppy to a viewer | medium — a destructiveness ordering that does not match perception | needs measurement |
+| 1c | `--recommend` emits `--protect-outline-color` together with `--recover-fade-alpha`, which the renderer refuses to honour; the conflict surfaces only at render time | **high** — a recommended command that silently drops protection | yes |
+| 1d | The fade detector names the fading colour and the flag that fixes it, then delivers both only as evidence prose `--auto` never reads | **high** — the glow is cut silently on an asset the tool correctly diagnosed | yes |
+| 1e | `--fade-color`, the prescribed escape hatch, leaves 90.9% of the faded pixels OPAQUE, and the evidence text predicts they will be removed when they are kept | **high** — a documented workaround that does not work | needs diagnosis |
+| 1f | ✅ **FIXED 2026-08-22** — `--unprotect-region` added: region-scoped background key that overrides protection without deleting artwork, and composes with the fade path. Measured 8,569→0 enclosed white with navy 23,240→23,631 | was **high** | done; recommender half open (Task 14b) |
 | 2 | `--target-kb` has no min-dimension constraint; silently violates a stated floor | **high** — ships wrong artwork silently | yes |
 | 3 | Final dimensions never reprinted after a fit; the last printed `Output:` line is stale | **high** — directly caused a false compliance report | yes |
 | 4 | `SKILL.md`'s navigation recipe is `rg`-only; the `grep` substitute returns 0 matches at exit 0 | **high** — silent failure at the skill's entry point | yes |
@@ -485,11 +489,11 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 | 6 | No ranking between format outputs; a strictly-dominated file ships with equal billing | **high** — user cannot tell which file is damaged | yes |
 | 7 | `--target-kb` runtime exceeds tool timeouts on >100-frame assets, with no pre-flight estimate; `--verify` does too | medium — kills sessions, but loudly | partly |
 | 8 | `--verify` silently vacuous on cropped output | medium — a pass that was never computed | yes |
-| 9 | 28.9% of `SKILL.md` is release notes a working session does not need | medium — context cost, with load-bearing facts buried in it | yes |
+| 9 | `SKILL.md` release-note bloat — was 28.9% of the file | medium | ⚠️ **partly fixed**: the v6.1.0 bump moved v6.0.0's entry to `references/version-history.md`, taking the header to **12.4%**. The older summaries remain. |
 | 10 | Correct in-run diagnostic ("downscaling made this LARGER") not fed back into the search | low | yes |
 | 11 | Min-dimension enforcement must cover `--resize-max-dim` and the compress tiers, not only the fit | medium — the planned fix reaches one consumer of several | yes |
 
-Findings 1, 1b, 2, 3, 4, 5, 6, 8, 9 and 11 are covered by `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md`. Findings 1, 7 and 10 are partly covered and partly open — see the OPEN QUESTIONS section below, which must be settled before the plan is executed.
+**STATUS as of 2026-08-22:** findings **1f fixed** (`--unprotect-region`, plus the recommender offering it) and **9 partly fixed** (header 28.9% → 12.4%). Everything else is open. Findings 1, 1a, 1c, 1d, 2, 3, 4, 5, 6, 8 and 11 are covered by `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md`. Findings 1, 7 and 10 are partly covered and partly open — see §16 OPEN QUESTIONS below, which must be settled before the plan is executed.
 
 
 ---
@@ -548,7 +552,121 @@ Harkirat chose **ask the user** for a coin-flip enclosure region.
 
 ---
 
-## 14. OPEN QUESTIONS — settle these before executing the plan
+## 13A. Three more edge cases, supplied by Harkirat 2026-08-22
+
+Two new assets from `Diors-builds Emojis`, plus a confirmation on megaphone. All three are about the same underlying thing: **the tool knows the answer and does not act on it.**
+
+Raw artifacts: `local/2026-08-22-fade-edge-cases/` — `--recommend` JSON, four renders, comparison strips.
+
+### 13A.1 `notification.gif` — the prescribed fix does not work, and the tool's own prediction is wrong
+
+⚠️ **This section replaces an earlier draft that was WRONG.** That draft reported `--fade-color fd6050` as "+27% recovered falloff at zero cost" and called the prescription correct. Harkirat looked at the two renders: *"looks exactly the same top and bottom, and it's incorrect in both — the red signal animation is not correctly detected as 'fading'/translucent."* He is right, and the error was mine: I compared render A to render B and never asked **what a working fade looks like** — the answer was in my own table (broadcast recovers 4.25% mid-alpha; notification managed 0.16%, a 26× difference). **A relative gain on a near-zero base is not a fix.** This is the "grade the artefact, not the metric" failure, committed in a report that already contains a section warning about it.
+
+**The source genuinely is a flattened fade.** On frame 14, **3,807 pixels lie on the `fd6050` → white ray at 5–95% opacity** — the textbook signature. Per-frame sampling shows a pale stage that changes each frame (`ffd1cd` on 14, `fea89f` on 30, `fd6b5d` on 50, ~1,000–2,300 px each): an animating translucent wave, flattened at export.
+
+**Traced pixel-by-pixel into the output, both renders fail the same way:**
+
+| source opacity band (frame 14) | px | `--auto` | `--fade-color fd6050` |
+|---|---|---|---|
+| 0.05–0.35 (faintest) | 2,662 | **92.5% fully opaque** | **90.9% fully opaque** |
+| 0.35–0.65 | 114 | **100% opaque** | **100% opaque** |
+| 0.65–0.95 | 1,031 | **100% opaque** | **100% opaque** |
+
+The translucent wave renders as **opaque pale-pink blobs** — precisely the failure §16 describes for GIF's 1-bit alpha, happening here in a WebP output that could carry the alpha perfectly well. `--fade-color fd6050`, the flag the tool's own evidence tells you to run, moves the faintest band from 92.5% to 90.9% opaque. **It does essentially nothing.**
+
+**Three distinct defects, not one:**
+
+1. **The prescribed escape hatch does not work.** The evidence names `fd6050` and says "re-run with `--fade-color fd6050`". Running it leaves 90.9% of the faded pixels opaque. A documented workaround that fails is worse than none — it costs a render and manufactures confidence.
+2. **The evidence text predicts the wrong outcome.** It states those pixels are *"below half opacity, and every one of them is removed as background."* Measured: only **1.8%** come out at alpha 0. They are not removed — they are **kept, fully opaque**. The warning describes a failure mode the renderer does not actually produce, which means anyone reasoning from it reasons from a false premise.
+3. **`--auto` never surfaces any of it**, per the evidence-channel problem below.
+
+**Do not attribute this to §41.** §41's 91-asset interleaving explains why the tool declines to auto-apply `--recover-fade-alpha`. It does not explain why the *manual*, explicitly-named `--fade-color` path leaves the fade opaque. That is a separate failure in the fade renderer and needs its own diagnosis — start by checking whether `--fade-color` reaches `recover_fade_alpha_frames` at all on an asset where the palette detector already reported no translucent colour.
+
+### 13A.2 `broadcast.gif` — the either/or IS real. My "solution" destroyed the artwork.
+
+⚠️ **This section retracts a retraction.** I claimed `--remove-region` composed with the fade path and solved this, on the strength of "enclosed white 8,569 → 0 with the fade intact." Harkirat looked at the render: **it cut a literal rectangle out of the tower.**
+
+| broadcast render | opaque px | navy tower px | enclosed white px |
+|---|---|---|---|
+| protect-only | 78,424 | 23,240 | 8,569 |
+| recommended cmd | 74,440 | 23,157 | 8,569 |
+| **fade + `rect:` remove-region** | 47,988 | **6,297 (−73%)** | 0 |
+
+**73% of the tower destroyed, 36% of all opaque pixels gone.** `--remove-region` is a blunt force-delete — its own help says *"for carving out a small feature"* — not a background-keyed removal scoped to a region. It cannot express "remove background-coloured pixels inside this box."
+
+**My metric measured exactly one thing (white pixels removed) and was blind to the only thing that mattered (was the artwork still there).** Both counts were true. The conclusion was false. This is the third time in this report that a plausible number survived because nobody looked at the picture — and the first two are written up as warnings a few sections above.
+
+**So the either/or stands as Harkirat originally described it**, and §13A.2's earlier "capability gap" filing was right the first time: no path both recovers a flattened fade and removes an enclosed background-coloured interior while keeping the art. Two things could close it — a `--remove-region` variant that keys on background colour inside the region rather than deleting it, or letting the fade path accept protection flags. Neither exists.
+
+### 13A.2b RESOLVED — `--unprotect-region`, implemented 2026-08-22
+
+The gap §13A.2 identified is closed. **`--unprotect-region`** takes the same `circle:`/`rect:`/`;` syntax as `--remove-region`, and inside its box it **re-applies the background key and overrides every protection decision — while leaving non-background pixels alone.**
+
+Implementation is small because the machinery existed: `apply_remove_regions` already accepts a **list of per-frame masks**, so the per-frame mask is simply `region ∩ color_mask(frame, bg, tolerance)`. That reuses its de-fringe/taper handling, which is exactly what a removal boundary needs, and it runs downstream of the fade path at `:7346` — so it is the one region flag that composes with `--recover-fade-alpha`.
+
+**Measured on broadcast.gif, frame 30:**
+
+| render | enclosed white px | navy artwork px | total opaque | mid-alpha |
+|---|---|---|---|---|
+| `--protect-outline-color` only | 8,569 | 23,240 | 78,424 | 1.15% |
+| the recommended command | 8,569 | 23,157 | 74,440 | 4.25% |
+| `--remove-region` (my wrong fix) | 0 | **6,297 (−73%)** | 47,988 | 4.22% |
+| **`--unprotect-region`** | **0** | **23,631** | 65,865 | **4.48%** |
+
+**White gone, tower intact, fade recovered — all three at once**, which is what Harkirat asked for at the start and was told was impossible.
+
+**Four falsifiers**, `scripts/harness/test_unprotect_region.py`, each asserting on **both** what left and what stayed — because the white-pixel assertion passed on the render that destroyed the tower:
+1. enclosed white < 500 **AND** navy > 20,000 on broadcast.
+2. It survives `--recover-fade-alpha`, which ignores every other protection flag (mid-alpha > 3%).
+3. **Not a force-delete:** a region placed over solid artwork must leave opaque count within 3% — the direct guard against reintroducing `--remove-region`'s behaviour.
+4. Omitting the flag produces byte-identical output — the feature is inert unless asked for.
+
+**Two implementation defects, both found by Harkirat looking at the render, neither visible in the numbers being watched.** He reported *"jittery anti-aliasing inside of the tower"* and *"the top triangle cutout white peaking in some frames."*
+
+| | white residue (worst frame) | AA-ring fully opaque | artwork (navy) |
+|---|---|---|---|
+| v1 hard `color_mask` | **262 px on 3 of 60 frames** | 0.5% | 23,631 |
+| v2 colour ramp only | 0 | **12.4%** | 23,157 |
+| **v3 ramp + geometric taper** | **0** | **0.5%** | **23,478** |
+
+The residue was **outside the region I chose** — bbox (310,310)-(329,330) against a rect starting at y=332 — so it was my geometry, not the algorithm, and it argues for deriving the region rather than hand-measuring it (Task 14b). The shimmer was the hard threshold leaving 236-454 px per frame of AA ramp opaque, with the count moving every frame.
+
+Fixing the shimmer with a colour ramp then created a **worse** defect: pale pixels held fully opaque. The working answer is both — colour decides what is background, geometry softens the boundary.
+
+⚠️ **A temporal-stabilisation variant was built and rejected on its own evidence.** Lag-1 class-flip rate on the ring is **0.062** with a median of 2 changes across 60 frames — smooth animation, not dither noise, so a per-frame decision was correct all along. Median-frame keying left the ring nearer white than the artwork.
+
+⚠️ **And a measurement lesson repeated from §13A.1:** the first ring comparison selected pixels *by alpha*, which selects a different population per render. Re-measured over a fixed 2,060 px population, and only then did the 12.4% opaque rim show up.
+
+✅ **The autonomy half is done too.** `--recommend` now emits a second note on any region whose outline does not enclose it on every frame, naming `--unprotect-region rect:x,y,w,h` from the region's own bbox — measured on broadcast as `rect:243,311,153,197` against the hand-measured `238,300,168,240`. Offered, never applied: intent is not a pixel question.
+
+⚠️ **A pre-push check caught this hint shipping a coordinate that does not work.** Rendering with the derived rect left **2,340 px of residue** — a prescription that fails, the exact defect class §13A.1 is about. A 15% padding heuristic cleared it and **cost 1,287 px of artwork** by reaching the tower's outer silhouette, falsifying the "oversized is free" argument behind it. Even the exact across-frames extent still left 1,607 px, because the residue is scattered small blobs a bounding box cannot describe. **The hint now states plainly that the box is a starting point, with the measured tradeoff** — and deriving a real per-frame region is filed as Task 14c rather than papered over with a constant tuned on one file. Three falsifiers, the load-bearing one being that `secure.gif` (enclosure 1.000 on both regions) must **not** get the hint — a hint that fires everywhere means nothing.
+
+**This is what `CLAUDE.md`'s end-goal section actually asks for.** The manual flag was the investigation result; closing the gap that made the override necessary is the fix. Delivering the corrected broadcast render while leaving the skill unable to derive it would have been an unfinished job.
+
+### 13A.3 `megaphone.gif` — `--auto` does not remove the sparkle interiors, confirmed twice
+
+> "for the megaphone.gif artwork, currently the `--auto` mode doesn't remove the white area inside of the yellow sparkles."
+
+Same defect as §12.13.1, observed independently: `--auto` prints `applying: --protect-outline-color f0c850,002864` and therefore **protects** the sparkle interiors rather than removing them. Two observations of the same behaviour from opposite directions — a log line here, a look at the output there.
+
+§13A.2 supplies the missing answer for this class too: `--remove-region` is the mechanism that expresses "this enclosed interior is background." Nothing recommends it.
+
+### 13A.4 The pattern all three share
+
+Every one of these is the tool **being right and staying quiet about it in the one channel that matters**:
+
+- notification: names `fd6050`, prescribes `--fade-color`, files it in evidence prose — **and the prescription does not work, while the prediction attached to it is factually wrong.**
+- broadcast: knows the two flags are exclusive, warns only after being asked to run both, and the warning steers away from `--remove-region`, which **does** compose with the fade path.
+- megaphone: reports the enclosure as a coin flip, then acts as if it were verified.
+
+**The unifying root, visible only once all three are together: the tool has no way to express "this enclosed interior is background."** Every protection mechanism — explicit outline, topological, band-interior — independently concludes that an enclosed region of background colour is intentional design. `--remove-region` is the one escape hatch, it composes with everything, and it is recommended by nothing.
+
+**A tool that has computed the right answer and routes it somewhere an autonomous run cannot act on has not solved the problem — it has documented it.** That is the same failure the release-gate list already records for changelogs (*"a changelog reads like documentation and is not"*), one level down: **an evidence string reads like a warning and is not.**
+
+
+---
+
+## 16. OPEN QUESTIONS — settle these before executing the plan
 
 **1. ✅ ANSWERED 2026-08-22 — see §13.** The removal is correct; the fringe and the frame-count reduction are not. Two new findings came out of it. The questions below are what remains open.
 
@@ -575,3 +693,7 @@ Contact sheets of all four delivered files are in `local/2026-08-21-v6-timeout-t
 **5. Should the erosion default change for 8-bit-alpha formats, or should `--auto`'s calibration simply always run?** §13.1 shows `--auto` reaches erosion 1 and a clean edge while the manual path takes 0 and keeps a fringe. Flipping the default to 1 is the blunt fix; making the calibration unconditional is the better one but is slower. This needs a PRE/POST render diff over the corpus before either is chosen — a fringe is not the only thing erosion changes, and this repo has 448 renders' worth of evidence that erosion above 1 destroys artwork.
 
 **6. Does `_STRIDE_COST` need re-weighting after §13.2?** One person's reaction on one asset is a signal, not a measurement. Deciding this needs the same treatment `galaxy.gif` got: a real comparison, on real assets, of what a viewer notices at stride 2, 3 and 4 against what a deep downscale costs. Do not edit the weights on the strength of this report alone.
+
+**7. Should a fade the detector can NAME but not disambiguate become an `--auto` question, or stay a silent no-op?** §13A.1 measured `--fade-color fd6050` as +27% recovered falloff at zero cost to background removal, on an asset the tool itself identified. §41's 91-asset interleaving is a real reason not to auto-apply it — but "cannot decide" and "say nothing" are different answers, and the tool currently picks the second.
+
+**8. The capability gap is REAL** (a retraction of a retraction — see §13A.2). `--remove-region` force-deletes its whole box, taking 73% of the tower with the white. Closing this needs either a background-keyed variant of `--remove-region`, or the fade path accepting protection flags. **Also open:** why `--fade-color` leaves the notification fade opaque (§13A.1).

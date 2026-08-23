@@ -150,6 +150,7 @@ Five modes replace "run it and hope":
 | `--recommend` | `--analyze`, then a ready-to-paste command **with the evidence behind each flag**. |
 | `--auto` | Recommend → apply (only where you left a default) → render → **re-verify the encoded file** → correct once. Two passes, not a loop. |
 | `--auto-erosion` | Picks erosion from *this asset's own* fringe curve, because the metric has no honest global threshold. |
+| `--assume-protect <hex,…>` · `--assume-remove <hex,…>` · `--assume-no-fade` | Pre-answer the question `--auto` now REFUSES to guess: whether a region whose outline encloses it on *some* frames is interior design or background showing through. Either may name a subset; every ambiguous colour must be answered or the run still stops. `--assume-no-fade` answers the other question `--auto` refuses to guess: whether a soft falloff it can NAME but not classify is artwork (`--recover-fade-alpha --fade-color <hex>`) or background. Measured refusal rate across 304 assets: **12.8%**. |
 | `--verify` | Leftover background, protected-region coverage, edge fringe, small-region inflation, timing. |
 
 <details>
@@ -164,6 +165,7 @@ Five modes replace "run it and hope":
 | `--outline-tolerance <n>` | Tolerance for the outline colour (default 40). |
 | `--protect-region circle:cx,cy,r \| rect:x,y,w,h` | Manual region, `;`-separated for several. **A last resort** — a fixed circle rarely matches a real interior's irregular shape. |
 | `--remove-region …` | The inverse: force-remove, overriding protection inside it. |
+| `--unprotect-region …` | Region-scoped BACKGROUND removal: inside the region the background key is re-applied and every protection decision is overridden, but non-background pixels are left alone. Says "this enclosed interior is background" — a white area inside a tower, the white inside a sparkle — which no protection flag can express. Unlike `--remove-region` it does not force-delete its box, and it is the one region flag that composes with `--recover-fade-alpha`. |
 | `--remove-region-track …` | Same spec, but as a frame-0 SEED that is then FOLLOWED across the animation — for a hole that moves and cannot be told from same-coloured decoration by size or aspect. |
 | `--remove-region-feather <px>` | Edge taper for that cut (default 1.5). |
 | `--protect-band-only <px>` | Feather only a thin ring around the removable core; force-protect everything else. For when a solid design colour sits near the background. |
@@ -237,6 +239,7 @@ Five modes replace "run it and hope":
 | `--target-kb <n>` | Fit a byte cap. GIF output walks optimize → medium → heavy, then escalates stride/scale. WebP/AVIF/APNG output runs a 120-rung grid (stride × scale × quality) ordered least-destructive-first, evaluated concurrently at a **probed** worker count (serial wherever the probe fails). A deep downscale ranks below frame-stride — on flat vector art, shrinking makes the file *bigger* (`references/lessons.md` §42). |
 | `--compress {optimize,medium,heavy}` | Named tiers: crop, resize to 512px, 1px erosion, `gifsicle -O3`, plus lossy/palette steps. |
 | `--resize-max-dim <px>` | Arbitrary downscale target, standalone. |
+| `--min-width <n>` · `--min-height <n>` · `--min-dimension <n>` | A resolution FLOOR for a `--target-kb` fit, so a byte cap cannot silently outrank a stated size. Quality and frames are traded instead, and the failure message names the floor. A bare `--min-dimension` constrains the **shorter side** — the stricter reading, and the right one for a square sticker slot; name an axis when that is not what you want. |
 | `--frame-stride <n>` | Keep every Nth frame, **folding dropped durations into the kept frame** so total length is unchanged. |
 | `--crop` | Crop to the transparent bounding box (automatic within any tier). |
 | `--square-pad` | Pad to a square with transparent margin — emoji slots are square. |

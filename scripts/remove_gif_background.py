@@ -629,6 +629,31 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
 # silently handed an 8-bit container the 1-bit code path.
 EIGHT_BIT_ALPHA_FORMATS = ('webp', 'avif', 'apng')
 
+#: Flags the RENDERER refuses to honour together, as (winner-if-conflicted, losers) sets of
+#: argparse dest names paired with the CLI spelling. Declared ONCE, here, and read by both
+#: the renderer's warning and --recommend's conflict check, so the two cannot drift apart.
+#: `--recover-fade-alpha` takes its own render path and silently ignores every protection
+#: flag (references/lessons.md SS34.4). Measured 2026-08-22: --recommend returned
+#: "--protect-outline-color 002864 --recover-fade-alpha" for broadcast.gif, and an
+#: autonomous run pasting that got an output whose protection did nothing -- learning about
+#: it only at render time, after committing to the render.
+#:
+#: ⛔ PROTECTION WINS. A protected region usually comes from an explicit user instruction; a
+#: fade is inferred by the tool. Losing an instruction is worse than losing an improvement.
+FADE_EXCLUSIVE_FLAGS = (
+    ('--tumble-safe', 'tumble_safe'),
+    ('--protect-outline-color', 'protect_outline_color'),
+    ('--protect-region', 'protect_region'),
+    ('--protect-band-only', 'protect_band_only'),
+    ('--keep-bg-blob-if-near', 'keep_bg_blob_if_near'),
+)
+
+#: --webp-quality's argparse default, bound as a constant so the "this flag cannot take
+#: effect" warning compares against the DEFAULT rather than a literal 90. A warning keyed
+#: on a literal is silently disarmed the day the default moves -- the same failure mode as
+#: a guard keyed on a message string.
+WEBP_QUALITY_DEFAULT = 90
+
 
 def _avif_available():
     """True if this Pillow can write AVIF -- via built-in support or the plugin."""
@@ -2188,6 +2213,64 @@ def analyze(input_path, max_samples=40, tolerance=15):
 _FORMAT_RANK_EMITTED = False
 
 
+def _unprotect_hint(rid, bbox, ratio, checked):
+    """The counter-option an ambiguous enclosure verdict was never offering.
+
+    Every protection mechanism in this tool -- explicit outline, the fade path's
+    topological protection, the band-interior scan -- independently classifies an
+    ENCLOSED region of background colour as intentional design. Measured 2026-08-22 on a
+    broadcast-tower asset, `--protect-outline-color` and `--recover-fade-alpha` left the
+    SAME 8,569 enclosed near-white opaque px with the same bounding boxes: two mechanisms,
+    opposite routes, identical verdict. There was no way to say "this interior IS the
+    background", so a user who wanted it gone had no path at all -- and `--remove-region`,
+    the obvious workaround, force-deletes its whole box and took 73% of the artwork with
+    the white.
+
+    `--unprotect-region` is that path. It is offered here, never applied: which answer is
+    right is a statement about INTENT, not about pixels, and this file's own rule is that
+    an unverifiable check reports rather than guesses. Only ambiguous regions get the hint
+    -- a region enclosed on every frame is not in doubt, and a hint on every asset is
+    noise rather than guidance.
+    """
+    x0, y0, x1, y1 = (int(v) for v in bbox)
+    # ⚠️ THIS BOX IS THE SAMPLED FRAME'S EXTENT AND MAY BE TOO SMALL. `bbox_xyxy` is
+    # measured on one frame, but an interior can BREATHE across the animation -- on the
+    # broadcast tower the enclosed white runs 18,038 to 20,367 px. Measured 2026-08-22,
+    # rendering with each candidate box:
+    #
+    #     bbox as-is        rect:243,311,153,197   residue 2,340 px   artwork 23,399
+    #     true across-frames extent 243,303,154,213  residue 1,607    artwork 23,427
+    #     +8px uniform      rect:241,306,158,207   residue 1,905      artwork 23,416
+    #     +15%              rect:220,281,199,257   residue     0      artwork 22,191
+    #     hand-measured     rect:238,300,168,240   residue     0      artwork 23,478
+    #
+    # ⚠️ A PADDING HEURISTIC WAS BUILT AND REMOVED. The argument for it was that this flag
+    # re-keys only BACKGROUND-COLOURED pixels, so an oversized box should be free. That is
+    # FALSE and the table above is why: at +15% the box reaches the tower's outer silhouette
+    # and re-keys the antialiasing ramp there, costing 1,287 px of artwork. And no pad tuned
+    # on one asset is defensible -- even the exact across-frames extent still leaves 1,607 px,
+    # because the residue is scattered small blobs a bounding box does not describe.
+    #
+    # So the box is reported honestly as a STARTING POINT with the tradeoff named, rather
+    # than shipping a number tuned to one file. Deriving a real per-frame region is the
+    # correct fix and is filed as its own task.
+    return (f"Region {rid}: if this enclosed interior is BACKGROUND rather than design "
+            f"(a gap showing through a lattice, the white inside a sparkle), protecting it "
+            f"is the wrong answer and no protection flag can express that. Add "
+            f"--unprotect-region rect:{x0},{y0},{x1 - x0},{y1 - y0} to re-key it as "
+            f"background while leaving the artwork there untouched. ⚠️ THIS BOX IS A "
+            f"STARTING POINT, not a measured answer: it is this region's extent on the "
+            f"SAMPLED frame, and an interior that grows across the animation will leave "
+            f"residue outside it -- widen it and re-check. Widen deliberately: measured on "
+            f"one asset, a 15% pad cleared the residue but reached the artwork's outer "
+            f"silhouette and trimmed 1,287 px of it. It is also the only "
+            f"region flag that composes with --recover-fade-alpha, which ignores every "
+            f"protection flag (references/lessons.md SS43). NOT applied automatically: "
+            f"whether an interior is design or background is the user's call, not "
+            f"something the pixels answer -- this region encloses on {ratio * 100:.0f}% "
+            f"of {checked} frames, which is why it is being asked about at all.")
+
+
 def _enclosure_verdict(rid, outline_hex, all_frames):
     """Three bands, three sentences -- because `verified` was being printed over a number
     that said otherwise, and an autonomous run reads the word, not the number.
@@ -2247,6 +2330,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     report = analyze(input_path, tolerance=tolerance)
     evidence = []
     region_notes = []
+    _ambiguous = []
     flags = []
 
     _eh = report['edge_hardness']
@@ -2377,6 +2461,28 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                     and not (leak and leak['over_protects_background'])):
                 outline_colors.append(region['candidate_outline_color'])
                 anom = all_frames['anomalous_frame_count']
+                _ratio = ((all_frames.get('enclosure_ratio_all_frames') or 0.0)
+                          if isinstance(all_frames, dict) else 0.0)
+                if 0.0 < _ratio < 1.0:
+                    # ⚠️ KEYED ON THE VALUE, NOT THE MESSAGE. The coin-flip band is exactly
+                    # _enclosure_verdict's mid band -- everything strictly between 0.000 and
+                    # 1.000, edges taken from the measured distribution (95 of 269 regions,
+                    # 35%). Recording it as structured data is what lets --auto ACT on it: a
+                    # warning in an evidence string changes nothing for an autonomous run,
+                    # which reads flags. Keying a guard on the prose would also disarm it the
+                    # day the wording is edited.
+                    _ambiguous.append({
+                        'region_id': rid,
+                        'outline_color': region['candidate_outline_color'],
+                        'enclosure_ratio': round(_ratio, 3),
+                        'frames_enclosed': all_frames.get('frames_enclosed'),
+                        'frames_checked': all_frames.get('frames_checked'),
+                        'bbox_xyxy': region.get('bbox_xyxy'),
+                    })
+                if _ratio < 1.0 and region.get('bbox_xyxy'):
+                    region_notes.append(_unprotect_hint(
+                        rid, region['bbox_xyxy'], _ratio,
+                        all_frames.get('frames_checked', 0)))
                 region_notes.append(
                     _enclosure_verdict(rid, region['candidate_outline_color'], all_frames)
                     + ("" if anom == 0 else
@@ -2444,19 +2550,25 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             "keys the background to a faint non-zero alpha instead of removing it "
             "(measured 2026-08-20: bg_removed_worst 0.0000 on the worst case). "
             + (
-                f"⚠️ EXPECT THE OUTER FALLOFF OF ANY SOFT GLOW OR HALO TO BE CUT on this "
+                f"⚠️ EXPECT THE OUTER FALLOFF OF ANY SOFT GLOW OR HALO TO BE LOST on this "
                 f"asset: {_ramp['faint_px']} pixels on frame {_ramp['frame_index']} unmix "
                 f"cleanly as {_ramp['color']} fading toward the background (below half "
-                f"opacity), and every one of them is removed as background. If that falloff "
-                f"is artwork, re-run with --fade-color {_ramp['color']} and a WebP/AVIF "
-                f"output, which bypasses detection entirely. This is NOT applied "
+                f"opacity), and NONE of them is reconstructed as translucent. ⚠️ This used to "
+                f"say every one of them is REMOVED as background; measured 2026-08-22, that is "
+                f"not what happens -- only 1.8% land at alpha 0. What they do depends on what "
+                f"else protects them: fully opaque pale blobs when a protection flag covers "
+                f"them, removed outright when nothing does. Neither is the fade. If that "
+                f"falloff is artwork, re-run with --recover-fade-alpha --fade-color "
+                f"{_ramp['color']} -- BOTH flags, --fade-color does nothing on its own -- and a "
+                f"WebP/AVIF output, which bypasses detection entirely. This is NOT applied "
                 f"automatically and the reason is measured, not caution: across the 91 assets "
                 f"in exactly this branch, this asset's ramp statistics interleave with the "
                 f"ones that render as a translucent ghost of the whole frame, so no threshold "
                 f"separates them (references/lessons.md SS41)."
                 if _ramp else
                 "If you can see a fade the detector missed, name its colour with "
-                "--fade-color, which bypasses detection entirely."
+                "--recover-fade-alpha --fade-color <hex> -- both flags, --fade-color does "
+                "nothing on its own -- which bypasses detection entirely."
             ))
     elif (any(r['classification'] == 'gradient_fade' for r in band_regions)
           and _fade_ok is None):
@@ -2757,6 +2869,39 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     # that is not a repo root -- "scripts/remove_gif_background.py" resolves there
     # only by luck. Every test of this was run FROM the repo root, where the wrong
     # path happens to be right: a check that could not fail.
+    # ⚠️ RESOLVE MUTUAL EXCLUSIVITY BEFORE THE COMMAND IS ASSEMBLED. The renderer already
+    # warns that --recover-fade-alpha ignores every protection flag, but that warning fires
+    # at RENDER time, after an autonomous run has committed to the render -- and it pastes
+    # suggested_command verbatim. Measured 2026-08-22 on broadcast.gif: --recommend returned
+    # "--protect-outline-color 002864 --recover-fade-alpha" and the protection silently did
+    # nothing. Choose, say which, and say what was given up; do NOT drop one in silence.
+    _fade_alternative = None
+    if '--recover-fade-alpha' in flags:
+        _blocked = [f for f in flags
+                    if any(f.split()[0] == flag for flag, _dest in FADE_EXCLUSIVE_FLAGS)]
+        if _blocked:
+            # ⚠️ THE OTHER SIDE OF THE TRADEOFF IS PUBLISHED, NOT DISCARDED. Dropping the
+            # fade flag and saying nothing else would suppress --recover-fade-alpha on every
+            # asset that also wants protection, which on this corpus is most faded assets --
+            # a gate that suppresses a flag everywhere is not a gate. `alternative_command`
+            # carries the fade-first command, complete and runnable, so both options exist
+            # and NEITHER of them is a pair the renderer refuses to honour.
+            _fade_alternative = [f for f in flags if f not in _blocked]
+            flags = [f for f in flags if f != '--recover-fade-alpha']
+            evidence.insert(0, (
+                "MUTUALLY EXCLUSIVE -- pick one, and this recommendation has picked for you. "
+                "--recover-fade-alpha reconstructs the flattened fade, but it takes its own "
+                "render path and IGNORES every protection flag (references/lessons.md SS34.4), "
+                "so the pair " + ", ".join(_blocked) + " + --recover-fade-alpha would have "
+                "rendered with no protection at all. Recommending "
+                + ", ".join(_blocked) + " and DROPPING --recover-fade-alpha, because a "
+                "protected region is usually a stated requirement while a fade is inferred, and "
+                "losing an instruction is worse than losing an improvement. To take the fade "
+                "instead, run `alternative_command` from this report instead of "
+                "`suggested_command` -- it is the same command with " + ", ".join(_blocked)
+                + " removed, complete and runnable, so neither field ever holds a pair the "
+                  "renderer refuses to honour."))
+
     _self = os.path.abspath(__file__)
     # The placeholder must name a container that can actually HOLD what the flags
     # produce -- suggesting <output.gif> alongside --recover-fade-alpha emits a
@@ -2765,6 +2910,10 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.{_ext}>"
     if flags:
         suggested += " " + " ".join(flags)
+    _alt_command = None
+    if _fade_alternative is not None:
+        _alt_command = (f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} "
+                        f"<output.webp> " + " ".join(_fade_alternative))
 
     if _eh.get('source_background_already_transparent'):
         # Not a not_applicable_reason: unlike an alpha-only source, running the command here is
@@ -2794,6 +2943,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             f"If the goal is a smaller file, use --target-kb / --resize-max-dim on it directly; if "
             f"it is a recolour, that is outside what this skill does.")
         suggested = None
+        _alt_command = None
 
     _bgs = report.get('background_color_stability') or {}
     if _bgs.get('changes'):
@@ -2813,9 +2963,19 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                                "and not a refusal. " + _bg_msg)
             if suggested:
                 suggested += " --allow-changing-background"
+            # ⚠️ THE ALTERNATIVE IS A COMMAND TOO. Appending the override to `suggested`
+            # alone leaves `alternative_command` refused the moment anyone runs it -- one
+            # path fixed, the other not, on a field whose entire purpose is to be runnable.
+            if _alt_command:
+                _alt_command += " --allow-changing-background"
         elif _not_applicable is None:
             _not_applicable = _bg_msg
+            # ⚠️ THE ALTERNATIVE DIES WITH THE SUGGESTION. Nulling only `suggested` handed an
+            # autonomous run a runnable command on an asset the tool had just declared NOT
+            # APPLICABLE -- a refusal with an escape hatch stapled to it. Found by a
+            # falsification pass, minutes after `alternative_command` was added.
             suggested = None
+            _alt_command = None
     elif _bgs.get('changes') is None and _bgs.get('unverified_reason'):
         # UNVERIFIED, not clean. Said out loud rather than folded into silence, because the
         # thing being reported is that a check could not run -- see SS13/SS16/SS17.
@@ -2825,6 +2985,13 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
         'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
         'not_applicable_reason': _not_applicable,
+        'alternative_command': _alt_command,
+        'ambiguous_protection': _ambiguous,
+        'nameable_fade': ({'color': _ramp['color'], 'faint_px': _ramp['faint_px'],
+                           'frame_index': _ramp['frame_index']}
+                          if _ramp and any(r['classification'] == 'gradient_fade'
+                                           for r in band_regions) and _fade_ok is False
+                          else None),
         'evidence': ([_not_applicable] if _not_applicable else []) + evidence + region_notes,
         'analysis': report,
     }
@@ -4443,6 +4610,13 @@ def verify(input_path, output_path, tolerance=15):
     report = {'input_path': input_path, 'output_path': output_path}
 
     if in_rgb[0].shape != out_rgb[0].shape:
+        # ⚠️ THIS PATH RUNS NO PIXEL CHECKS AT ALL, and it is the NORMAL path: every
+        # --crop'ped or --resize-max-dim'd deliverable lands here. Measured in the v6
+        # trial 2026-08-22 -- all four initial --verify runs did nothing, in 0.9-2.0s,
+        # and returned a document that reads like a pass; the real checks (13.9s and
+        # 39.0s) only ran after re-rendering uncropped. A check that cannot run must SAY
+        # so rather than return the shape of success (SS13, SS16, SS17) -- the rule this
+        # project already applies to every other measure, now applied to the verifier.
         report['dimensions_match'] = False
         ih, iw = in_rgb[0].shape[:2]
         oh, ow = out_rgb[0].shape[:2]
@@ -4450,10 +4624,20 @@ def verify(input_path, output_path, tolerance=15):
         report['output_dims'] = [ow, oh]
         report['note'] = ('Input/output canvas size differs (crop/resize likely used) -- '
                            'pixel-position checks are skipped; only the timing check ran.')
+        report['checks_skipped'] = [
+            f'pixel checks skipped: output {ow}x{oh} differs from source {iw}x{ih} '
+            f'(--crop or --resize-max-dim). Nothing about the ARTWORK was checked. '
+            f'Re-render without them, verify that, then re-apply them to the verified '
+            f'flags.']
+        report['verified'] = False
         report['timing'] = _timing_line(output_path, in_durations, out_alpha)
         return report
 
     report['dimensions_match'] = True
+    #: Skips accumulate here. A check that declines to run appends its reason; `verified`
+    #: is true only when the list is empty, so a pass can never be manufactured by a check
+    #: quietly not running.
+    report['checks_skipped'] = []
 
     # Align input frames to output frames by DURATION, not raw index --
     # the encoder can coalesce consecutive identical frames (real confirmed
@@ -4881,6 +5065,7 @@ def verify(input_path, output_path, tolerance=15):
             'fringe and no thin protected region. Read edge_hardness.alpha_only_source and the '
             'detected background colour.')
     report['timing'] = _timing_line(output_path, in_durations, out_alpha)
+    report['verified'] = not report['checks_skipped']
     return report
 
 
@@ -5428,9 +5613,12 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                 "colour in this image is solid. This flag reconstructs alpha for an element "
                 "the source FLATTENED against the background; with nothing flattened it "
                 "cannot key the background cleanly and will leave it faintly visible instead "
-                "of removing it. Drop the flag and run normal background removal, or name "
-                "the fading colour explicitly with --fade-color if you can see one the "
-                "detector missed.")
+                "of removing it. Drop the flag and run normal background removal, or -- if "
+                "you can see a fading colour the detector missed -- KEEP --recover-fade-alpha "
+                "and ADD --fade-color <hex> beside it. --fade-color parameterises this flag; "
+                "it does nothing on its own, and the pair is the whole command. Measured "
+                "2026-08-22 on a notification asset the detector declines: with both flags the "
+                "faintest fade stages come out 41.5% opaque instead of ~91%.")
 
     bg = np.asarray(bg_rgb, dtype=np.float32)
     solid_idx = [i for i in range(len(palette)) if i not in fading]
@@ -5945,6 +6133,95 @@ def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4), pixel_art=False):
             for _cost, stride, negscale, _rank, quality, lossless in rungs]
 
 
+#: Frame-encodes above which a fit is worth warning about BEFORE it starts. Measured
+#: 2026-08-22: the megaphone fit walked ~118 of 120 rungs at 144 frames -- 17,280
+#: frame-encodes -- and took 207.84s on 6 cores, while the first attempt died at a 120s
+#: tool timeout having produced nothing at all. A 120-rung fit on an 8-frame sticker is
+#: 960 and finishes in seconds, so the frame count is the axis that matters, not the rungs.
+_FIT_WARN_FRAME_ENCODES = 5000
+
+
+def estimate_fit_cost(n_rungs, n_frames, workers):
+    """A pre-flight cost estimate for the rung search.
+
+    Deliberately NOT in seconds. It does not need to predict a duration -- it needs to let
+    a caller decide to split the job before losing a tool call to it, which is what the v6
+    trial did twice. `serial_batches` is what a caller can actually act on: more workers
+    lower it, and the total WORK (`frame_encodes`) is unchanged by them.
+    """
+    workers = max(1, int(workers or 1))
+    frame_encodes = int(n_rungs) * int(n_frames)
+    return {
+        'encodes': int(n_rungs),
+        'frame_encodes': frame_encodes,
+        'serial_batches': max(1, -(-int(n_rungs) // workers)),
+        'warn': frame_encodes >= _FIT_WARN_FRAME_ENCODES,
+    }
+
+
+#: The full scale ladder the rung search may walk, least destructive first.
+_FIT_SCALE_LADDER = (1.0, 0.75, 0.5, 0.375, 0.25)
+
+
+def _describe_size_floor(args):
+    """The size floor flags actually in force, as the user typed them."""
+    parts = []
+    for name, flag in (('min_width', '--min-width'), ('min_height', '--min-height'),
+                       ('min_dimension', '--min-dimension')):
+        v = getattr(args, name, None)
+        if v:
+            parts.append(f'{flag} {v}')
+    return ' and '.join(parts) if parts else 'a size floor'
+
+
+def scales_for_fit(args, width, height):
+    """The scale rungs `--target-kb` may use on a `width` x `height` asset.
+
+    ⚠️ A byte cap is a CONSTRAINT; a requested resolution is a REQUIREMENT. That reasoning
+    already lived here for `--resize-max-dim`, which pins the ladder to (1.0,) after a
+    confirmed bug where the cascade shrank an explicit 128px emoji to 48x48. `--min-width`,
+    `--min-height` and `--min-dimension` are the same requirement with a weaker shape: a
+    FLOOR rather than an exact pin, so quality and frames are still traded freely and only
+    the rungs that would breach the floor are removed.
+
+    Every rung is a uniform scale, so aspect ratio is preserved throughout and "width >= N,
+    aspect preserved" needs nothing beyond testing the width. Dimensions are computed the
+    way `resize_rgba_frames` computes them -- `max(1, round(dim * scale))` -- so the filter
+    cannot disagree with the encoder about which rung is legal.
+
+    A bare `--min-dimension` constrains the SHORTER side (Harkirat's call, 2026-08-23): for
+    a sticker or emoji slot that is the safer reading of "at least this big", and it is the
+    stricter one -- a 600x100 asset passes a width test at 128 and fails a shorter-side one.
+    Name an axis with `--min-width`/`--min-height` when that is not what is wanted; when
+    several are set the tightest surviving constraint wins, because each is applied in turn.
+
+    1.0 is never filtered out. A floor above the source's own size is unreachable by
+    definition -- nothing here upscales -- and delivering no rungs at all would turn a
+    stated requirement into a crash instead of a report.
+    """
+    if getattr(args, 'resize_max_dim', None) is not None:
+        return (1.0,)
+    min_w = getattr(args, 'min_width', None)
+    min_h = getattr(args, 'min_height', None)
+    min_d = getattr(args, 'min_dimension', None)
+    if not (min_w or min_h or min_d):
+        return _FIT_SCALE_LADDER
+
+    def ok(scale):
+        w = max(1, round(width * scale))
+        h = max(1, round(height * scale))
+        if min_w and w < min_w:
+            return False
+        if min_h and h < min_h:
+            return False
+        if min_d and min(w, h) < min_d:
+            return False
+        return True
+
+    kept = tuple(sc for sc in _FIT_SCALE_LADDER if sc == 1.0 or ok(sc))
+    return kept
+
+
 def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
                         target_kb, fmt, args, log=None, jobs=None):
     """
@@ -5994,7 +6271,13 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
     # REQUIREMENT. Trade quality and frames instead, and if it still will not
     # fit, say so rather than quietly delivering a different size.
     _pinned = getattr(args, 'resize_max_dim', None) is not None
-    _scales = (1.0,) if _pinned else (1.0, 0.75, 0.5, 0.375, 0.25)
+    _src_h, _src_w = alpha_frames[0].shape[:2]
+    _scales = scales_for_fit(args, _src_w, _src_h)
+    _floored = (not _pinned) and _scales != _FIT_SCALE_LADDER
+    if _floored:
+        say(f"resolution floor: {len(_FIT_SCALE_LADDER) - len(_scales)} of "
+            f"{len(_FIT_SCALE_LADDER)} scale rungs are excluded by "
+            f"{_describe_size_floor(args)} -- quality and frames are traded instead.")
     rungs = build_target_rungs(fmt, _scales,
                                pixel_art=bool(getattr(args, 'pixel_art', False)))
 
@@ -6012,6 +6295,21 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
         jobs, why = detect_worker_capacity(per_worker_mb, explain=True)
         say(f"  searching {len(rungs)} rungs with {why}")
     jobs = max(1, int(jobs))
+
+    # ⚠️ PRINTED, not appended to `log`. The fit's log is flushed AFTER the search returns,
+    # which is precisely too late for a warning whose whole purpose is to let a caller
+    # decide not to start. Measured 2026-08-22: the first megaphone fit died at a 120s tool
+    # timeout having produced nothing, and neither --analyze nor --recommend said a word
+    # beforehand -- a session learns the cost by losing a tool call to it.
+    _est = estimate_fit_cost(len(rungs), len(alpha_frames), jobs)
+    if _est['warn']:
+        print(f"  NOTE: this fit may evaluate up to {_est['encodes']} rungs x "
+              f"{len(alpha_frames)} frames = {_est['frame_encodes']:,} frame-encodes in "
+              f"~{_est['serial_batches']} serial batches. On a 144-frame asset this "
+              f"measured 207s on 6 cores, and could not complete at all on a 1-core "
+              f"sandbox. If you are running under a tool timeout, render one file and one "
+              f"format per call, or pass the flags directly instead of searching. A "
+              f"background job is NOT a reliable workaround.", file=sys.stderr)
 
     strided = {}
 
@@ -6107,7 +6405,10 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
         encode(fr, al, dur, scale, quality, lossless, output_path)
     say(f"Could not reach {target_kb} KB; smallest was {best[0]/1024:.1f} KB ({best[1]})."
         + (" The output size was pinned by --resize-max-dim, so resolution was NOT "
-           "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else ""))
+           "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else "")
+        + (f" Resolution was floored by {_describe_size_floor(args)}, so it was NOT reduced "
+           f"below that to get there -- relax the floor to allow it, or accept the size."
+           if _floored else ""))
     return os.path.getsize(output_path), False
 
 
@@ -7102,6 +7403,21 @@ def optimize_to_target(rgb_frames, alpha_frames, durations, loop, output_path, t
     return {'hit_target': False, 'final_size_kb': round(size / 1024, 1), 'attempts': attempts}
 
 
+def _delivered_dimensions(path):
+    """`WxH` read back from the WRITTEN FILE, never computed from the winning rung.
+
+    A rung records what it ASKED for; the encoder records what it wrote, and the two can
+    differ by a rounding pixel. The claim being made is about the delivered artifact, so
+    it is measured on the delivered artifact. Returns `dimensions unreadable` rather than
+    a guess if the file cannot be opened -- an unverifiable claim says so (SS13).
+    """
+    try:
+        with Image.open(path) as im:
+            return f"{im.size[0]}x{im.size[1]}"
+    except Exception:
+        return "dimensions unreadable"
+
+
 def make_checkerboard(w, h, tile=8):
     y_idx, x_idx = np.indices((h, w))
     checker = ((x_idx // tile) + (y_idx // tile)) % 2
@@ -7149,6 +7465,23 @@ def process(input_path, output_path, args, diagnostics=None):
             "store (1-bit alpha). Write a .webp, .avif or .apng output instead.")
     if not 0.0 <= getattr(args, 'translucent_alpha', 0.35) <= 1.0:
         raise SystemExit("--translucent-alpha must be between 0.0 and 1.0.")
+    if getattr(args, 'fade_color', None) and not getattr(args, 'recover_fade_alpha', False):
+        # ⚠️ --fade-color is READ ONLY inside the --recover-fade-alpha branch, so on its own it
+        # is parsed and thrown away -- the same silent-no-op class as --webp-quality. It is a
+        # HARD ERROR rather than a warning because the flag has no other meaning: it exists to
+        # override the fade detector's colour choice, and with no fade path running there is
+        # nothing to override. Measured 2026-08-22 on notification.gif, the faint fade stages
+        # on frame 14: --recover-fade-alpha --fade-color fd6050 leaves them 41.5% opaque, while
+        # --fade-color fd6050 ALONE removes them entirely (0% opaque, mean alpha 0.000) and
+        # said nothing at all. That is how the flag came to be recorded as "leaves the fade
+        # opaque": the run that looked broken was also passing protection flags, which is what
+        # was holding those pixels opaque, while --fade-color did nothing whatsoever.
+        raise SystemExit(
+            "--fade-color names a colour for --recover-fade-alpha to treat as the fading "
+            "element, and does NOTHING on its own -- with no fade path running there is "
+            "nothing for it to override, and the fade stages are removed as ordinary "
+            "background. Add --recover-fade-alpha (and write a .webp/.avif/.apng output, "
+            "which is what can carry the result).")
     if getattr(args, 'recover_fade_alpha', False) and out_format == 'gif':
         raise SystemExit(
             "--recover-fade-alpha recovers PARTIAL transparency, which GIF cannot "
@@ -7189,10 +7522,38 @@ def process(input_path, output_path, args, diagnostics=None):
             0 if out_format in EIGHT_BIT_ALPHA_FORMATS
             else 1 if (args.dither_mode == 'none' and not args.pixel_art)
             else 2)
-        if args.edge_cleanup_erosion != 2:
+        if out_format in EIGHT_BIT_ALPHA_FORMATS:
+            # ⚠️ 0 IS A STARTING POINT HERE, NOT THE ANSWER. It used to be the answer, on the
+            # reasoning that partial alpha already represents the antialiased edge so nothing
+            # needs trimming. Harkirat contradicted that by looking: every WebP/AVIF the manual
+            # path produced carried a ~1px light ring around the whole artwork, and --verify's
+            # edge_fringe_check reported `looks_fringed: false` on it -- the check that exists
+            # to catch this cannot. Measured on megaphone.gif, same flags, erosion 0 vs 1, in
+            # PALE partial-alpha pixels (0 < alpha < 255 and still within 128 of the background
+            # colour, i.e. edge pixels carrying the BACKGROUND's tint rather than the art's):
+            # worst frame 852 -> 1, total 92,560 -> 10.
+            #
+            # --auto never had the defect, because it calibrates erosion against the asset's
+            # own fringe curve and picks 1. The fix is therefore to run that SAME calibration
+            # on the manual path rather than to flip the default to a new constant: the level
+            # is a property of the asset, and this repo has 448 renders' worth of evidence that
+            # a fixed level too high eats thin strokes (SS37, SS29). The calibrator keeps its
+            # own guards -- it declines on --pixel-art, and on any source whose own partial
+            # alpha would make the fringe metric measure artwork -- and in every case it
+            # declines, the 0 resolved just above stands.
+            #
+            # An explicitly typed --edge-cleanup-erosion never reaches here at all (it leaves
+            # the value non-None), so the user's value still wins by construction.
+            args.auto_erosion = True
+            print("8-bit alpha output: edge-cleanup erosion will be CALIBRATED against this "
+                  "asset's own fringe curve (starting from 0). A flat 0 left a ~1px pale ring "
+                  "on every such output. Pass --edge-cleanup-erosion explicitly to override.",
+                  file=sys.stderr)
+        elif args.edge_cleanup_erosion != 2:
             print(f"edge-cleanup erosion defaulted to {args.edge_cleanup_erosion} "
-                  f"({'8-bit alpha needs no fringe trim' if out_format != 'gif' else 'no Bayer noise to trim under --dither-mode none, and 2 deletes thin strokes'}). "
-                  f"Pass --edge-cleanup-erosion explicitly to override.", file=sys.stderr)
+                  f"(no Bayer noise to trim under --dither-mode none, and 2 deletes thin "
+                  f"strokes). Pass --edge-cleanup-erosion explicitly to override.",
+                  file=sys.stderr)
     if out_format in EIGHT_BIT_ALPHA_FORMATS:
         # --compress is GIF-encoder specific (palette quantization + gifsicle).
         # --target_kb is NOT: it is handled by fit_to_target_bytes below.
@@ -7201,16 +7562,6 @@ def process(input_path, output_path, args, diagnostics=None):
             raise SystemExit("These options are GIF-only and have no effect on WebP "
                              "output: " + ", ".join('--' + n.replace('_', '-')
                                                     for n in gif_only))
-        if False:  # superseded by the unified erosion default resolved above
-            # Erosion exists to hide the whitish fringe left by imperfect
-            # unmixing under a 1-bit cutoff. With continuous alpha the
-            # defringed partial-alpha edge is already correct, and eroding
-            # it would eat the real soft edge instead of cleaning it.
-            args.edge_cleanup_erosion = 0
-            print("8-bit alpha output: edge-cleanup erosion defaulted to 0 "
-                  "(it exists to hide 1-bit-cutoff fringe, which does not occur "
-                  "here). Pass --edge-cleanup-erosion explicitly to override.",
-                  file=sys.stderr)
     im0 = Image.open(input_path)
     # A STATIC source (JPEG, single-frame PNG) has no n_frames at all -- JPEG raises
     # AttributeError here. Confirmed 2026-08-17 on real files: the whole pipeline works on
@@ -7329,11 +7680,7 @@ def process(input_path, output_path, args, diagnostics=None):
         # so out loud costs nothing and is the difference between a known limit and a
         # silent one. references/lessons.md SS34.4
         _ignored = [n for n, v in (
-            ('--tumble-safe', getattr(args, 'tumble_safe', False)),
-            ('--protect-outline-color', getattr(args, 'protect_outline_color', None)),
-            ('--protect-region', getattr(args, 'protect_region', None)),
-            ('--protect-band-only', getattr(args, 'protect_band_only', None)),
-            ('--keep-bg-blob-if-near', getattr(args, 'keep_bg_blob_if_near', None)),
+            (flag, getattr(args, dest, None)) for flag, dest in FADE_EXCLUSIVE_FLAGS
         ) if v]
         if _ignored:
             print("WARNING: --recover-fade-alpha takes its own render path and does NOT "
@@ -7715,6 +8062,92 @@ def process(input_path, output_path, args, diagnostics=None):
     # Force-remove regions (inverse of --protect-region), applied last so it
     # overrides whatever --protect-outline-color / --protect-region decided
     # -- see apply_remove_regions' docstring for the case this is for.
+    if getattr(args, 'unprotect_region', None):
+        # Region-scoped BACKGROUND removal, not a force-delete: inside the region the
+        # normal background key is re-applied and every protection decision is
+        # overridden, but pixels that are not the background colour are left alone.
+        #
+        # ⚠️ TWO REAL DEFECTS SHAPED THIS, both caught by looking at the render:
+        #
+        # 1. `--remove-region` was tried for this job first and DESTROYED THE ARTWORK --
+        #    on a broadcast-tower asset it took enclosed white from 8,569 px to 0 AND the
+        #    navy tower from 23,157 px to 6,297 (-73%). Its white-pixel measurement passed
+        #    on that render, which is why the falsifiers assert on what STAYED too.
+        #
+        # 2. A first version of THIS flag used a hard `color_mask(rgb, bg, tolerance)`,
+        #    which removed only `dist <= tolerance` and left the antialiasing ramp inside
+        #    the region fully opaque. Measured on the same asset, the 16-90 distance band
+        #    held 236-454 px and the count MOVED EVERY FRAME (449, 372, 236, 246, 250,
+        #    283 ...), so the surviving rim visibly JITTERED. A threshold applied per frame
+        #    to a dithered GIF palette is a temporal-noise generator.
+        #
+        # The fix for (2) is to reuse the main path's own keying rather than re-deriving a
+        # cheaper one: `estimate_alpha_and_defringe` returns a CONTINUOUS alpha plus
+        # de-fringed RGB, so the ramp gets graded partial alpha instead of a binary edge,
+        # and the result is a smooth function of colour rather than a threshold crossing.
+        # `protected` is all-False here -- that is precisely what "unprotect" means.
+        _H0, _W0 = alpha_frames[0].shape
+        _region = parse_protect_regions(args.unprotect_region, (_H0, _W0))
+        _bg = hex_to_rgb(args.bg_color)
+        _none_protected = np.zeros((_H0, _W0), dtype=bool)
+        # ⚠️ A TEMPORAL-STABILIZATION VARIANT WAS BUILT HERE AND REMOVED. The theory was
+        # that a static region should be keyed ONCE from the median frame, since a GIF
+        # re-quantizes its antialiasing every frame. Measured on the broadcast tower and
+        # REJECTED on its own evidence: the ring pixels' source colour has a temporal std
+        # of 46.9 with a lag-1 class-flip rate of 0.062 and a median of 2 class changes
+        # across 60 frames -- that is SMOOTH ANIMATION, not dither noise. The tower's white
+        # gaps genuinely breathe (18,038 -> 20,367 px). Keying them from a median frame
+        # left the ring at RGB [155,158,160], nearer WHITE than the navy artwork (183.6 vs
+        # 200.9), i.e. it broke the de-fringe it was meant to help; per-frame keying leaves
+        # it correctly navy-ward at [82,104,148]. Do not reintroduce it without first
+        # measuring the lag-1 flip rate: a per-frame decision is only noise when the source
+        # is noisy, and here it was not.
+        _touched = 0
+        for _i in range(len(rgb_frames)):
+            _af, _recol, _band = estimate_alpha_and_defringe(
+                rgb_frames[_i], _bg, _none_protected, args.tolerance,
+                args.feather_band_multiplier, rgb_key=rgb_frames[_i])
+            _keyed = np.clip(np.rint(_af * 255.0), 0, 255).astype(alpha_frames[_i].dtype)
+            # Only ever REMOVE inside the region -- never add opacity a protection
+            # decision outside this feature had already taken away.
+            _new = np.where(_region, np.minimum(alpha_frames[_i], _keyed), alpha_frames[_i])
+            _changed = _region & (_new < alpha_frames[_i])
+            _touched += int(_changed.sum())
+            # Take the de-fringed colour wherever we changed alpha, so a pixel that is
+            # now partially transparent reads as art fading out rather than as a pale
+            # ghost of the background it was blended with.
+            rgb_frames[_i] = np.where(_changed[..., None], _recol, rgb_frames[_i])
+            alpha_frames[_i] = _new
+        # ⚠️ COLOUR-DERIVED ALPHA ALONE LEAVES A PALE OPAQUE RIM. Measured on the
+        # broadcast tower, over a FIXED 2,060 px ring population (not an alpha-selected
+        # one -- selecting by alpha compares different pixels in each render and is how
+        # an earlier claim in this session went wrong): the feathered pass left 6.9% of
+        # the ring FULLY OPAQUE where the older hard-mask pass left 0%, because a pixel
+        # just outside --tolerance gets an alpha near 1 from the colour ramp and
+        # `min(existing, keyed)` then keeps it. Opaque and pale is exactly the fringe a
+        # viewer reads as a shimmering edge.
+        #
+        # So the colour ramp is combined with a GEOMETRIC taper outward from the fully
+        # removed core, which is what `apply_remove_regions` already provides -- including
+        # its local-kept-colour recolour, the de-fringe step its docstring was written
+        # for. Colour decides WHAT is background; geometry softens the boundary.
+        _core = [_region & color_mask(f, _bg, args.tolerance) for f in rgb_frames]
+        if any(m.any() for m in _core):
+            rgb_frames, alpha_frames = apply_remove_regions(
+                rgb_frames, alpha_frames, _core,
+                feather_px=args.remove_region_feather)
+
+        if _touched:
+            print(f"--unprotect-region: re-keyed {_touched} background-coloured pixel(s) "
+                  f"inside the region across {len(rgb_frames)} frame(s), with the "
+                  f"feather band applied; non-background pixels were left untouched.",
+                  file=sys.stderr)
+        else:
+            print("WARNING: --unprotect-region matched no background-coloured pixels "
+                  "inside the region -- check the coordinates, or --bg-color/"
+                  "--tolerance if the interior is a near-background shade.",
+                  file=sys.stderr)
+
     if getattr(args, 'remove_region', None) or getattr(args, 'remove_region_track', None):
         H0, W0 = alpha_frames[0].shape
         if getattr(args, 'remove_region_track', None):
@@ -7901,6 +8334,20 @@ def process(input_path, output_path, args, diagnostics=None):
                       + ("" if total == sum(durations)
                          else f" -- WARNING: source was {sum(durations)}ms"))
     elif _fmt == 'webp':
+        # ⚠️ --webp-quality is READ ONLY on the lossy branch. render_frames_to_webp's
+        # lossless path overrides the caller with quality=100, so on the DEFAULT path the
+        # flag is parsed and thrown away. Measured 2026-08-22: the same render at
+        # --webp-quality 70 and 45 produced byte-identical 403.1 KB output, and the user
+        # got no signal at all -- a session then spent two renders concluding the tool was
+        # broken. Deliberately NOT making the flag imply --webp-lossy: lossless is the
+        # measured-correct default for flat vector art, and silently switching someone to
+        # lossy because they nudged a number trades a silent no-op for a silent behaviour
+        # change, which is worse. Say so instead, and name the flag that arms it.
+        if not args.webp_lossy and args.webp_quality != WEBP_QUALITY_DEFAULT:
+            print(f"WARNING: --webp-quality {args.webp_quality} has NO EFFECT without "
+                  f"--webp-lossy -- the default WebP path is lossless and encodes at "
+                  f"quality 100 regardless. Add --webp-lossy to make it take effect, or "
+                  f"drop the flag.", file=sys.stderr)
         size_bytes = render_frames_to_webp(
             rgb_frames, alpha_frames, durations, loop, output_path,
             lossless=not args.webp_lossy, quality=args.webp_quality,
@@ -7919,7 +8366,15 @@ def process(input_path, output_path, args, diagnostics=None):
         timing = describe_written_timing(output_path, durations)
     out_w, out_h = alpha_frames[0].shape[1], alpha_frames[0].shape[0]
     print(f"Saved {output_path} ({timing})", file=sys.stderr)
-    print(f"Output: {out_w}x{out_h}, {size_bytes/1024:.1f} KB", file=sys.stderr)
+    # ⚠️ This line runs BEFORE any --target-kb fitting, so on a fitted run it is stale the
+    # moment the fit starts. Measured consequence 2026-08-22: a session reported 482x513 as
+    # the delivered dimensions of a file that was 120x128 -- and the tool had printed
+    # exactly "Output: 482x513" in that same run. Reporting faithfully what the tool said
+    # was still wrong, so the fix belongs in the output, not in operator discipline.
+    print(f"Output: {out_w}x{out_h}, {size_bytes/1024:.1f} KB"
+          + (" (BEFORE --target-kb fitting -- the delivered size and dimensions are "
+             "reported below)" if getattr(args, 'target_kb', None) else ""),
+          file=sys.stderr)
 
     # gifsicle pass matching the tier. No tier at all = no gifsicle either
     # -- the default is now genuinely "just remove the background" with no
@@ -7955,7 +8410,8 @@ def process(input_path, output_path, args, diagnostics=None):
                 args.target_kb, _fmt, args, log=fit_log)
             for line in fit_log:
                 print(line, file=sys.stderr)
-            print(f"Final: {os.path.getsize(output_path)/1024:.1f} KB "
+            print(f"Final: {os.path.getsize(output_path)/1024:.1f} KB, "
+                  f"{_delivered_dimensions(output_path)} "
                   f"(saved over {output_path})", file=sys.stderr)
     elif args.target_kb:
         final_size = os.path.getsize(output_path)
@@ -7973,11 +8429,13 @@ def process(input_path, output_path, args, diagnostics=None):
             for a in result['attempts']:
                 print(f"  tried {a['lever']}={a['value']}: {a['size_kb']} KB", file=sys.stderr)
             if result['hit_target']:
-                print(f"Hit target: {result['final_size_kb']} KB <= {args.target_kb} KB "
+                print(f"Final: {result['final_size_kb']} KB <= {args.target_kb} KB, "
+                      f"{_delivered_dimensions(output_path)} "
                       f"(saved over {output_path})", file=sys.stderr)
             else:
                 print(f"Could not fully reach {args.target_kb} KB; best achieved was "
-                      f"{result['final_size_kb']} KB (saved over {output_path}). "
+                      f"Final: {result['final_size_kb']} KB, "
+                      f"{_delivered_dimensions(output_path)} (saved over {output_path}). "
                       f"The source content may just be too complex/long for this "
                       f"target without a manual reduction in scope (e.g. trimming "
                       f"frames).", file=sys.stderr)
@@ -8167,6 +8625,70 @@ def _run_one_job(job_input, job_output, base_args, arg_parser, overrides=None,
             process(job_input, job_output, job_args)
 
 
+def rank_sibling_outputs(records):
+    """Mark any output that another output of the SAME source beats on every axis.
+
+    STRICT DOMINATION only -- larger-or-equal on width, height and frame count,
+    smaller-or-equal in bytes, and strictly better on at least one. A genuine tradeoff
+    ("smaller file, fewer frames") is left unranked, because choosing between smaller and
+    smoother is the user's call and the tool has no basis for it. Domination involves no
+    weighting and no taste, so this reports a FACT, not a preference -- which is why it is
+    a ranking and a warning rather than a refusal (Harkirat's call, 2026-08-23: rank and
+    warn, write every file, let an autonomous run read the ranking).
+
+    Exists because the 2026-08-22 trial delivered a 120x128 / 36-frame WebP alongside a
+    482x513 / 144-frame AVIF that was also SMALLER, printed "2/2 succeeded." and said
+    nothing at all. See docs/investigations/2026-08-22-v6-timeout-trial.md.
+    """
+    out = []
+    for r in records:
+        best = None
+        for o in records:
+            if o is r or o.get('source') != r.get('source'):
+                continue
+            ge = (o['width'] >= r['width'] and o['height'] >= r['height']
+                  and o['frames'] >= r['frames'] and o['kb'] <= r['kb'])
+            gt = (o['width'] > r['width'] or o['height'] > r['height']
+                  or o['frames'] > r['frames'] or o['kb'] < r['kb'])
+            if ge and gt:
+                best = o
+                break
+        rec = dict(r)
+        rec['dominated_by'] = best['output'] if best else None
+        rec['reason'] = (
+            f"{best['width']}x{best['height']}, {best['frames']} frames, "
+            f"{best['kb']:.1f} KB beats {r['width']}x{r['height']}, "
+            f"{r['frames']} frames, {r['kb']:.1f} KB on every axis"
+        ) if best else None
+        out.append(rec)
+    return out
+
+
+def _summary_records(results):
+    """Comparable records for the ok outputs, MEASURED ON THE DELIVERED FILES.
+
+    Dimensions and frame count are read back from what was written rather than carried
+    down from what was requested, for the same reason `_delivered_dimensions` exists: a
+    fit records what it asked for, the encoder records what it wrote. An output that
+    cannot be read back is dropped rather than defaulted -- a record invented from a
+    guess would rank a file nobody measured.
+    """
+    recs = []
+    for r in results:
+        if r.get('status') != 'ok' or not r.get('output'):
+            continue
+        try:
+            with Image.open(r['output']) as im:
+                w, h = im.size
+                n = getattr(im, 'n_frames', 1)
+            kb = os.path.getsize(r['output']) / 1024
+        except Exception:
+            continue
+        recs.append({'source': r.get('input'), 'output': r['output'],
+                     'width': w, 'height': h, 'frames': int(n), 'kb': kb})
+    return recs
+
+
 def _print_job_summary(results, header='Batch summary'):
     print(f"\n=== {header} ===", file=sys.stderr)
     ok_count = sum(1 for r in results if r['status'] == 'ok')
@@ -8178,6 +8700,11 @@ def _print_job_summary(results, header='Batch summary'):
             print(f"  SKIPPED {r.get('input')}: {r['reason']}", file=sys.stderr)
         else:
             print(f"  ERROR   {r['input']}: {r['reason']}", file=sys.stderr)
+    for _r in rank_sibling_outputs(_summary_records(results)):
+        if _r['dominated_by']:
+            print(f"  ⚠ {_r['output']} is STRICTLY WORSE than {_r['dominated_by']}: "
+                  f"{_r['reason']}. Keep {_r['dominated_by']} unless you need this "
+                  f"container specifically.", file=sys.stderr)
     print(f"{ok_count}/{len(results)} succeeded.", file=sys.stderr)
     return ok_count
 
@@ -8374,6 +8901,33 @@ def post_render_fringe_check(input_path, output_path, tolerance=15):
     return round(float(np.mean(vals)), 4) if vals else None
 
 
+def _assumed_colors(args, dest):
+    """The hex colours named by --assume-protect / --assume-remove, as a lowercase set."""
+    raw = getattr(args, dest, None)
+    return {c.strip().lstrip('#').lower() for c in raw.split(',') if c.strip()} if raw else set()
+
+
+def _drop_outline_colors(tokens, drop):
+    """Remove `drop` from a --protect-outline-color token pair, dropping the flag if empty.
+
+    Operates on the TOKEN LIST rather than the command string: a colour list is
+    comma-joined, so a string replace would leave a stray comma or match a substring of
+    another hex value.
+    """
+    out = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == '--protect-outline-color' and i + 1 < len(tokens):
+            kept = [c for c in tokens[i + 1].split(',') if c.strip().lower() not in drop]
+            if kept:
+                out += ['--protect-outline-color', ','.join(kept)]
+            i += 2
+            continue
+        out.append(tokens[i])
+        i += 1
+    return out
+
+
 def auto_run(input_path, output_path, args, parser):
     """
     TWO PASSES, not a loop: analyse -> recommend -> render -> re-verify the
@@ -8413,7 +8967,94 @@ def auto_run(input_path, output_path, args, parser):
     if rec.get('not_applicable_reason'):
         raise SystemExit("ERROR: --auto has nothing to do here, and doing it anyway would "
                          "destroy the image.\n  " + rec['not_applicable_reason'])
+    # ⚠️ A COIN-FLIP PROTECTION DECISION IS A QUESTION, AND --auto USED TO GUESS AT IT.
+    # Measured 2026-08-22 on megaphone.gif: --auto printed `applying: --protect-outline-color
+    # f0c850,002864`, protected the sparkle interiors the user had explicitly asked to have
+    # REMOVED, and reported success. Every region on that asset sat in the coin-flip band by
+    # the tool's own evidence -- and an evidence string nobody reads changes nothing for an
+    # autonomous run, which reads flags.
+    #
+    # ⚠️ THIS IS IN TENSION WITH THE PROJECT'S AUTONOMY GOAL AND THE TENSION IS NOT SMOOTHED
+    # OVER. An unattended run has nobody to ask, so the question is made ANSWERABLE IN
+    # ADVANCE rather than dropped: --assume-protect and --assume-remove pre-answer it per
+    # outline colour. A run that is neither pre-answered nor willing to be asked STOPS. It
+    # does not guess. And a pre-answered run SAYS it acted on an assumption -- an assumption
+    # that leaves no trace is indistinguishable from a measurement.
+    _pending = [a for a in (rec.get('ambiguous_protection') or [])
+                if a['outline_color'] not in _assumed_colors(args, 'assume_protect')
+                and a['outline_color'] not in _assumed_colors(args, 'assume_remove')]
+    _questions = []
+    if _pending:
+        _lines = [
+            f"  region {a['region_id']}, outline {a['outline_color']}, bbox "
+            f"{a['bbox_xyxy']}: encloses on {a['frames_enclosed']} of "
+            f"{a['frames_checked']} frames ({a['enclosure_ratio'] * 100:.0f}%)"
+            for a in _pending]
+        _colors = ",".join(dict.fromkeys(a['outline_color'] for a in _pending))
+        _questions.append(
+            "COIN-FLIP PROTECTION -- --auto will not guess whether these enclosed interiors "
+            "are design or background.\n"
+            + "\n".join(_lines)
+            + f"\n  Is each of these an interior DESIGN element to protect, or BACKGROUND "
+              f"showing through to remove? Partial enclosure is evidence for neither.\n"
+              f"  Answer it in advance and re-run:\n"
+              f"    --assume-protect {_colors}   (treat them as design; what --auto used to "
+              f"do silently)\n"
+              f"    --assume-remove {_colors}   (treat them as background; drop the outline "
+              f"colour)\n"
+              f"  Either flag may name a subset; every listed colour must be answered.")
+    # ⚠️ A FADE THE TOOL CAN NAME BUT NOT DECIDE IS A QUESTION, NOT A SILENCE. The detector
+    # identifies the flattened-fade signature, names the colour, counts the pixels and
+    # prescribes the flag -- and used to deliver all of it as an EVIDENCE STRING, while --auto
+    # went ahead and cut the falloff. An autonomous run reads flags, not prose.
+    # ⚠️ THE REFUSAL TO AUTO-APPLY IS CORRECT AND IS PRESERVED. references/lessons.md SS41
+    # measured 91 assets in exactly this branch whose ramp statistics interleave with ones
+    # that render as a translucent ghost of the whole frame; no threshold separates them. The
+    # defect was the delivery channel, not the decision -- so this asks rather than lowering a
+    # threshold that has already been shown not to exist.
+    _fade = rec.get('nameable_fade')
+    if _fade and not getattr(args, 'fade_color', None) and not getattr(args, 'assume_no_fade', False):
+        _questions.append(
+            f"NAMEABLE FADE -- --auto will not decide whether this asset's soft falloff is artwork.\n"
+            f"  {_fade['faint_px']} pixels on frame {_fade['frame_index']} unmix cleanly as "
+            f"{_fade['color']} fading toward the background, below half opacity. Nothing "
+            f"reconstructs them, so a glow, halo or sparkle trail there will be lost.\n"
+            f"  The tool will not choose for you, and the reason is measured rather than "
+            f"cautious: across the 91 assets in exactly this branch, this one's ramp "
+            f"statistics interleave with assets that render as a translucent ghost of the "
+            f"whole frame, so no threshold separates them (references/lessons.md SS41).\n"
+            f"  Answer it and re-run:\n"
+            f"    --recover-fade-alpha --fade-color {_fade['color']}   (it IS artwork; both "
+            f"flags, and a .webp/.avif/.apng output)\n"
+            f"    --assume-no-fade   (it is not; proceed exactly as before)")
+
+    # ⚠️ ONE refusal carrying EVERY unanswered question, never one per run. An unattended
+    # caller pays a whole tool call per refusal, and asking serially turns two questions into
+    # two lost calls and a session that thinks the tool is looping.
+    if _questions:
+        raise SystemExit("ERROR: --auto stopped with "
+                         + (f"{len(_questions)} questions it will not answer for you.\n\n"
+                            if len(_questions) > 1 else
+                            "a question it will not answer for you.\n\n")
+                         + "\n\n".join(_questions)
+                         + "\n\n  Pass the answers together and re-run; nothing was written.")
+    if getattr(args, 'assume_no_fade', False) and _fade:
+        print(f"assumption applied: treating the {_fade['color']} falloff as background, not "
+              f"artwork -- answered by flag rather than by measurement.", file=sys.stderr)
+
+    _removed = _assumed_colors(args, 'assume_remove')
+    if _removed or _assumed_colors(args, 'assume_protect'):
+        print(f"assumption applied: "
+              + ", ".join(filter(None, [
+                  f"protecting {','.join(sorted(_assumed_colors(args, 'assume_protect')))}"
+                  if _assumed_colors(args, 'assume_protect') else '',
+                  f"removing {','.join(sorted(_removed))}" if _removed else '']))
+              + " -- these were coin-flip regions the tool could not decide, answered by "
+                "flag rather than by measurement.", file=sys.stderr)
+
     rec_tokens = shlex.split(rec['suggested_command'])[4:]
+    if _removed:
+        rec_tokens = _drop_outline_colors(rec_tokens, _removed)
 
     base = parser.parse_args([input_path, output_path])
     rec_ns = parser.parse_args([input_path, output_path] + rec_tokens)
@@ -8724,6 +9365,20 @@ def main():
                          'last motion vector and those frame indices are PRINTED -- a '
                          'tracker that loses its target silently is worse than one that '
                          'says so. Same spec syntax as --remove-region.')
+    p.add_argument('--unprotect-region', default=None,
+                    help='Region-scoped BACKGROUND removal: circle:cx,cy,r or '
+                         'rect:x,y,w,h, same multi-region `;`-joined syntax. '
+                         'Inside this region the background key is re-applied '
+                         'and every protection decision is overridden, but '
+                         'pixels that are NOT the background colour are left '
+                         'alone. Use it to say "this enclosed interior is '
+                         'background" -- a white area inside a tower, the white '
+                         'inside a sparkle -- which no protection flag can '
+                         'express. Unlike --remove-region, which force-deletes '
+                         'its whole box (measured: -73%% of the artwork), this '
+                         'removes only background-coloured pixels. It is '
+                         'applied downstream of --recover-fade-alpha, so it is '
+                         'the one region flag that composes with fade recovery.')
     p.add_argument('--remove-region-feather', type=float, default=1.5,
                     help='Feather width in px for --remove-region\'s edge '
                          'taper (default 1.5).')
@@ -8767,6 +9422,22 @@ def main():
                          'clears the mis-colored ring on real test art). '
                          'Set to 0 to disable if the source has no such '
                          'fringing and you want to preserve every pixel.')
+    p.add_argument('--min-width', type=int, default=None, metavar='N',
+                    help='Never let --target-kb fit deliver an output narrower than N '
+                         'pixels. Aspect ratio is preserved, so this is the literal '
+                         '"at least N px wide x relative height" request. A byte cap is a '
+                         'constraint; a stated resolution is a REQUIREMENT -- quality and '
+                         'frames are traded instead, and if the target still cannot be met '
+                         'the tool says so rather than quietly delivering a smaller file.')
+    p.add_argument('--min-height', type=int, default=None, metavar='N',
+                    help='The mirror of --min-width, on the vertical axis.')
+    p.add_argument('--min-dimension', type=int, default=None, metavar='N',
+                    help='Never let --target-kb fit deliver an output whose SHORTER side is '
+                         'below N pixels. The convenient form when no axis is named: for a '
+                         'sticker or emoji slot it is the safer reading of "at least this '
+                         'big", and the stricter one (a 600x100 asset passes --min-width 128 '
+                         'and fails --min-dimension 128). Combine freely with --min-width / '
+                         '--min-height; the tightest constraint wins.')
     p.add_argument('--resize-max-dim', type=int, default=None,
                     help='Resize to fit N pixels on the longer side '
                          '(preserving aspect ratio, only ever downscaling). '
@@ -9006,7 +9677,7 @@ def main():
                          'flat vector art is usually SMALLER as well as '
                          'better (measured 2109 KB lossless vs 3005 KB lossy '
                          'on the same asset). Use only to hit a hard byte cap.')
-    p.add_argument('--webp-quality', type=int, default=90,
+    p.add_argument('--webp-quality', type=int, default=WEBP_QUALITY_DEFAULT,
                     help='Quality 0-100 for --webp-lossy (default 90). Alpha '
                          'is always kept at maximum quality.')
     p.add_argument('--webp-method', type=int, default=2,
@@ -9152,6 +9823,22 @@ def main():
                         f"the source already declared transparent, i.e. changes nothing on a "
                         f"source whose cut is already clean. Ignored unless the source carries "
                         f"transparency that reads as its background.")
+    p.add_argument('--assume-no-fade', action='store_true',
+                    help="Pre-answer --auto's other question: the soft falloff the detector "
+                         "can NAME but cannot decide about is background, not artwork -- "
+                         "proceed and let it be cut. The opposite answer is "
+                         "--recover-fade-alpha --fade-color <hex>, which the refusal prints "
+                         "ready to paste.")
+    p.add_argument('--assume-protect', default=None, metavar='HEX[,HEX...]',
+                    help='Pre-answer --auto\'s coin-flip protection question: treat the '
+                         'regions these outline colours enclose as interior DESIGN and '
+                         'protect them. --auto REFUSES rather than guessing when a region\'s '
+                         'enclosure evidence is neither 0%% nor 100%%, and this is how an '
+                         'unattended run answers it in advance. The run says it acted on an '
+                         'assumption.')
+    p.add_argument('--assume-remove', default=None, metavar='HEX[,HEX...]',
+                    help='The other answer: treat those regions as BACKGROUND showing '
+                         'through, and drop the outline colour from the protection.')
     p.add_argument('--auto-erosion', action='store_true',
                    help='Choose --edge-cleanup-erosion by measuring THIS asset against '
                         'itself (its own erosion 0/1/2/3 curve) instead of a fixed default. '
@@ -9205,9 +9892,21 @@ def main():
         if len(args.input_paths) > 1:
             print(json.dumps(run_read_only(
                 args.input_paths, 'recommendation',
-                lambda pth: recommend(pth, tolerance=args.tolerance)), indent=2))
+                lambda pth: recommend(
+                    pth, tolerance=args.tolerance,
+                    allow_changing_background=getattr(
+                        args, 'allow_changing_background', False))), indent=2))
             return
-        rec = recommend(args.input_gif, tolerance=args.tolerance)
+        # ⚠️ --allow-changing-background MUST reach here. Both CLI --recommend paths used to
+        # drop it, so `--recommend --allow-changing-background` returned not_applicable and a
+        # null command while the identical in-process call returned a working one. auto_run
+        # (:8959) forwarded it correctly, which is why this survived: the flag worked on the
+        # flagship path and silently did nothing on the one people read first. Exactly the
+        # failure the --auto branch's own comment describes -- a documented override that does
+        # not work on some paths.
+        rec = recommend(args.input_gif, tolerance=args.tolerance,
+                        allow_changing_background=getattr(
+                            args, 'allow_changing_background', False))
         print(json.dumps(rec, indent=2))
         return
 
@@ -9224,6 +9923,10 @@ def main():
                     f'{args.output_gif!r} does not. Run the processing first '
                     f'(same command WITHOUT --verify), then re-run with --verify.')
         report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
+        # A session that reads only the console must not have to notice the absence of
+        # fields to learn that nothing was checked.
+        for _skip in report.get('checks_skipped') or []:
+            print('WARNING: --verify did NOT check any pixels. ' + _skip, file=sys.stderr)
         print(json.dumps(report, indent=2))
         return
 
