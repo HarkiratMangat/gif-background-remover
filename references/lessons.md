@@ -1220,7 +1220,7 @@ Zero transition pixels across every sampled frame is now dispositive. Antialiasi
 
 ### 23.4 The fix that shipped: change-line density
 
-Harkirat expanded `others/` to **31 assets**, labelled by eye into 25 pixel art and 6 antialiased (`others/LABELS.json`, method recorded in `others/README.md`). Adding the six-asset vector corpus as further negatives gives **37 labelled assets** — the first time any threshold in this skill has had a validation set at all.
+Harkirat expanded `others/` to **31 assets**, labelled by eye into 25 pixel art and 6 antialiased (the labels and the eye-labelling method are recorded alongside the corpus in the development repo, which the packaged skill does not carry). Adding the six-asset vector corpus as further negatives gives **37 labelled assets** — the first time any threshold in this skill has had a validation set at all.
 
 Two structural ideas were tried and scored before one was believed:
 
@@ -1508,7 +1508,7 @@ The fix composites over the DETECTED BACKGROUND COLOUR, which reconstructs exact
 
 ### 28.6 A low density and a low cliff ratio cannot both be true of pixel art
 
-`add.png`, a 512x512 vector icon: `change_line_density` **0.447** — below the 0.5 floor, so v5.4.0 calls it hard-edged and recommends `--pixel-art` — against `plateau_cliff_ratio` **0.070** over 3,737 strong steps, a band ratio of **16.079** and a blend ratio of **2.960**, the last two emphatically antialiased. Checked by eye from an edge-dense crop upscaled NEAREST (the `others/LABELS.json` method): a large flat green field meeting white through a single grey ramp column. Its low density comes from having barely any detail, not from a pixel grid.
+`add.png`, a 512x512 vector icon: `change_line_density` **0.447** — below the 0.5 floor, so v5.4.0 calls it hard-edged and recommends `--pixel-art` — against `plateau_cliff_ratio` **0.070** over 3,737 strong steps, a band ratio of **16.079** and a blend ratio of **2.960**, the last two emphatically antialiased. Checked by eye from an edge-dense crop upscaled NEAREST (the corpus labelling method recorded in the development repo): a large flat green field meeting white through a single grey ramp column. Its low density comes from having barely any detail, not from a pixel grid.
 
 The rule that resolves it is an **entailment, not a tuned margin**: a density below 0.5 means the image changes only every few scan lines — blocks wider than one pixel — which *entails* plateaus of 2 px or more at each edge, i.e. a high cliff ratio. When the cliff ratio says the opposite on a decent sample, the low density is coming from something else. So `change_line_density < 0.5` is dispositive UNLESS the cliff measure has the samples to contradict it (≥ 500 steps and ratio < 0.30). All 18 assets the density rule detects score cliff 1.000, so this costs no detection, and the suppressed evidence is reported rather than dropped (`hard_edged_suppressed_notes`).
 
@@ -1686,7 +1686,7 @@ After the auto-erosion fix, **6 of those 7 regressed assets land EXACTLY on thei
 
 Every threshold in this skill had been scored against 31 labelled assets that are **all fully opaque GIFs**. On the same day, two brand-new rules cleared that scoring and were broken hours later by content the sample did not contain (§28.12). Both alpha-carrying populations are now labelled corpora.
 
-**Method, and the one rule that keeps it honest: no measure from the script was consulted while labelling.** A corpus labelled by the thing under test proves only that the thing agrees with itself — §23's circular fixture. Labels come from edge-dense crops upscaled NEAREST (the method `others/LABELS.json` documents; a centre crop lands on flat fill and makes everything look smooth), at 7x for every asset and three non-overlapping crops at 13x for the eight genuinely ambiguous ones.
+**Method, and the one rule that keeps it honest: no measure from the script was consulted while labelling.** A corpus labelled by the thing under test proves only that the thing agrees with itself — §23's circular fixture. Labels come from edge-dense crops upscaled NEAREST (the method recorded with the corpus in the development repo; a centre crop lands on flat fill and makes everything look smooth), at 7x for every asset and three non-overlapping crops at 13x for the eight genuinely ambiguous ones.
 
 **524 sprite-pack files: 493 `pixel_art`, 31 `unsuitable_no_edges`.** Provenance was not trusted on its own — a spread sample from every pack was inspected, which matters most for the one pack that is 410 of the 524 files, i.e. the pack whose label decides the population. Two judgements are worth carrying:
 
