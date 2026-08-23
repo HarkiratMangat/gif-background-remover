@@ -872,6 +872,8 @@ $ grep -cE '^#{2,3} ' SKILL.md   ->  20
 
 So a session that cannot run `rg` does not get an error. It gets an empty outline of a file the header has just told it never to `cat`, with no signal that anything went wrong. **This is a silent failure at the entry point of the entire skill** — the worst possible place for one, and it is invisible from this repo because `rg` is installed here.
 
+⚠️ **PARTIALLY DONE 2026-08-22, as a side effect of the v6.1.0 bump.** Moving the v6.0.0 entry into `references/version-history.md` — required anyway, since SKILL.md keeps only the current version — took the header from **28.9% to 12.4%** (3,863 → 1,349 words). **8a (the `rg`-only navigation recipe) is UNTOUCHED and is still the higher-severity half**: it is a silent failure at the skill's entry point. The remaining 8b work is the older one-line summaries and checking whether any moved bullet was the only statement of a live behaviour.
+
 **8b. 28.9% of the file is release notes before the first actionable line.** Measured: `SKILL.md` is 13,351 words; lines 1-52 — everything before `## When to use this` — are **3,863 of them**, and almost all of that is the v6.0.0 changelog plus one-line summaries of v5.5.0 down to v5.0.0. The actionable body is 9,488 words.
 
 A claude.ai session loads this file to find out what to *do*. Release notes are provenance for a maintainer. `references/version-history.md` already exists for precisely this purpose and already holds v5.3.0 and earlier — the current release simply never gets moved down when the next one lands.
