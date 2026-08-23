@@ -87,3 +87,22 @@ def test_the_renderer_and_the_recommender_read_ONE_declaration():
     src = open(SCRIPT).read()
     assert src.count("('--protect-band-only', 'protect_band_only')") == 1, \
         'the exclusivity list has been duplicated; the two copies can now drift'
+
+
+@needs
+def test_the_fade_alternative_is_PUBLISHED_complete_and_runnable():
+    """What STAYED, and the reason this is not a suppression.
+
+    Dropping --recover-fade-alpha and saying nothing else would suppress it on every asset
+    that also wants protection -- most faded assets in this corpus. The other side of the
+    tradeoff is published as a complete command, and NEITHER field may hold a pair the
+    renderer refuses to honour.
+    """
+    rec = _suggested(BROADCAST)
+    alt = rec.get('alternative_command')
+    assert alt and '--recover-fade-alpha' in alt, f'the fade option was discarded: {alt}'
+    sys.path.insert(0, os.path.join(HERE, '..'))
+    import remove_gif_background as R
+    for flag, _dest in R.FADE_EXCLUSIVE_FLAGS:
+        assert flag not in alt, f'alternative_command still pairs {flag} with the fade path'
+    assert '<output.webp>' in alt, 'the alternative names a container that cannot hold a fade'

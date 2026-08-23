@@ -77,6 +77,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 41. [Recovering the glow works when you NAME the colour; deriving it does not, and the negative population says why](#41-recovering-the-glow-works-when-you-name-the-colour-deriving-it-does-not-and-the-negative-population-says-why)
 42. [Downscaling flat vector art makes the file BIGGER, so a size ladder that tries resolution before frames hands back the wrong file](#42-downscaling-flat-vector-art-makes-the-file-bigger-so-a-size-ladder-that-tries-resolution-before-frames-hands-back-the-wrong-file)
 43. [An enclosed interior that IS the background: every protection mechanism says design, and force-removing it destroys the art](#43-an-enclosed-interior-that-is-the-background-every-protection-mechanism-says-design-and-force-removing-it-destroys-the-art)
+44. [A flag the tool accepts and discards, and a decision it makes without saying so — eight instances of one shape](#44-a-flag-the-tool-accepts-and-discards-and-a-decision-it-makes-without-saying-so--eight-instances-of-one-shape)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -167,10 +168,18 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | A soft glow, halo or bloom loses its outer falloff on a dark background | §40 (the fade gate wants a colour that is almost never solid; a glow's colour is both) |
 | `fade_colors_detected` is empty on art that visibly fades out | §40 (check `partial_fraction` before concluding the detector is blind — one asset misses by 0.0002) |
 | One colour is both solid artwork and a translucent element | §40 (measured root of AUTONOMY BACKLOG item 5; still open) |
-| `EXPECT THE OUTER FALLOFF ... TO BE CUT` in `--recommend`'s evidence | §41 (it names the exact `--fade-color` value; re-run with it and a WebP/AVIF output) |
+| `EXPECT THE OUTER FALLOFF ... TO BE LOST` in `--recommend`'s evidence | §41, §44.6 (it names the exact colour; re-run with `--recover-fade-alpha --fade-color <hex>` — BOTH flags — and a WebP/AVIF output) |
 | A glow comes back correctly with `--fade-color` but never automatically | §41 (deriving the colour is falsified against 91 assets; the named candidate is the product) |
 | `fade_ramp_candidate` is populated but no flag was recommended | §41 (evidence, deliberately not a decision — a threshold admitting it admits the catastrophic class) |
 | `--target-kb` came back at a quarter of the original resolution | §42 (deep downscale now ranks below frame-stride; on flat vector art it was never paying) |
+| A pale 1px ring around the whole artwork on a WebP/AVIF/APNG, which `--verify` calls clean | §44.1 (the 8-bit-alpha erosion default was a flat 0; it calibrates now) |
+| `--webp-quality` changes nothing — two qualities, byte-identical files | §44.2 (the lossless path encodes at 100 regardless; add `--webp-lossy`) |
+| `--fade-color` changes nothing, or the fade stages vanish entirely | §44.6 (it parameterises `--recover-fade-alpha` and does nothing alone; the pair is the command) |
+| The dimensions the tool reported are not the dimensions of the file | §44.3 (the `Output:` line predates `--target-kb` fitting; read the `Final:` line) |
+| `--verify` returned in under two seconds and looked like a pass | §44.4 (a cropped output skips every pixel check; look for `verified: false` and `checks_skipped`) |
+| `--target-kb` delivered a smaller image than the size that was asked for | §44.5 (`--min-width` / `--min-height` / `--min-dimension` are a floor the fit may not breach) |
+| `--auto` stopped and asked instead of rendering | §44.7 (a coin-flip enclosure or a nameable fade; answer it with the flag the refusal prints and re-run) |
+| Two format outputs and no way to tell which to keep | §44.8 (the batch summary flags an output another beats on every axis) |
 | Downscaling an icon made the WebP LARGER, not smaller | §42 (LANCZOS invents intermediate colours; the art stops being flat and lossless entropy jumps) |
 | `NOTE: downscaling made this file LARGER than full resolution` in the fit log | §42 (the ladder is telling you frame-stride is the only lever paying on this content) |
 | A white area inside the artwork stays opaque and no protection flag removes it | §43 (`--unprotect-region` — every protection mechanism classifies an enclosed background-coloured region as design) |
@@ -2702,3 +2711,76 @@ Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST 
 | hand-measured `238,300,168,240` | **0** | **23,478** |
 
 ⚠️ **A padding heuristic was built and REMOVED, on an argument that measurement falsified.** The reasoning was that this flag re-keys only background-coloured pixels, so an oversized box costs nothing. At +15% the box reaches the artwork's outer silhouette and re-keys the antialiasing ramp there — **1,287 px of artwork gone**. And no pad tuned on one asset is defensible: even the exact across-frames extent still leaves 1,607 px, because the residue is scattered small blobs that a bounding box does not describe. **Reporting the box honestly with the tradeoff named beats shipping a number tuned to one file.** It is **offered, never applied**: which answer is right is a statement about intent, not about pixels, and the tool's standing rule is that an unverifiable check reports rather than guesses. A region enclosed on **every** frame gets no hint, because a hint on every asset is noise rather than guidance — that negative case is a falsifier, not an assumption.
+
+---
+
+## 44. A flag the tool accepts and discards, and a decision it makes without saying so — eight instances of one shape
+
+**Also searched as:** ignored option · flag has no effect · nothing changed · accepted and discarded · vacuous pass · reported clean but looks wrong · halo · light rim · pale outline · stale report · wrong dimensions reported · guessed instead of asking · which file do I keep · byte-identical output · unanswered question.
+
+**Provenance, and it is the whole point.** One person opened four delivered files and wrote one sentence: *"the output of both sessions had a ~1 px anti-aliasing edge around the entire artwork which should have been eroded away. Right now the outline does not look 'clean' on any of the outputs."* Ten measurements, two sessions, a 797-asset corpus, an xhigh code review and a full render diff had all passed. Every one of them compares the product against itself or against a label; none can see the axis a person sees immediately. Pulling that thread found seven more defects of the same shape, listed below. **The shape is: the tool accepted an instruction and quietly did not carry it out, or made a decision it had no basis for and did not say so.** All eight are cases where the output looked exactly like success.
+
+### 44.1 The 8-bit-alpha erosion default left a pale ring on every file the manual path produced
+
+`--edge-cleanup-erosion` defaulted to a flat **0** for `webp`/`avif`/`apng`, printing *"8-bit alpha needs no fringe trim"* — on the reasoning that partial alpha already represents the antialiased edge. `--verify`'s `edge_fringe_check` agreed: `looks_fringed: false` at 0.0000. **The check that exists to catch this reported clean.**
+
+Measured on megaphone.gif, same flags, erosion 0 against erosion 1, counting PALE partial-alpha pixels — `0 < alpha < 255` and still within 128 of the background colour, i.e. edge pixels carrying the BACKGROUND's tint rather than the art's:
+
+| | worst frame | total, 144 frames |
+|---|---|---|
+| erosion 0 (the manual default) | **852 px** | 92,560 px |
+| erosion 1 (what `--auto` calibrates to) | 1 px | 10 px |
+
+`--auto` never had the defect: it calibrates erosion against the asset's own fringe curve. **So the fix is to run that same calibration on the manual path, not to flip the default to a new constant** — the level is a property of the asset, and this file already records 448 renders' worth of evidence that a fixed level set too high eats thin strokes (§37, §29). It stays selective: megaphone calibrates 0 → 1, secure stays at 0 (its curve is flat at 0.0), a recovered fade stays at 0. An explicitly typed level still wins, and the calibrator's own guards — `--pixel-art`, and any source whose own partial alpha would make the fringe metric measure artwork — leave 0 standing where they fire.
+
+⚠️ **The obvious render gate was VACUOUS for this, and saying so is the more useful lesson.** The 106-asset render baseline renders every asset through `--auto`, which already calibrated. It came back **0 changed of 230 records** — which partly means *this set cannot express the change*. The population the change can reach is the MANUAL path, and measured there over 39 assets: fringe improved on 10 (up to −2,859 px on the worst frame), unchanged on 27, and the artwork cost was **0.49–0.95 × the artwork's own perimeter** on every asset but one — less than a single 1px ring, which is exactly what erosion 1 should cost. A fraction is not damage until you check what it is a fraction of. The one outlier calibrates to erosion 2 through the convex-curve rule (§37.10) and loses 1.89 × perimeter; rendering it under the PRE code with `--auto` produced a byte-equivalent result, so that outcome is an existing `--auto` behaviour now reaching the manual path, not a new one.
+
+### 44.2 `--webp-quality` was parsed and thrown away on the default path
+
+The same render at `--webp-quality 70` and `--webp-quality 45` produced **byte-identical 403.1 KB output**. `render_frames_to_webp`'s lossless branch overrides the caller with `quality=100`, and lossless is the default. A user tuning the number saw nothing change and got no warning; a session spent two renders concluding the tool was broken. **The trial that found it nearly missed it, because its own override passed `--webp-lossy` alongside — the one combination that hides the bug.**
+
+Deliberately NOT made to imply `--webp-lossy`: lossless is measured-correct for flat vector art (2109 KB lossless against 3005 KB at q90 on the same asset), and silently switching someone to lossy because they nudged a number trades a silent no-op for a silent behaviour change, which is worse. It warns and names the flag that arms it.
+
+### 44.3 The reported dimensions were the ones from before the fit
+
+`Output: {w}x{h}` prints before `--target-kb` fitting begins; the fit then reported only `Final: 242.3 KB`. Measured consequence: a session reported **482×513 as the delivered dimensions of a file that was 120×128** — and the tool had printed exactly `Output: 482x513` in that same run. A session reporting faithfully what the tool said was still wrong, which is why the fix belongs in the output rather than in operator discipline. Every fit-completion line now reports dimensions read back from the WRITTEN FILE: a rung records what it asked for, the encoder records what it wrote.
+
+### 44.4 `--verify` returned the shape of success without checking a pixel
+
+`--verify` skips every pixel check when the output canvas differs from the source — so every `--crop`ped or `--resize-max-dim`ed deliverable verified vacuously. All four initial `--verify` runs in the trial did nothing, in 0.9–2.0s, and returned a document that reads like a pass; the real checks (13.9s and 39.0s) only ran after re-rendering uncropped. The report now carries `checks_skipped` and `verified`, with `verified` DERIVED from the skip list so a pass cannot be manufactured by a check quietly declining to run. This is the rule §13/§16/§17 already state, applied to the verifier itself.
+
+### 44.5 A byte cap silently outranked a stated resolution
+
+The fit walked down the scale axis and delivered 120×128 against an explicit *"at least 128px wide"*. `--resize-max-dim` already encoded the right reasoning as an exact PIN, after a confirmed bug where the cascade shrank an explicit 128px emoji to 48×48. `--min-width`, `--min-height` and `--min-dimension` are the same requirement with a weaker shape — a FLOOR — so quality and frames are still traded freely and only the breaching rungs are removed. **A bare `--min-dimension N` constrains the SHORTER side**: for a sticker or emoji slot that is the safer reading of "at least this big" and the stricter one, since a 600×100 asset passes `--min-width 128` and fails `--min-dimension 128`. The rung filter computes dimensions the way the resizer does, `max(1, round(dim * scale))`, so it cannot disagree with the encoder about which rung is legal.
+
+The fit also prints a **cost estimate before it starts**: up to 120 rungs each re-encoding every frame, so cost scales with frames × rungs and not with file count. One 144-frame 640×640 asset took **207.84s** on 6 cores, and a first attempt died at a 120s tool timeout having produced nothing.
+
+### 44.6 `--fade-color` did nothing on its own, and the report of it was wrong in an instructive way
+
+`--fade-color` is read ONLY inside the `--recover-fade-alpha` branch. Measured on notification.gif, the faint fade stages on frame 14:
+
+| command | faint stages fully opaque | mean alpha |
+|---|---|---|
+| `--recover-fade-alpha` alone | REFUSES — no translucent colour detected | — |
+| `--recover-fade-alpha --fade-color fd6050` | 41.5% | 0.522 |
+| `--fade-color fd6050` alone | **0.0%** | **0.000** |
+
+⚠️ **The third row corrects the original report, and the correction is the lesson.** The flag had been recorded as *"leaving the fade opaque"*. It does not — on its own it removes the fade stages entirely. The run that looked broken was also passing `--protect-outline-color f05050,002864`, and the PROTECTION was what held those pixels opaque while `--fade-color` did nothing whatsoever. **Two mechanisms were being read as one bug, because only the end state was looked at.** Instrumenting the three commands separately took minutes and settled it; reading the call graph would not have, and this repo has a standing record of signature-reading producing confident wrong answers.
+
+The trap was partly the tool's own wording. `--recover-fade-alpha`'s refusal said to *"name the fading colour explicitly with `--fade-color`"*, which reads as an ALTERNATIVE to the flag rather than an addition to it. A bare `--fade-color` is now a hard error — the flag has no meaning without the path it parameterises — and both messages prescribe the complete pair.
+
+### 44.7 `--auto` guessed at two decisions it had no basis for
+
+**A coin-flip enclosure.** On megaphone, `--auto` printed `applying: --protect-outline-color f0c850,002864`, protected the sparkle interiors the user had explicitly asked to have REMOVED, and reported success. Every region on that asset was in the coin-flip band by the tool's own evidence (2/144 and 102/144 frames enclosed) — delivered as an evidence string, and **an autonomous run reads flags, not prose.**
+
+**A nameable fade.** On notification, the detector identifies the flattened-fade signature, names `fd6050`, counts 2,706 pixels on frame 14, prescribes the flag — and `--auto` cut the falloff anyway. ⚠️ **The refusal to AUTO-APPLY here is correct and is preserved:** §41 measured 91 assets in exactly this branch whose ramp statistics interleave with ones that render as a translucent ghost of the whole frame. The defect was the delivery channel, not the decision. Do not "fix" it by lowering a threshold that has been measured not to exist.
+
+⚠️ **The tension with full autonomy is real and is not smoothed over.** An unattended run has nobody to ask, so the question is made **answerable in advance** rather than dropped: `--assume-protect`, `--assume-remove`, `--assume-no-fade`. A run that is neither pre-answered nor willing to be asked stops; a pre-answered run PRINTS that it acted on an assumption, because an assumption that leaves no trace is indistinguishable from a measurement. **Measured refusal rate before shipping it, because a refusal that fires on everything is correctness bought by making the feature useless: 31 of 304 assets, 10.2% pooled** — emoji 18.9%, trial 12.5%, labelled 6.5%, small_aa 3.5%. And both questions arrive in ONE refusal: an unattended caller pays a whole tool call per refusal, so asking serially turns two questions into two lost calls.
+
+### 44.8 Two outputs, no ranking, and one of them beaten on every axis
+
+Measured on both trial assets, the AVIF beat the WebP on resolution, frame count AND size simultaneously — megaphone AVIF 482×513/144/225.1 KB against WebP 120×128/36/242.3 KB. The tool printed `2/2 succeeded.` and ranked neither. Only **strict domination** is reported: `>=` on width, height and frames, `<=` on bytes, strictly better on at least one. That is a total, objective comparison with no weighting and no taste in it, so the tool states a fact rather than a preference, and a genuine tradeoff — smaller file, fewer frames — is deliberately left unranked. Every file is still written.
+
+### 44.9 The recommender suggested a pair the renderer refuses to honour
+
+`--recommend` returned `--protect-outline-color 002864 --recover-fade-alpha`, and the renderer's own warning says `--recover-fade-alpha` takes its own render path and is IGNORING the protection — not weakening it, ignoring it (§34.4). **That warning fires at render time, after an autonomous run has committed to the render**, and the run pastes `suggested_command` verbatim. The exclusivity is now declared once and read by both sides, so the two cannot drift; protection wins the conflict, because a protected region is usually a stated requirement while a fade is inferred, and losing an instruction is worse than losing an improvement. The recommendation says which side it took, why, and how to take the other one — silently dropping a flag would satisfy a "no conflicting pair" test while destroying the information.

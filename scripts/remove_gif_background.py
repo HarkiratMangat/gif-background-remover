@@ -2875,10 +2875,18 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     # suggested_command verbatim. Measured 2026-08-22 on broadcast.gif: --recommend returned
     # "--protect-outline-color 002864 --recover-fade-alpha" and the protection silently did
     # nothing. Choose, say which, and say what was given up; do NOT drop one in silence.
+    _fade_alternative = None
     if '--recover-fade-alpha' in flags:
         _blocked = [f for f in flags
                     if any(f.split()[0] == flag for flag, _dest in FADE_EXCLUSIVE_FLAGS)]
         if _blocked:
+            # ⚠️ THE OTHER SIDE OF THE TRADEOFF IS PUBLISHED, NOT DISCARDED. Dropping the
+            # fade flag and saying nothing else would suppress --recover-fade-alpha on every
+            # asset that also wants protection, which on this corpus is most faded assets --
+            # a gate that suppresses a flag everywhere is not a gate. `alternative_command`
+            # carries the fade-first command, complete and runnable, so both options exist
+            # and NEITHER of them is a pair the renderer refuses to honour.
+            _fade_alternative = [f for f in flags if f not in _blocked]
             flags = [f for f in flags if f != '--recover-fade-alpha']
             evidence.insert(0, (
                 "MUTUALLY EXCLUSIVE -- pick one, and this recommendation has picked for you. "
@@ -2889,8 +2897,10 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                 + ", ".join(_blocked) + " and DROPPING --recover-fade-alpha, because a "
                 "protected region is usually a stated requirement while a fade is inferred, and "
                 "losing an instruction is worse than losing an improvement. To take the fade "
-                "instead, drop " + ", ".join(_blocked) + " from the command and accept the "
-                "fade path's own topological protection."))
+                "instead, run `alternative_command` from this report instead of "
+                "`suggested_command` -- it is the same command with " + ", ".join(_blocked)
+                + " removed, complete and runnable, so neither field ever holds a pair the "
+                  "renderer refuses to honour."))
 
     _self = os.path.abspath(__file__)
     # The placeholder must name a container that can actually HOLD what the flags
@@ -2900,6 +2910,10 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     suggested = f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} <output.{_ext}>"
     if flags:
         suggested += " " + " ".join(flags)
+    _alt_command = None
+    if _fade_alternative is not None:
+        _alt_command = (f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} "
+                        f"<output.webp> " + " ".join(_fade_alternative))
 
     if _eh.get('source_background_already_transparent'):
         # Not a not_applicable_reason: unlike an alpha-only source, running the command here is
@@ -2960,6 +2974,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
         'recommended_format': report.get('recommended_format'),
         'suggested_command': suggested,
         'not_applicable_reason': _not_applicable,
+        'alternative_command': _alt_command,
         'ambiguous_protection': _ambiguous,
         'nameable_fade': ({'color': _ramp['color'], 'faint_px': _ramp['faint_px'],
                            'frame_index': _ramp['frame_index']}

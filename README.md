@@ -150,7 +150,7 @@ Five modes replace "run it and hope":
 | `--recommend` | `--analyze`, then a ready-to-paste command **with the evidence behind each flag**. |
 | `--auto` | Recommend → apply (only where you left a default) → render → **re-verify the encoded file** → correct once. Two passes, not a loop. |
 | `--auto-erosion` | Picks erosion from *this asset's own* fringe curve, because the metric has no honest global threshold. |
-| `--assume-protect <hex,…>` · `--assume-remove <hex,…>` | Pre-answer the question `--auto` now REFUSES to guess: whether a region whose outline encloses it on *some* frames is interior design or background showing through. Either may name a subset; every ambiguous colour must be answered or the run still stops. Measured refusal rate across 304 assets: **10.2%**. |
+| `--assume-protect <hex,…>` · `--assume-remove <hex,…>` · `--assume-no-fade` | Pre-answer the question `--auto` now REFUSES to guess: whether a region whose outline encloses it on *some* frames is interior design or background showing through. Either may name a subset; every ambiguous colour must be answered or the run still stops. `--assume-no-fade` answers the other question `--auto` refuses to guess: whether a soft falloff it can NAME but not classify is artwork (`--recover-fade-alpha --fade-color <hex>`) or background. Measured refusal rate across 304 assets: **10.2%**. |
 | `--verify` | Leftover background, protected-region coverage, edge fringe, small-region inflation, timing. |
 
 <details>
