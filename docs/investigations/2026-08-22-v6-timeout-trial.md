@@ -481,7 +481,7 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 | 1c | `--recommend` emits `--protect-outline-color` together with `--recover-fade-alpha`, which the renderer refuses to honour; the conflict surfaces only at render time | **high** — a recommended command that silently drops protection | yes |
 | 1d | The fade detector names the fading colour and the flag that fixes it, then delivers both only as evidence prose `--auto` never reads | **high** — the glow is cut silently on an asset the tool correctly diagnosed | yes |
 | 1e | `--fade-color`, the prescribed escape hatch, leaves 90.9% of the faded pixels OPAQUE, and the evidence text predicts they will be removed when they are kept | **high** — a documented workaround that does not work | needs diagnosis |
-| 1f | No way to say "this enclosed interior is background" without destroying the art. `--remove-region` force-deletes everything in the box (−73% of the tower); the fade path ignores protection flags | **high** — a real capability gap, and the obvious workaround wrecks the artwork | needs design |
+| 1f | ✅ **FIXED 2026-08-22** — `--unprotect-region` added: region-scoped background key that overrides protection without deleting artwork, and composes with the fade path. Measured 8,569→0 enclosed white with navy 23,240→23,631 | was **high** | done; recommender half open (Task 14b) |
 | 2 | `--target-kb` has no min-dimension constraint; silently violates a stated floor | **high** — ships wrong artwork silently | yes |
 | 3 | Final dimensions never reprinted after a fit; the last printed `Output:` line is stale | **high** — directly caused a false compliance report | yes |
 | 4 | `SKILL.md`'s navigation recipe is `rg`-only; the `grep` substitute returns 0 matches at exit 0 | **high** — silent failure at the skill's entry point | yes |
@@ -597,6 +597,31 @@ The translucent wave renders as **opaque pale-pink blobs** — precisely the fai
 **My metric measured exactly one thing (white pixels removed) and was blind to the only thing that mattered (was the artwork still there).** Both counts were true. The conclusion was false. This is the third time in this report that a plausible number survived because nobody looked at the picture — and the first two are written up as warnings a few sections above.
 
 **So the either/or stands as Harkirat originally described it**, and §13A.2's earlier "capability gap" filing was right the first time: no path both recovers a flattened fade and removes an enclosed background-coloured interior while keeping the art. Two things could close it — a `--remove-region` variant that keys on background colour inside the region rather than deleting it, or letting the fade path accept protection flags. Neither exists.
+
+### 13A.2b RESOLVED — `--unprotect-region`, implemented 2026-08-22
+
+The gap §13A.2 identified is closed. **`--unprotect-region`** takes the same `circle:`/`rect:`/`;` syntax as `--remove-region`, and inside its box it **re-applies the background key and overrides every protection decision — while leaving non-background pixels alone.**
+
+Implementation is small because the machinery existed: `apply_remove_regions` already accepts a **list of per-frame masks**, so the per-frame mask is simply `region ∩ color_mask(frame, bg, tolerance)`. That reuses its de-fringe/taper handling, which is exactly what a removal boundary needs, and it runs downstream of the fade path at `:7346` — so it is the one region flag that composes with `--recover-fade-alpha`.
+
+**Measured on broadcast.gif, frame 30:**
+
+| render | enclosed white px | navy artwork px | total opaque | mid-alpha |
+|---|---|---|---|---|
+| `--protect-outline-color` only | 8,569 | 23,240 | 78,424 | 1.15% |
+| the recommended command | 8,569 | 23,157 | 74,440 | 4.25% |
+| `--remove-region` (my wrong fix) | 0 | **6,297 (−73%)** | 47,988 | 4.22% |
+| **`--unprotect-region`** | **0** | **23,631** | 65,865 | **4.48%** |
+
+**White gone, tower intact, fade recovered — all three at once**, which is what Harkirat asked for at the start and was told was impossible.
+
+**Four falsifiers**, `scripts/harness/test_unprotect_region.py`, each asserting on **both** what left and what stayed — because the white-pixel assertion passed on the render that destroyed the tower:
+1. enclosed white < 500 **AND** navy > 20,000 on broadcast.
+2. It survives `--recover-fade-alpha`, which ignores every other protection flag (mid-alpha > 3%).
+3. **Not a force-delete:** a region placed over solid artwork must leave opaque count within 3% — the direct guard against reintroducing `--remove-region`'s behaviour.
+4. Omitting the flag produces byte-identical output — the feature is inert unless asked for.
+
+⚠️ **Still manual.** Nothing yet *recommends* `--unprotect-region`, so an autonomous run cannot reach it. That is the remaining half, and it is the same missing capability behind megaphone's sparkles: the recommender has no notion of "the user considers this enclosed interior background." Plan Task 14b.
 
 ### 13A.3 `megaphone.gif` — `--auto` does not remove the sparkle interiors, confirmed twice
 

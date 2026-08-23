@@ -76,6 +76,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 40. [The soft glow was never invisible to the fade detector — it missed the gate by 0.02%](#40-the-soft-glow-was-never-invisible-to-the-fade-detector--it-missed-the-gate-by-002)
 41. [Recovering the glow works when you NAME the colour; deriving it does not, and the negative population says why](#41-recovering-the-glow-works-when-you-name-the-colour-deriving-it-does-not-and-the-negative-population-says-why)
 42. [Downscaling flat vector art makes the file BIGGER, so a size ladder that tries resolution before frames hands back the wrong file](#42-downscaling-flat-vector-art-makes-the-file-bigger-so-a-size-ladder-that-tries-resolution-before-frames-hands-back-the-wrong-file)
+43. [An enclosed interior that IS the background: every protection mechanism says design, and force-removing it destroys the art](#43-an-enclosed-interior-that-is-the-background-every-protection-mechanism-says-design-and-force-removing-it-destroys-the-art)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -172,6 +173,9 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | `--target-kb` came back at a quarter of the original resolution | §42 (deep downscale now ranks below frame-stride; on flat vector art it was never paying) |
 | Downscaling an icon made the WebP LARGER, not smaller | §42 (LANCZOS invents intermediate colours; the art stops being flat and lossless entropy jumps) |
 | `NOTE: downscaling made this file LARGER than full resolution` in the fit log | §42 (the ladder is telling you frame-stride is the only lever paying on this content) |
+| A white area inside the artwork stays opaque and no protection flag removes it | §43 (`--unprotect-region` — every protection mechanism classifies an enclosed background-coloured region as design) |
+| I can fade the glow OR remove the interior white, never both | §43 (`--recover-fade-alpha` ignores protection flags; `--unprotect-region` is the one region flag that composes with it) |
+| `--remove-region` deleted the artwork along with the background | §43 (it force-deletes its whole box — measured −73% of the artwork; use `--unprotect-region`) |
 | A `--target-kb` run takes minutes and prints dozens of `tried ...` lines | §42 (it walks a real 120-rung grid, now concurrently at a probed worker count) |
 | The output silhouette is clean but a detail is missing | §37 (the fringe metric has no term for what erosion costs) |
 | `--recommend` says an outline is VERIFIED and the region still comes out transparent | §38 (check the band — 35% of regions used to say "verified" at partial enclosure) |
@@ -2647,3 +2651,32 @@ Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST 
 **What the concurrency is actually worth, measured back to back in one process on the same 129-frame 640x640 asset: 528s serial -> 277s at 6 workers, a 1.90x speedup, with byte-identical results and the same chosen rung.** Not the 6x a core count suggests — the encoder holds the interpreter lock for part of each encode — so quoting the worker count as a speedup would be wrong by a factor of three. Both ends were re-measured in the same run rather than compared against an older snapshot.
 
 **If you see the fit log say `NOTE: downscaling made this file LARGER than full resolution`,** that is this section firing on your asset: the resolution lever is not paying, and the size will come from frames or from quality.
+
+---
+
+## 43. An enclosed interior that IS the background: every protection mechanism says design, and force-removing it destroys the art
+
+**Also searched as:** white inside the tower · interior is background not artwork · remove the hole not the shape · cannot remove enclosed white · exempt an area from protection · protection flag ignored · fade or removal not both · carve out background inside a shape · sparkle interior stays white · region-scoped background removal · undo protection in one area · enclosed area should be transparent
+
+**The gap.** A user points at a white area *inside* the artwork — the white showing through a broadcast tower's lattice, the white inside a sparkle — and says: that is background, remove it. Nothing in the tool could say that. Measured 2026-08-22 on a real 640×640 60-frame asset, frame 30: `--protect-outline-color 002864` left **8,569 enclosed near-white opaque px**, and `--recover-fade-alpha` — which ignores every protection flag and derives protection *topologically* — left **exactly the same 8,569 px, same bounding boxes**. Two mechanisms, opposite routes, identical verdict: an enclosed region of background colour is intentional design. The band-interior scan agrees. There was no counter-statement.
+
+**The obvious workaround destroys the artwork.** `--remove-region rect:238,332,168,206` took the enclosed white to **0** — and the navy tower from **23,157 px to 6,297, a 73% loss**, with total opaque down 36%. It force-deletes its whole box; its own help says *"for carving out a small feature."* ⚠️ **The white-pixel measurement PASSED on that render.** The metric counted what left and had no term for what stayed, so a catastrophic result and a correct one were indistinguishable in the numbers. It took a human looking at the frames to see a rectangle cut out of a tower.
+
+**The fix: `--unprotect-region`.** Same `circle:`/`rect:`/`;` syntax. Inside the region it re-applies the background key at `--tolerance` and overrides every protection decision, **leaving non-background pixels alone**. Same asset and frame:
+
+| render | enclosed white | navy artwork | total opaque | mid-alpha |
+|---|---|---|---|---|
+| `--protect-outline-color` only | 8,569 | 23,240 | 78,424 | 1.15% |
+| `--recover-fade-alpha` (protection ignored) | 8,569 | 23,157 | 74,440 | 4.25% |
+| `--remove-region` | 0 | **6,297** | 47,988 | 4.22% |
+| **`--unprotect-region`** | **0** | **23,631** | 65,865 | **4.48%** |
+
+**It is the one region flag that composes with `--recover-fade-alpha`**, because it is applied downstream of the fade render path — so "recover the flattened fade AND remove the interior white" is one command, not a choice between two.
+
+**Implementation note worth keeping.** No new removal code was needed: the per-frame mask is `region ∩ color_mask(frame, bg, tolerance)`, handed to the existing per-frame branch of `apply_remove_regions`, which already carries the de-fringe and taper handling a removal boundary needs. The feature that looked like a new subsystem was a new *mask*.
+
+**The testing lesson, which is the transferable half.** Every falsifier written for this flag asserts on **both** what left and what stayed — including one that places a region over solid artwork and requires the opaque count to hold within 3%, as a direct guard against reintroducing force-delete behaviour. A one-sided assertion is not a weak test here; it is a test that certifies the exact failure it was written to prevent.
+
+*(The falsifier suite lives in the development repo's measurement harness and is not part of this package — see §23 on provenance.)*
+
+⚠️ **Still manual.** Nothing recommends `--unprotect-region`, so an autonomous run cannot reach it. Choosing between "protect this interior" and "remove it" is a statement about intent, not about pixels — the recommender can offer both with ready-to-paste coordinates, but must not pick one.

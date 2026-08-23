@@ -7715,6 +7715,35 @@ def process(input_path, output_path, args, diagnostics=None):
     # Force-remove regions (inverse of --protect-region), applied last so it
     # overrides whatever --protect-outline-color / --protect-region decided
     # -- see apply_remove_regions' docstring for the case this is for.
+    if getattr(args, 'unprotect_region', None):
+        # Region-scoped BACKGROUND removal, not a force-delete. The per-frame mask is
+        # (region AND background-coloured), so artwork inside the region survives --
+        # `apply_remove_regions` already accepts a list of per-frame masks, and its
+        # de-fringe/taper handling is exactly what a removal boundary needs.
+        #
+        # ⚠️ This exists because --remove-region was tried for this job on 2026-08-22
+        # and destroyed the artwork: on broadcast.gif it took enclosed white from
+        # 8,569 px to 0 AND the navy tower from 23,157 px to 6,297 (-73%). The
+        # white-pixel measurement passed on that render, which is why every falsifier
+        # in test_unprotect_region.py asserts on what STAYED as well as what left.
+        _H0, _W0 = alpha_frames[0].shape
+        _region = parse_protect_regions(args.unprotect_region, (_H0, _W0))
+        _bg = hex_to_rgb(args.bg_color)
+        _masks = [_region & color_mask(f, _bg, args.tolerance) for f in rgb_frames]
+        _hit = int(sum(int(m.sum()) for m in _masks))
+        if _hit:
+            print(f"--unprotect-region: re-keyed {_hit} background-coloured pixel(s) "
+                  f"inside the region across {len(_masks)} frame(s); "
+                  f"non-background pixels there were left untouched.", file=sys.stderr)
+            rgb_frames, alpha_frames = apply_remove_regions(
+                rgb_frames, alpha_frames, _masks,
+                feather_px=args.remove_region_feather)
+        else:
+            print("WARNING: --unprotect-region matched no background-coloured pixels "
+                  "inside the region -- check the coordinates, or --bg-color/"
+                  "--tolerance if the interior is a near-background shade.",
+                  file=sys.stderr)
+
     if getattr(args, 'remove_region', None) or getattr(args, 'remove_region_track', None):
         H0, W0 = alpha_frames[0].shape
         if getattr(args, 'remove_region_track', None):
@@ -8724,6 +8753,20 @@ def main():
                          'last motion vector and those frame indices are PRINTED -- a '
                          'tracker that loses its target silently is worse than one that '
                          'says so. Same spec syntax as --remove-region.')
+    p.add_argument('--unprotect-region', default=None,
+                    help='Region-scoped BACKGROUND removal: circle:cx,cy,r or '
+                         'rect:x,y,w,h, same multi-region `;`-joined syntax. '
+                         'Inside this region the background key is re-applied '
+                         'and every protection decision is overridden, but '
+                         'pixels that are NOT the background colour are left '
+                         'alone. Use it to say "this enclosed interior is '
+                         'background" -- a white area inside a tower, the white '
+                         'inside a sparkle -- which no protection flag can '
+                         'express. Unlike --remove-region, which force-deletes '
+                         'its whole box (measured: -73%% of the artwork), this '
+                         'removes only background-coloured pixels. It is '
+                         'applied downstream of --recover-fade-alpha, so it is '
+                         'the one region flag that composes with fade recovery.')
     p.add_argument('--remove-region-feather', type=float, default=1.5,
                     help='Feather width in px for --remove-region\'s edge '
                          'taper (default 1.5).')

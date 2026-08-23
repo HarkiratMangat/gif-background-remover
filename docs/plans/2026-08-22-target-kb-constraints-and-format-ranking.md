@@ -46,7 +46,8 @@ Two design answers also landed: the min-dimension floor must be able to express 
 | 7th | **Task 1** — min-dimension floor | largest, and gated on open question 2 |
 | 8th | **Task 2** — format ranking | gated on open question 1 |
 | — | **Task 11** — recommend flag conflicts | do beside Task 10; both are about a recommendation the renderer will not honour |
-| — | **Task 14** — `--unprotect-region` | real implementation work, not a suggestion change; `--remove-region` destroys 73% of the artwork |
+| ✅ | **Task 14** — `--unprotect-region` | DONE 2026-08-22, 4 falsifiers passing |
+| — | **Task 14b** — recommend it | the flag exists but nothing points at it, so `--auto` still cannot reach it |
 | — | **Task 13** — diagnose `--fade-color` | **BLOCKS Task 12.** Investigation first, fix second; do not build a prompt around a flag that does not work |
 | last | **Task 12** — nameable fade asks | **blocked on Task 13.** Correct in shape, useless until the flag it prescribes works |
 
@@ -1427,44 +1428,30 @@ git commit -m "fix(fade): make --fade-color actually recover the fade it names"
 
 ---
 
-### Task 14: a region-scoped BACKGROUND removal that does not delete the artwork
+### Task 14: ✅ DONE 2026-08-22 — `--unprotect-region` implemented
 
-**Files:**
-- Modify: `scripts/remove_gif_background.py:3337` (`apply_remove_regions`), argparse
-- Test: `scripts/harness/test_region_scoped_background_removal.py`
+Region-scoped background removal that overrides protection without deleting artwork. Per-frame mask is `region ∩ color_mask(frame, bg, tolerance)`, handed to the existing per-frame path of `apply_remove_regions`; runs downstream of the fade path so it composes with `--recover-fade-alpha`.
 
-⛔ **An earlier draft of this task said "just recommend `--remove-region`". That was wrong and the render proved it.** Measured on broadcast.gif: `--remove-region "rect:238,332,168,206"` took enclosed white from 8,569 → 0 **and the navy tower from 23,157 → 6,297 px, a 73% loss**, with total opaque down 36%. It is a blunt force-delete — its help text says *"for carving out a small feature"* — and it cannot express "remove only the background-coloured pixels inside this box."
+Measured on broadcast.gif frame 30 — enclosed white **8,569 → 0**, navy artwork **23,240 → 23,631** (up, not down), mid-alpha **4.48%**. The `--remove-region` attempt it replaces scored navy **6,297**.
 
-**What is actually needed:** a region-scoped override that re-applies the normal background key inside the box, overriding protection there, and leaves everything else untouched. Call it `--unprotect-region` (same `circle:`/`rect:`/`;` syntax).
+Four falsifiers in `scripts/harness/test_unprotect_region.py`, each asserting on both what left and what stayed. **Remaining:** SKILL.md flag documentation and a `references/lessons.md` section (folded into Task 5), and the recommender half below.
 
-**Why it matters beyond broadcast:** this is the missing way to say "this enclosed interior is background" — the same gap behind megaphone's sparkles. Every protection mechanism (explicit outline, topological, band-interior) classifies an enclosed background-coloured region as design, and there is no counter-statement.
+---
 
-- [ ] **Step 1: Write the failing test — assert on the ARTWORK, not on what was removed**
+### Task 14b: teach `--recommend` that an enclosed interior may be background
 
-```python
-def test_unprotect_region_removes_the_white_and_KEEPS_the_tower(tmp_path):
-    """The falsifier the first attempt lacked: --remove-region passed the
-    white-pixel half and destroyed 73% of the art. Both halves are required."""
-    src = 'local/2026-08-22-fade-edge-cases/inputs/broadcast.gif'
-    out = tmp_path / 'u.webp'
-    subprocess.run([sys.executable, SCRIPT, src, str(out),
-                    '--recover-fade-alpha', '--erosion-exempt-transient',
-                    '--unprotect-region', 'rect:238,332,168,206'],
-                   capture_output=True, timeout=900, check=True)
-    white, navy, opaque = _measure(out, frame=30)
-    assert white < 500,  f'{white} enclosed white px survived'
-    assert navy > 20000, f'only {navy} navy tower px survived (23,157 in the source render)'
-```
+**Files:** the recommendation assembler · **Test:** `scripts/harness/test_unprotect_is_offered.py`
 
-- [ ] **Step 2: Run to verify it fails** — `--unprotect-region` does not exist.
-- [ ] **Step 3: Implement** — inside the region, recompute the background mask at `--tolerance` and clear protection; outside, no change. Must run downstream of the fade path (`:7346`) so it composes, the one property `--remove-region` did get right.
-- [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Render it and show Harkirat.** Two numeric assertions did not catch a rectangle cut out of a tower. **A passing test is not sign-off here.**
-- [ ] **Step 6: Then, and only then, teach `--recommend` to offer it** on a coin-flip enclosed region, with the ready-to-paste bbox.
+**Why.** `--unprotect-region` exists now but **nothing suggests it**, so an autonomous run still cannot reach it. This is the last piece of the root cause identified in §13A: every protection mechanism classifies an enclosed background-coloured region as design, and the recommender only ever offers to *protect*. It is the same gap behind megaphone's sparkles, where `--auto` prints `applying: --protect-outline-color f0c850,002864` and keeps interiors the user asked to remove.
 
-```bash
-git commit -m "feat: add --unprotect-region for a region-scoped background removal"
-```
+**Shape of the fix.** In the coin-flip enclosure branch (shared with Task 10), print **both** answers with ready-to-paste flags — the protect option as today, and `--unprotect-region rect:x,y,w,h` derived from the region's own bbox, which is already computed. Under `--auto`, this is one of the options the refusal offers.
+
+⛔ **Do not auto-apply either.** Which one is right is a statement about intent, not pixels — the finding this whole section rests on.
+
+- [ ] **Step 1:** falsifier — broadcast and megaphone recommendations must both mention `--unprotect-region` with a concrete bbox; `secure.gif` (enclosure 1.000 on both regions) must **not**, or the hint is noise on every asset.
+- [ ] **Step 2:** run, confirm the first two fail and the third passes.
+- [ ] **Step 3:** implement, reusing the bbox already in the region record.
+- [ ] **Step 4:** re-run; then `python3 scripts/harness/run_populations.py` and **report what fraction of the 797 now carry the hint.** A hint everywhere is not guidance.
 
 ---
 
