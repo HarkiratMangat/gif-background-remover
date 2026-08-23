@@ -5576,9 +5576,12 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                 "colour in this image is solid. This flag reconstructs alpha for an element "
                 "the source FLATTENED against the background; with nothing flattened it "
                 "cannot key the background cleanly and will leave it faintly visible instead "
-                "of removing it. Drop the flag and run normal background removal, or name "
-                "the fading colour explicitly with --fade-color if you can see one the "
-                "detector missed.")
+                "of removing it. Drop the flag and run normal background removal, or -- if "
+                "you can see a fading colour the detector missed -- KEEP --recover-fade-alpha "
+                "and ADD --fade-color <hex> beside it. --fade-color parameterises this flag; "
+                "it does nothing on its own, and the pair is the whole command. Measured "
+                "2026-08-22 on a notification asset the detector declines: with both flags the "
+                "faintest fade stages come out 41.5% opaque instead of ~91%.")
 
     bg = np.asarray(bg_rgb, dtype=np.float32)
     solid_idx = [i for i in range(len(palette)) if i not in fading]
@@ -7425,6 +7428,23 @@ def process(input_path, output_path, args, diagnostics=None):
             "store (1-bit alpha). Write a .webp, .avif or .apng output instead.")
     if not 0.0 <= getattr(args, 'translucent_alpha', 0.35) <= 1.0:
         raise SystemExit("--translucent-alpha must be between 0.0 and 1.0.")
+    if getattr(args, 'fade_color', None) and not getattr(args, 'recover_fade_alpha', False):
+        # ⚠️ --fade-color is READ ONLY inside the --recover-fade-alpha branch, so on its own it
+        # is parsed and thrown away -- the same silent-no-op class as --webp-quality. It is a
+        # HARD ERROR rather than a warning because the flag has no other meaning: it exists to
+        # override the fade detector's colour choice, and with no fade path running there is
+        # nothing to override. Measured 2026-08-22 on notification.gif, the faint fade stages
+        # on frame 14: --recover-fade-alpha --fade-color fd6050 leaves them 41.5% opaque, while
+        # --fade-color fd6050 ALONE removes them entirely (0% opaque, mean alpha 0.000) and
+        # said nothing at all. That is how the flag came to be recorded as "leaves the fade
+        # opaque": the run that looked broken was also passing protection flags, which is what
+        # was holding those pixels opaque, while --fade-color did nothing whatsoever.
+        raise SystemExit(
+            "--fade-color names a colour for --recover-fade-alpha to treat as the fading "
+            "element, and does NOTHING on its own -- with no fade path running there is "
+            "nothing for it to override, and the fade stages are removed as ordinary "
+            "background. Add --recover-fade-alpha (and write a .webp/.avif/.apng output, "
+            "which is what can carry the result).")
     if getattr(args, 'recover_fade_alpha', False) and out_format == 'gif':
         raise SystemExit(
             "--recover-fade-alpha recovers PARTIAL transparency, which GIF cannot "
