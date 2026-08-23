@@ -7253,10 +7253,38 @@ def process(input_path, output_path, args, diagnostics=None):
             0 if out_format in EIGHT_BIT_ALPHA_FORMATS
             else 1 if (args.dither_mode == 'none' and not args.pixel_art)
             else 2)
-        if args.edge_cleanup_erosion != 2:
+        if out_format in EIGHT_BIT_ALPHA_FORMATS:
+            # ⚠️ 0 IS A STARTING POINT HERE, NOT THE ANSWER. It used to be the answer, on the
+            # reasoning that partial alpha already represents the antialiased edge so nothing
+            # needs trimming. Harkirat contradicted that by looking: every WebP/AVIF the manual
+            # path produced carried a ~1px light ring around the whole artwork, and --verify's
+            # edge_fringe_check reported `looks_fringed: false` on it -- the check that exists
+            # to catch this cannot. Measured on megaphone.gif, same flags, erosion 0 vs 1, in
+            # PALE partial-alpha pixels (0 < alpha < 255 and still within 128 of the background
+            # colour, i.e. edge pixels carrying the BACKGROUND's tint rather than the art's):
+            # worst frame 852 -> 1, total 92,560 -> 10.
+            #
+            # --auto never had the defect, because it calibrates erosion against the asset's
+            # own fringe curve and picks 1. The fix is therefore to run that SAME calibration
+            # on the manual path rather than to flip the default to a new constant: the level
+            # is a property of the asset, and this repo has 448 renders' worth of evidence that
+            # a fixed level too high eats thin strokes (SS37, SS29). The calibrator keeps its
+            # own guards -- it declines on --pixel-art, and on any source whose own partial
+            # alpha would make the fringe metric measure artwork -- and in every case it
+            # declines, the 0 resolved just above stands.
+            #
+            # An explicitly typed --edge-cleanup-erosion never reaches here at all (it leaves
+            # the value non-None), so the user's value still wins by construction.
+            args.auto_erosion = True
+            print("8-bit alpha output: edge-cleanup erosion will be CALIBRATED against this "
+                  "asset's own fringe curve (starting from 0). A flat 0 left a ~1px pale ring "
+                  "on every such output. Pass --edge-cleanup-erosion explicitly to override.",
+                  file=sys.stderr)
+        elif args.edge_cleanup_erosion != 2:
             print(f"edge-cleanup erosion defaulted to {args.edge_cleanup_erosion} "
-                  f"({'8-bit alpha needs no fringe trim' if out_format != 'gif' else 'no Bayer noise to trim under --dither-mode none, and 2 deletes thin strokes'}). "
-                  f"Pass --edge-cleanup-erosion explicitly to override.", file=sys.stderr)
+                  f"(no Bayer noise to trim under --dither-mode none, and 2 deletes thin "
+                  f"strokes). Pass --edge-cleanup-erosion explicitly to override.",
+                  file=sys.stderr)
     if out_format in EIGHT_BIT_ALPHA_FORMATS:
         # --compress is GIF-encoder specific (palette quantization + gifsicle).
         # --target_kb is NOT: it is handled by fit_to_target_bytes below.
@@ -7265,16 +7293,6 @@ def process(input_path, output_path, args, diagnostics=None):
             raise SystemExit("These options are GIF-only and have no effect on WebP "
                              "output: " + ", ".join('--' + n.replace('_', '-')
                                                     for n in gif_only))
-        if False:  # superseded by the unified erosion default resolved above
-            # Erosion exists to hide the whitish fringe left by imperfect
-            # unmixing under a 1-bit cutoff. With continuous alpha the
-            # defringed partial-alpha edge is already correct, and eroding
-            # it would eat the real soft edge instead of cleaning it.
-            args.edge_cleanup_erosion = 0
-            print("8-bit alpha output: edge-cleanup erosion defaulted to 0 "
-                  "(it exists to hide 1-bit-cutoff fringe, which does not occur "
-                  "here). Pass --edge-cleanup-erosion explicitly to override.",
-                  file=sys.stderr)
     im0 = Image.open(input_path)
     # A STATIC source (JPEG, single-frame PNG) has no n_frames at all -- JPEG raises
     # AttributeError here. Confirmed 2026-08-17 on real files: the whole pipeline works on
