@@ -46,7 +46,7 @@ Two design answers also landed: the min-dimension floor must be able to express 
 | 7th | **Task 1** — min-dimension floor | largest, and gated on open question 2 |
 | 8th | **Task 2** — format ranking | gated on open question 1 |
 | — | **Task 11** — recommend flag conflicts | do beside Task 10; both are about a recommendation the renderer will not honour |
-| — | **Task 14** — offer `--remove-region` | do beside Tasks 10/11; it is the missing answer all three edge cases needed, and the cheapest of the group |
+| — | **Task 14** — `--unprotect-region` | real implementation work, not a suggestion change; `--remove-region` destroys 73% of the artwork |
 | — | **Task 13** — diagnose `--fade-color` | **BLOCKS Task 12.** Investigation first, fix second; do not build a prompt around a flag that does not work |
 | last | **Task 12** — nameable fade asks | **blocked on Task 13.** Correct in shape, useless until the flag it prescribes works |
 
@@ -1427,75 +1427,43 @@ git commit -m "fix(fade): make --fade-color actually recover the fade it names"
 
 ---
 
-### Task 14: recommend `--remove-region` when an enclosed interior is background
+### Task 14: a region-scoped BACKGROUND removal that does not delete the artwork
 
 **Files:**
-- Modify: the recommendation assembler and the `--recover-fade-alpha` conflict warning
-- Test: `scripts/harness/test_remove_region_is_offered.py`
+- Modify: `scripts/remove_gif_background.py:3337` (`apply_remove_regions`), argparse
+- Test: `scripts/harness/test_region_scoped_background_removal.py`
 
-**Why — one missing suggestion is the root of three separate user-visible failures.** Measured 2026-08-22, this command does what Harkirat was told was impossible:
+⛔ **An earlier draft of this task said "just recommend `--remove-region`". That was wrong and the render proved it.** Measured on broadcast.gif: `--remove-region "rect:238,332,168,206"` took enclosed white from 8,569 → 0 **and the navy tower from 23,157 → 6,297 px, a 73% loss**, with total opaque down 36%. It is a blunt force-delete — its help text says *"for carving out a small feature"* — and it cannot express "remove only the background-coloured pixels inside this box."
 
-```
---recover-fade-alpha --erosion-exempt-transient --remove-region "rect:238,332,168,206"
-```
+**What is actually needed:** a region-scoped override that re-applies the normal background key inside the box, overriding protection there, and leaves everything else untouched. Call it `--unprotect-region` (same `circle:`/`rect:`/`;` syntax).
 
-| broadcast render | enclosed near-white opaque px | mid-alpha |
-|---|---|---|
-| protect-only | 8,569 | 1.15% |
-| the recommended command | 8,569 | 4.25% |
-| **fade + `--remove-region`** | **0** | **4.22%** |
+**Why it matters beyond broadcast:** this is the missing way to say "this enclosed interior is background" — the same gap behind megaphone's sparkles. Every protection mechanism (explicit outline, topological, band-interior) classifies an enclosed background-coloured region as design, and there is no counter-statement.
 
-`--remove-region` is applied at `:7729`, downstream of the fade path at `:7346`, so **it composes with everything** — including the path that ignores every protection flag.
-
-The tool never offers it. Worse, the conflict warning says *"Pick one: fade recovery, or region protection"*, which reads as a statement about the tool's capability and steers the user away from the working answer.
-
-**The same gap explains megaphone's sparkles (§13A.3) and broadcast's tower (§13A.2): there is no way to express "this enclosed interior is background."** Every protection mechanism — explicit outline, topological, band-interior — independently classifies an enclosed region of background colour as intentional design. `--remove-region` is the single escape hatch and nothing points at it.
-
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test — assert on the ARTWORK, not on what was removed**
 
 ```python
-def test_the_fade_conflict_warning_points_at_remove_region():
-    rec = _suggested('local/2026-08-22-fade-edge-cases/inputs/broadcast.gif')
-    blob = ' '.join(rec.get('evidence', [])) + rec['suggested_command']
-    assert '--remove-region' in blob, (
-        'the recommendation never mentions the one flag that composes with the '
-        'fade path and can remove an enclosed interior')
-
-
-def test_a_coinflip_region_offers_remove_region_as_the_other_answer():
-    """megaphone's sparkles: the recommender only ever offers to PROTECT."""
-    rec = _suggested('local/2026-08-21-v6-timeout-trial/inputs/megaphone.gif')
-    blob = ' '.join(rec.get('evidence', []))
-    assert '--remove-region' in blob, \
-        'no path offered for "this enclosed interior is background"'
-
-
-def test_an_unambiguous_asset_is_not_cluttered_with_it():
-    """secure.gif's regions enclose 50/50. Offering --remove-region there is noise."""
-    rec = _suggested('local/2026-08-21-v6-timeout-trial/inputs/secure.gif')
-    assert '--remove-region' not in ' '.join(rec.get('evidence', []))
+def test_unprotect_region_removes_the_white_and_KEEPS_the_tower(tmp_path):
+    """The falsifier the first attempt lacked: --remove-region passed the
+    white-pixel half and destroyed 73% of the art. Both halves are required."""
+    src = 'local/2026-08-22-fade-edge-cases/inputs/broadcast.gif'
+    out = tmp_path / 'u.webp'
+    subprocess.run([sys.executable, SCRIPT, src, str(out),
+                    '--recover-fade-alpha', '--erosion-exempt-transient',
+                    '--unprotect-region', 'rect:238,332,168,206'],
+                   capture_output=True, timeout=900, check=True)
+    white, navy, opaque = _measure(out, frame=30)
+    assert white < 500,  f'{white} enclosed white px survived'
+    assert navy > 20000, f'only {navy} navy tower px survived (23,157 in the source render)'
 ```
 
-- [ ] **Step 2: Run to verify it fails** — first two FAIL, third passes.
-
-- [ ] **Step 3: Emit the suggestion where a region is genuinely ambiguous**
-
-Two places, both already computing what is needed:
-- The coin-flip enclosure branch (shared with Task 10) already knows the region's bbox. Print the ready-to-paste `--remove-region rect:x,y,w,h` beside the protect option, so both answers are one paste away.
-- The `--recover-fade-alpha` conflict warning must stop implying a capability limit. Replace "Pick one: fade recovery, or region protection" with the accurate version: `--protect-outline-color` is ignored by the fade path, **but `--remove-region` is applied downstream and composes with it** — measured on broadcast.gif, 8,569 enclosed white px → 0 with the fade intact.
-
-- [ ] **Step 4: Run to verify it passes** — expected 3 passed.
-
-- [ ] **Step 5: Re-score the populations and report the noise rate**
-
-Run: `python3 scripts/harness/run_populations.py --out /tmp/post-rmregion.json`
-⚠️ **Report the fraction of the 797 that now carry a `--remove-region` suggestion.** A hint on every asset is not guidance, it is noise, and the third test only covers one negative.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 2: Run to verify it fails** — `--unprotect-region` does not exist.
+- [ ] **Step 3: Implement** — inside the region, recompute the background mask at `--tolerance` and clear protection; outside, no change. Must run downstream of the fade path (`:7346`) so it composes, the one property `--remove-region` did get right.
+- [ ] **Step 4: Run to verify it passes.**
+- [ ] **Step 5: Render it and show Harkirat.** Two numeric assertions did not catch a rectangle cut out of a tower. **A passing test is not sign-off here.**
+- [ ] **Step 6: Then, and only then, teach `--recommend` to offer it** on a coin-flip enclosed region, with the ready-to-paste bbox.
 
 ```bash
-git add scripts/remove_gif_background.py scripts/harness/test_remove_region_is_offered.py
-git commit -m "feat(recommend): offer --remove-region when an enclosed interior may be background"
+git commit -m "feat: add --unprotect-region for a region-scoped background removal"
 ```
 
 ---
@@ -1547,7 +1515,7 @@ git commit -m "docs: record the min-dimension gap, the falsified q60 hypothesis 
 
 ## Self-Review
 
-**Spec coverage.** Trial findings 1 (min dimension) → Task 1. Finding 2 (no ranking) → Task 2. Finding 3 (runtime, no pre-flight estimate) → Task 3 plus the SKILL.md exception. Finding 5 (vacuous verify) → Task 4. Finding 7 (`--webp-quality` no-op) → Task 6. Finding 8 (stale dimensions after a fit) → Task 7. The 8-bit-alpha fringe → Task 9. `--auto` guessing on a coin-flip region → Task 10. `--recommend` emitting an exclusive flag pair → Task 11. A nameable-but-ambiguous fade cut silently → Task 12. `--fade-color` leaving the fade opaque → Task 13, which BLOCKS Task 12. The missing `--remove-region` suggestion → Task 14. ⚠️ An earlier draft filed a "fade-plus-protection capability gap" as needing design; that was **retracted** — `--remove-region` composes with the fade path and was measured doing so. Frame-stride weighting is deliberately NOT a task — it questions weights set on measurement, and needs its own, filed as spec §14 question 6. **Task 8 covers a defect class the trial did not file as a numbered finding because it is about the packaged prose rather than the code: SKILL.md's navigation recipe fails silently without `rg`, and 28.9% of the file is release notes. Findings 4 and 6 are deliberately NOT in this plan** — finding 4 (`--recommend` cannot infer intent) needs a design decision about whether the tool should ask, refuse, or annotate, and belongs in its own brainstorming pass; finding 6 (the "downscaling made this LARGER" diagnostic not feeding back into the search) is low severity and would touch the rung ordering this plan is forbidden to move. Both should be filed in `gif-deferred-list.md` rather than silently dropped.
+**Spec coverage.** Trial findings 1 (min dimension) → Task 1. Finding 2 (no ranking) → Task 2. Finding 3 (runtime, no pre-flight estimate) → Task 3 plus the SKILL.md exception. Finding 5 (vacuous verify) → Task 4. Finding 7 (`--webp-quality` no-op) → Task 6. Finding 8 (stale dimensions after a fit) → Task 7. The 8-bit-alpha fringe → Task 9. `--auto` guessing on a coin-flip region → Task 10. `--recommend` emitting an exclusive flag pair → Task 11. A nameable-but-ambiguous fade cut silently → Task 12. `--fade-color` leaving the fade opaque → Task 13, which BLOCKS Task 12. The missing `--remove-region` suggestion → Task 14. ⚠️ The fade-plus-protection capability gap is **REAL** — an intermediate draft retracted it on the strength of a `--remove-region` render that destroyed 73% of the artwork. Task 14 is the fix. Frame-stride weighting is deliberately NOT a task — it questions weights set on measurement, and needs its own, filed as spec §14 question 6. **Task 8 covers a defect class the trial did not file as a numbered finding because it is about the packaged prose rather than the code: SKILL.md's navigation recipe fails silently without `rg`, and 28.9% of the file is release notes. Findings 4 and 6 are deliberately NOT in this plan** — finding 4 (`--recommend` cannot infer intent) needs a design decision about whether the tool should ask, refuse, or annotate, and belongs in its own brainstorming pass; finding 6 (the "downscaling made this LARGER" diagnostic not feeding back into the search) is low severity and would touch the rung ordering this plan is forbidden to move. Both should be filed in `gif-deferred-list.md` rather than silently dropped.
 
 **Placeholder scan.** No TBDs. Every code step carries the actual code. The one judgement call left to the implementer is the exact insertion point of the batch-summary hook, because that writer's local variable names were not read during planning — Task 2 Step 5 names what it needs (`summary_records` carrying source, output, width, height, frames, kb) so the implementer can bind it correctly.
 

@@ -481,7 +481,7 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 | 1c | `--recommend` emits `--protect-outline-color` together with `--recover-fade-alpha`, which the renderer refuses to honour; the conflict surfaces only at render time | **high** — a recommended command that silently drops protection | yes |
 | 1d | The fade detector names the fading colour and the flag that fixes it, then delivers both only as evidence prose `--auto` never reads | **high** — the glow is cut silently on an asset the tool correctly diagnosed | yes |
 | 1e | `--fade-color`, the prescribed escape hatch, leaves 90.9% of the faded pixels OPAQUE, and the evidence text predicts they will be removed when they are kept | **high** — a documented workaround that does not work | needs diagnosis |
-| 1f | Nothing recommends `--remove-region`, the only mechanism that can say "this enclosed interior is background" — the root shared by broadcast and megaphone | **high** — makes three separate asks impossible-looking when they are not | yes |
+| 1f | No way to say "this enclosed interior is background" without destroying the art. `--remove-region` force-deletes everything in the box (−73% of the tower); the fade path ignores protection flags | **high** — a real capability gap, and the obvious workaround wrecks the artwork | needs design |
 | 2 | `--target-kb` has no min-dimension constraint; silently violates a stated floor | **high** — ships wrong artwork silently | yes |
 | 3 | Final dimensions never reprinted after a fit; the last printed `Output:` line is stale | **high** — directly caused a false compliance report | yes |
 | 4 | `SKILL.md`'s navigation recipe is `rg`-only; the `grep` substitute returns 0 matches at exit 0 | **high** — silent failure at the skill's entry point | yes |
@@ -582,39 +582,21 @@ The translucent wave renders as **opaque pale-pink blobs** — precisely the fai
 
 **Do not attribute this to §41.** §41's 91-asset interleaving explains why the tool declines to auto-apply `--recover-fade-alpha`. It does not explain why the *manual*, explicitly-named `--fade-color` path leaves the fade opaque. That is a separate failure in the fade renderer and needs its own diagnosis — start by checking whether `--fade-color` reaches `recover_fade_alpha_frames` at all on an asset where the palette detector already reported no translucent colour.
 
-### 13A.2 `broadcast.gif` — the "either/or" is real in the recommender, NOT in the tool
+### 13A.2 `broadcast.gif` — the either/or IS real. My "solution" destroyed the artwork.
 
-> "im unable to *both* fade the yellow signal animation AND remove the white areas inside of the tower […] The skill seems to only be able to handle either complete background removal, with broken fade animation, OR correct fade animation but not complete background removal."
+⚠️ **This section retracts a retraction.** I claimed `--remove-region` composed with the fade path and solved this, on the strength of "enclosed white 8,569 → 0 with the fade intact." Harkirat looked at the render: **it cut a literal rectangle out of the tower.**
 
-**Both halves of his observation are confirmed, and then the conclusion is overturned: a command that does both already exists.**
+| broadcast render | opaque px | navy tower px | enclosed white px |
+|---|---|---|---|
+| protect-only | 78,424 | 23,240 | 8,569 |
+| recommended cmd | 74,440 | 23,157 | 8,569 |
+| **fade + `rect:` remove-region** | 47,988 | **6,297 (−73%)** | 0 |
 
-First, the confirmation. `--recommend` returned `--protect-outline-color 002864 --recover-fade-alpha --erosion-exempt-transient`, and running exactly that prints:
+**73% of the tower destroyed, 36% of all opaque pixels gone.** `--remove-region` is a blunt force-delete — its own help says *"for carving out a small feature"* — not a background-keyed removal scoped to a region. It cannot express "remove background-coloured pixels inside this box."
 
-> **WARNING: `--recover-fade-alpha` takes its own render path and does NOT apply `--protect-outline-color`. It is being IGNORED for this run — not weakened, ignored. Pick one: fade recovery, or region protection.** (§34.4)
+**My metric measured exactly one thing (white pixels removed) and was blind to the only thing that mattered (was the artwork still there).** Both counts were true. The conclusion was false. This is the third time in this report that a plausible number survived because nobody looked at the picture — and the first two are written up as warnings a few sections above.
 
-The outer background is removed in both branches. But **five enclosed white interiors survive byte-identically in both** — same pixel counts, same bounding boxes:
-
-| broadcast render | enclosed near-white opaque px (frame 30) | mid-alpha (0.15–0.85) |
-|---|---|---|
-| `--protect-outline-color 002864` only | **8,569** | 1.15% |
-| the recommended command | **8,569** | 4.25% |
-| **`--recover-fade-alpha` + `--remove-region`** | **0** | **4.22%** |
-
-Identical counts in the first two rows are the informative part: explicit outline protection and the fade path's *topological* protection reach **the same decision by different routes** — an enclosed white interior is design. Neither can be told otherwise by a protection flag, which is why every attempt Harkirat made hit the same wall.
-
-**But `--remove-region` is applied at `scripts/remove_gif_background.py:7729`, downstream of the fade path at `:7346`, so the two compose.** Verified by rendering it: fade fully recovered (4.22% mid-alpha, statistically identical to the fade-only 4.25%) **and every enclosed white interior gone (8,569 → 0)**.
-
-```
---recover-fade-alpha --erosion-exempt-transient --remove-region "rect:238,332,168,206"
-```
-
-**So the capability is not missing — the guidance is.** Three things conspire to hide it:
-
-1. **`--recommend` emits a mutually exclusive pair** (`--protect-outline-color` + `--recover-fade-alpha`) with no conflict check, no `not_applicable_reason`, and no ranking. An autonomous run pastes it and silently loses protection.
-2. **The warning says "Pick one: fade recovery, or region protection"** — true of *those two flags*, and it reads as a statement about the tool's capability. It never mentions that `--remove-region` composes with the fade path. A user doing exactly what the warning says is steered away from the working answer.
-3. **Nothing suggests `--remove-region` for this shape of problem at all.** The recommender treats an enclosed same-colour interior as design in every branch; it has no path to "the user considers this interior background," which is the same root as the megaphone sparkles (§13A.3).
-
-⚠️ **I previously filed this as a capability gap needing a design decision. That was wrong and is retracted** — the render path exists and was measured working. What remains is a recommender defect and a misleading warning, both fixable.
+**So the either/or stands as Harkirat originally described it**, and §13A.2's earlier "capability gap" filing was right the first time: no path both recovers a flattened fade and removes an enclosed background-coloured interior while keeping the art. Two things could close it — a `--remove-region` variant that keys on background colour inside the region rather than deleting it, or letting the fade path accept protection flags. Neither exists.
 
 ### 13A.3 `megaphone.gif` — `--auto` does not remove the sparkle interiors, confirmed twice
 
@@ -669,4 +651,4 @@ Contact sheets of all four delivered files are in `local/2026-08-21-v6-timeout-t
 
 **7. Should a fade the detector can NAME but not disambiguate become an `--auto` question, or stay a silent no-op?** §13A.1 measured `--fade-color fd6050` as +27% recovered falloff at zero cost to background removal, on an asset the tool itself identified. §41's 91-asset interleaving is a real reason not to auto-apply it — but "cannot decide" and "say nothing" are different answers, and the tool currently picks the second.
 
-**8. ✅ RETRACTED — there is no capability gap.** `--remove-region` composes with `--recover-fade-alpha` (measured: 8,569 enclosed white px → 0, fade intact). What remains is a recommender that emits an exclusive pair and a warning that steers away from the working answer. **Still open:** why `--fade-color` leaves the notification fade opaque (§13A.1), which is a real renderer defect and needs its own diagnosis before Task 12 is worth building.
+**8. The capability gap is REAL** (a retraction of a retraction — see §13A.2). `--remove-region` force-deletes its whole box, taking 73% of the tower with the white. Closing this needs either a background-keyed variant of `--remove-region`, or the fade path accepting protection flags. **Also open:** why `--fade-color` leaves the notification fade opaque (§13A.1).
