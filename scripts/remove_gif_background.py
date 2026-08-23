@@ -629,6 +629,25 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
 # silently handed an 8-bit container the 1-bit code path.
 EIGHT_BIT_ALPHA_FORMATS = ('webp', 'avif', 'apng')
 
+#: Flags the RENDERER refuses to honour together, as (winner-if-conflicted, losers) sets of
+#: argparse dest names paired with the CLI spelling. Declared ONCE, here, and read by both
+#: the renderer's warning and --recommend's conflict check, so the two cannot drift apart.
+#: `--recover-fade-alpha` takes its own render path and silently ignores every protection
+#: flag (references/lessons.md SS34.4). Measured 2026-08-22: --recommend returned
+#: "--protect-outline-color 002864 --recover-fade-alpha" for broadcast.gif, and an
+#: autonomous run pasting that got an output whose protection did nothing -- learning about
+#: it only at render time, after committing to the render.
+#:
+#: ⛔ PROTECTION WINS. A protected region usually comes from an explicit user instruction; a
+#: fade is inferred by the tool. Losing an instruction is worse than losing an improvement.
+FADE_EXCLUSIVE_FLAGS = (
+    ('--tumble-safe', 'tumble_safe'),
+    ('--protect-outline-color', 'protect_outline_color'),
+    ('--protect-region', 'protect_region'),
+    ('--protect-band-only', 'protect_band_only'),
+    ('--keep-bg-blob-if-near', 'keep_bg_blob_if_near'),
+)
+
 #: --webp-quality's argparse default, bound as a constant so the "this flag cannot take
 #: effect" warning compares against the DEFAULT rather than a literal 90. A warning keyed
 #: on a literal is silently disarmed the day the default moves -- the same failure mode as
@@ -2827,6 +2846,29 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     # that is not a repo root -- "scripts/remove_gif_background.py" resolves there
     # only by luck. Every test of this was run FROM the repo root, where the wrong
     # path happens to be right: a check that could not fail.
+    # ⚠️ RESOLVE MUTUAL EXCLUSIVITY BEFORE THE COMMAND IS ASSEMBLED. The renderer already
+    # warns that --recover-fade-alpha ignores every protection flag, but that warning fires
+    # at RENDER time, after an autonomous run has committed to the render -- and it pastes
+    # suggested_command verbatim. Measured 2026-08-22 on broadcast.gif: --recommend returned
+    # "--protect-outline-color 002864 --recover-fade-alpha" and the protection silently did
+    # nothing. Choose, say which, and say what was given up; do NOT drop one in silence.
+    if '--recover-fade-alpha' in flags:
+        _blocked = [f for f in flags
+                    if any(f.split()[0] == flag for flag, _dest in FADE_EXCLUSIVE_FLAGS)]
+        if _blocked:
+            flags = [f for f in flags if f != '--recover-fade-alpha']
+            evidence.insert(0, (
+                "MUTUALLY EXCLUSIVE -- pick one, and this recommendation has picked for you. "
+                "--recover-fade-alpha reconstructs the flattened fade, but it takes its own "
+                "render path and IGNORES every protection flag (references/lessons.md SS34.4), "
+                "so the pair " + ", ".join(_blocked) + " + --recover-fade-alpha would have "
+                "rendered with no protection at all. Recommending "
+                + ", ".join(_blocked) + " and DROPPING --recover-fade-alpha, because a "
+                "protected region is usually a stated requirement while a fade is inferred, and "
+                "losing an instruction is worse than losing an improvement. To take the fade "
+                "instead, drop " + ", ".join(_blocked) + " from the command and accept the "
+                "fade path's own topological protection."))
+
     _self = os.path.abspath(__file__)
     # The placeholder must name a container that can actually HOLD what the flags
     # produce -- suggesting <output.gif> alongside --recover-fade-alpha emits a
@@ -7563,11 +7605,7 @@ def process(input_path, output_path, args, diagnostics=None):
         # so out loud costs nothing and is the difference between a known limit and a
         # silent one. references/lessons.md SS34.4
         _ignored = [n for n, v in (
-            ('--tumble-safe', getattr(args, 'tumble_safe', False)),
-            ('--protect-outline-color', getattr(args, 'protect_outline_color', None)),
-            ('--protect-region', getattr(args, 'protect_region', None)),
-            ('--protect-band-only', getattr(args, 'protect_band_only', None)),
-            ('--keep-bg-blob-if-near', getattr(args, 'keep_bg_blob_if_near', None)),
+            (flag, getattr(args, dest, None)) for flag, dest in FADE_EXCLUSIVE_FLAGS
         ) if v]
         if _ignored:
             print("WARNING: --recover-fade-alpha takes its own render path and does NOT "
