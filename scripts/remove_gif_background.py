@@ -7716,28 +7716,85 @@ def process(input_path, output_path, args, diagnostics=None):
     # overrides whatever --protect-outline-color / --protect-region decided
     # -- see apply_remove_regions' docstring for the case this is for.
     if getattr(args, 'unprotect_region', None):
-        # Region-scoped BACKGROUND removal, not a force-delete. The per-frame mask is
-        # (region AND background-coloured), so artwork inside the region survives --
-        # `apply_remove_regions` already accepts a list of per-frame masks, and its
-        # de-fringe/taper handling is exactly what a removal boundary needs.
+        # Region-scoped BACKGROUND removal, not a force-delete: inside the region the
+        # normal background key is re-applied and every protection decision is
+        # overridden, but pixels that are not the background colour are left alone.
         #
-        # ⚠️ This exists because --remove-region was tried for this job on 2026-08-22
-        # and destroyed the artwork: on broadcast.gif it took enclosed white from
-        # 8,569 px to 0 AND the navy tower from 23,157 px to 6,297 (-73%). The
-        # white-pixel measurement passed on that render, which is why every falsifier
-        # in test_unprotect_region.py asserts on what STAYED as well as what left.
+        # ⚠️ TWO REAL DEFECTS SHAPED THIS, both caught by looking at the render:
+        #
+        # 1. `--remove-region` was tried for this job first and DESTROYED THE ARTWORK --
+        #    on a broadcast-tower asset it took enclosed white from 8,569 px to 0 AND the
+        #    navy tower from 23,157 px to 6,297 (-73%). Its white-pixel measurement passed
+        #    on that render, which is why the falsifiers assert on what STAYED too.
+        #
+        # 2. A first version of THIS flag used a hard `color_mask(rgb, bg, tolerance)`,
+        #    which removed only `dist <= tolerance` and left the antialiasing ramp inside
+        #    the region fully opaque. Measured on the same asset, the 16-90 distance band
+        #    held 236-454 px and the count MOVED EVERY FRAME (449, 372, 236, 246, 250,
+        #    283 ...), so the surviving rim visibly JITTERED. A threshold applied per frame
+        #    to a dithered GIF palette is a temporal-noise generator.
+        #
+        # The fix for (2) is to reuse the main path's own keying rather than re-deriving a
+        # cheaper one: `estimate_alpha_and_defringe` returns a CONTINUOUS alpha plus
+        # de-fringed RGB, so the ramp gets graded partial alpha instead of a binary edge,
+        # and the result is a smooth function of colour rather than a threshold crossing.
+        # `protected` is all-False here -- that is precisely what "unprotect" means.
         _H0, _W0 = alpha_frames[0].shape
         _region = parse_protect_regions(args.unprotect_region, (_H0, _W0))
         _bg = hex_to_rgb(args.bg_color)
-        _masks = [_region & color_mask(f, _bg, args.tolerance) for f in rgb_frames]
-        _hit = int(sum(int(m.sum()) for m in _masks))
-        if _hit:
-            print(f"--unprotect-region: re-keyed {_hit} background-coloured pixel(s) "
-                  f"inside the region across {len(_masks)} frame(s); "
-                  f"non-background pixels there were left untouched.", file=sys.stderr)
+        _none_protected = np.zeros((_H0, _W0), dtype=bool)
+        # ⚠️ A TEMPORAL-STABILIZATION VARIANT WAS BUILT HERE AND REMOVED. The theory was
+        # that a static region should be keyed ONCE from the median frame, since a GIF
+        # re-quantizes its antialiasing every frame. Measured on the broadcast tower and
+        # REJECTED on its own evidence: the ring pixels' source colour has a temporal std
+        # of 46.9 with a lag-1 class-flip rate of 0.062 and a median of 2 class changes
+        # across 60 frames -- that is SMOOTH ANIMATION, not dither noise. The tower's white
+        # gaps genuinely breathe (18,038 -> 20,367 px). Keying them from a median frame
+        # left the ring at RGB [155,158,160], nearer WHITE than the navy artwork (183.6 vs
+        # 200.9), i.e. it broke the de-fringe it was meant to help; per-frame keying leaves
+        # it correctly navy-ward at [82,104,148]. Do not reintroduce it without first
+        # measuring the lag-1 flip rate: a per-frame decision is only noise when the source
+        # is noisy, and here it was not.
+        _touched = 0
+        for _i in range(len(rgb_frames)):
+            _af, _recol, _band = estimate_alpha_and_defringe(
+                rgb_frames[_i], _bg, _none_protected, args.tolerance,
+                args.feather_band_multiplier, rgb_key=rgb_frames[_i])
+            _keyed = np.clip(np.rint(_af * 255.0), 0, 255).astype(alpha_frames[_i].dtype)
+            # Only ever REMOVE inside the region -- never add opacity a protection
+            # decision outside this feature had already taken away.
+            _new = np.where(_region, np.minimum(alpha_frames[_i], _keyed), alpha_frames[_i])
+            _changed = _region & (_new < alpha_frames[_i])
+            _touched += int(_changed.sum())
+            # Take the de-fringed colour wherever we changed alpha, so a pixel that is
+            # now partially transparent reads as art fading out rather than as a pale
+            # ghost of the background it was blended with.
+            rgb_frames[_i] = np.where(_changed[..., None], _recol, rgb_frames[_i])
+            alpha_frames[_i] = _new
+        # ⚠️ COLOUR-DERIVED ALPHA ALONE LEAVES A PALE OPAQUE RIM. Measured on the
+        # broadcast tower, over a FIXED 2,060 px ring population (not an alpha-selected
+        # one -- selecting by alpha compares different pixels in each render and is how
+        # an earlier claim in this session went wrong): the feathered pass left 6.9% of
+        # the ring FULLY OPAQUE where the older hard-mask pass left 0%, because a pixel
+        # just outside --tolerance gets an alpha near 1 from the colour ramp and
+        # `min(existing, keyed)` then keeps it. Opaque and pale is exactly the fringe a
+        # viewer reads as a shimmering edge.
+        #
+        # So the colour ramp is combined with a GEOMETRIC taper outward from the fully
+        # removed core, which is what `apply_remove_regions` already provides -- including
+        # its local-kept-colour recolour, the de-fringe step its docstring was written
+        # for. Colour decides WHAT is background; geometry softens the boundary.
+        _core = [_region & color_mask(f, _bg, args.tolerance) for f in rgb_frames]
+        if any(m.any() for m in _core):
             rgb_frames, alpha_frames = apply_remove_regions(
-                rgb_frames, alpha_frames, _masks,
+                rgb_frames, alpha_frames, _core,
                 feather_px=args.remove_region_feather)
+
+        if _touched:
+            print(f"--unprotect-region: re-keyed {_touched} background-coloured pixel(s) "
+                  f"inside the region across {len(rgb_frames)} frame(s), with the "
+                  f"feather band applied; non-background pixels were left untouched.",
+                  file=sys.stderr)
         else:
             print("WARNING: --unprotect-region matched no background-coloured pixels "
                   "inside the region -- check the coordinates, or --bg-color/"

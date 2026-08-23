@@ -2679,4 +2679,14 @@ Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST 
 
 *(The falsifier suite lives in the development repo's measurement harness and is not part of this package — see §23 on provenance.)*
 
+**Two defects in the FIRST implementation of this flag, both found by a human looking at the render and neither visible in the numbers that were being watched.**
+
+**(1) A hard colour threshold left residue and shimmered.** Version one used a binary `color_mask` at `--tolerance`, removing only `dist <= tolerance` and leaving the antialiasing ramp fully opaque. On the tower that band held **236-454 px per frame and the count moved every frame** (449, 372, 236, 246, 250, 283 …), so a pale rim survived and flickered. It also left **262 px of white on 3 of 60 frames** in an area the region did not cover. Fix: key with `estimate_alpha_and_defringe` — the same continuous alpha the main path uses — instead of re-deriving a cheaper threshold.
+
+**(2) The colour ramp ALONE left a pale OPAQUE rim, which is worse.** A pixel just outside `--tolerance` gets an alpha near 1 from the ramp, and `min(existing, keyed)` keeps it. Measured over a **fixed** 2,060 px ring population: the ramp left **12.4% of the ring fully opaque**, against 0.5% for the old hard mask. Opaque and pale against a dark background is exactly the shimmering edge a viewer reports. Fix: combine the colour ramp with the GEOMETRIC taper `apply_remove_regions` already provides — **colour decides what is background, geometry softens the boundary**. Final: ring opaque **0.5%**, white residue **0**, artwork and fade intact.
+
+⚠️ **A temporal-stabilisation variant was built for (1) and REJECTED on measurement — do not rebuild it without repeating the test.** The theory was that a static region should be keyed once from a median frame, since a GIF re-quantises antialiasing every frame. But the ring's source colour has a temporal std of **46.9** with a **lag-1 class-flip rate of 0.062** and a median of **2 class changes across 60 frames** — that is smooth animation, not dither noise. The tower's gaps genuinely breathe (18,038 → 20,367 px). Median keying left the ring at RGB [155,158,160], nearer white than the navy artwork, i.e. it broke the de-fringe it was meant to help. **Measure the lag-1 flip rate before calling a per-frame decision noisy.**
+
+⚠️ **Measure a boundary over a population fixed BEFORE you look at either render.** Selecting ring pixels *by alpha* selects a different set in each render, so "the ring got paler" can be pure selection artefact. The same mistake, on a different metric, produced a wrong "+27% recovered" claim in the same investigation.
+
 ⚠️ **Still manual.** Nothing recommends `--unprotect-region`, so an autonomous run cannot reach it. Choosing between "protect this interior" and "remove it" is a statement about intent, not about pixels — the recommender can offer both with ready-to-paste coordinates, but must not pick one.

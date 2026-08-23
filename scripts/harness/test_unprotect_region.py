@@ -101,3 +101,35 @@ def test_omitting_the_flag_changes_nothing(tmp_path):
     for o in (a, b):
         _run([SECURE, o, '--protect-outline-color', '002864'], o)
     assert open(a, 'rb').read() == open(b, 'rb').read()
+
+@pytest.mark.skipif(not os.path.exists(BROADCAST), reason='asset not in this checkout')
+def test_the_boundary_does_not_leave_a_pale_OPAQUE_rim(tmp_path):
+    """The defect a viewer sees as a shimmering edge, and the reason the colour
+    ramp alone is not enough.
+
+    Measured on the broadcast tower over a FIXED ring population: colour-derived
+    alpha alone left 12.4% of the antialiasing ring FULLY OPAQUE and pale, because
+    a pixel just outside --tolerance gets an alpha near 1 from the ramp. Combining
+    it with apply_remove_regions' geometric taper brings that to 0.5%.
+
+    ⚠️ The population is fixed BEFORE looking at either render. Selecting ring
+    pixels BY alpha compares a different set in each render -- the mistake that
+    produced a wrong "+27% recovered" claim earlier in this investigation.
+    """
+    import numpy as np
+    from scipy import ndimage
+    out = str(tmp_path / 'rim.webp')
+    _run([BROADCAST, out, '--recover-fade-alpha', '--erosion-exempt-transient',
+          '--unprotect-region', 'rect:238,300,168,240'], out)
+    y0, x0, h, w = 300, 238, 240, 168
+    src = np.stack([np.asarray(f.convert('RGB')).astype(float)
+                    for f in ImageSequence.Iterator(Image.open(BROADCAST))])
+    d = np.linalg.norm(src[:, y0:y0 + h, x0:x0 + w] - 255.0, axis=-1)
+    stable = (d <= 15).mean(0) >= 0.95
+    ring = ndimage.binary_dilation(stable, iterations=2) & ~stable
+    a = np.asarray(list(ImageSequence.Iterator(Image.open(out)))[30].convert('RGBA'))
+    al = a[y0:y0 + h, x0:x0 + w, 3] / 255.0
+    opaque = (al[ring] >= 0.95).mean()
+    assert opaque < 0.04, (
+        f'{opaque:.1%} of the antialiasing ring is fully opaque; the colour ramp '
+        f'alone measured 12.4% and reads as a pale shimmering rim')

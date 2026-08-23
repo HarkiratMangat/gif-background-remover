@@ -621,6 +621,22 @@ Implementation is small because the machinery existed: `apply_remove_regions` al
 3. **Not a force-delete:** a region placed over solid artwork must leave opaque count within 3% — the direct guard against reintroducing `--remove-region`'s behaviour.
 4. Omitting the flag produces byte-identical output — the feature is inert unless asked for.
 
+**Two implementation defects, both found by Harkirat looking at the render, neither visible in the numbers being watched.** He reported *"jittery anti-aliasing inside of the tower"* and *"the top triangle cutout white peaking in some frames."*
+
+| | white residue (worst frame) | AA-ring fully opaque | artwork (navy) |
+|---|---|---|---|
+| v1 hard `color_mask` | **262 px on 3 of 60 frames** | 0.5% | 23,631 |
+| v2 colour ramp only | 0 | **12.4%** | 23,157 |
+| **v3 ramp + geometric taper** | **0** | **0.5%** | **23,478** |
+
+The residue was **outside the region I chose** — bbox (310,310)-(329,330) against a rect starting at y=332 — so it was my geometry, not the algorithm, and it argues for deriving the region rather than hand-measuring it (Task 14b). The shimmer was the hard threshold leaving 236-454 px per frame of AA ramp opaque, with the count moving every frame.
+
+Fixing the shimmer with a colour ramp then created a **worse** defect: pale pixels held fully opaque. The working answer is both — colour decides what is background, geometry softens the boundary.
+
+⚠️ **A temporal-stabilisation variant was built and rejected on its own evidence.** Lag-1 class-flip rate on the ring is **0.062** with a median of 2 changes across 60 frames — smooth animation, not dither noise, so a per-frame decision was correct all along. Median-frame keying left the ring nearer white than the artwork.
+
+⚠️ **And a measurement lesson repeated from §13A.1:** the first ring comparison selected pixels *by alpha*, which selects a different population per render. Re-measured over a fixed 2,060 px population, and only then did the 12.4% opaque rim show up.
+
 ⚠️ **Still manual.** Nothing yet *recommends* `--unprotect-region`, so an autonomous run cannot reach it. That is the remaining half, and it is the same missing capability behind megaphone's sparkles: the recommender has no notion of "the user considers this enclosed interior background." Plan Task 14b.
 
 ### 13A.3 `megaphone.gif` — `--auto` does not remove the sparkle interiors, confirmed twice
