@@ -46,7 +46,9 @@ Two design answers also landed: the min-dimension floor must be able to express 
 | 7th | **Task 1** — min-dimension floor | largest, and gated on open question 2 |
 | 8th | **Task 2** — format ranking | gated on open question 1 |
 | — | **Task 11** — recommend flag conflicts | do beside Task 10; both are about a recommendation the renderer will not honour |
-| — | **Task 12** — nameable fade asks | do beside Tasks 10/11; all three share the refuse-and-pre-answer shape, and should share one implementation |
+| — | **Task 14** — offer `--remove-region` | do beside Tasks 10/11; it is the missing answer all three edge cases needed, and the cheapest of the group |
+| — | **Task 13** — diagnose `--fade-color` | **BLOCKS Task 12.** Investigation first, fix second; do not build a prompt around a flag that does not work |
+| last | **Task 12** — nameable fade asks | **blocked on Task 13.** Correct in shape, useless until the flag it prescribes works |
 
 Task 10 slots beside Task 1 (both touch recommendation handling). Task 5 (docs) runs last regardless, and Task 5's gates cover everything above it.
 
@@ -1259,7 +1261,11 @@ git commit -m "fix(recommend): never suggest a flag pair the renderer refuses to
 - Modify: `scripts/remove_gif_background.py:2440-2460` (the fade evidence branch) and the `--auto` gate
 - Test: `scripts/harness/test_nameable_fade_asks.py`
 
-**Why.** Measured 2026-08-22 on `notification.gif`. The detector identifies a flattened-fade signature, **names the colour `fd6050`**, counts **2,706 pixels on frame 14**, states that every one of them will be removed as background, and prescribes `--fade-color fd6050` — then delivers all of it as an **evidence string**. `--auto` applied `--protect-outline-color f05050,002864 --feather-band-multiplier 3.3` and cut the glow.
+⚠️ **BLOCKED — this task's premise was falsified after it was written. Read spec §13A.1 before starting.** An earlier draft justified it with "`--fade-color fd6050` recovers +27% partial alpha at zero cost." Harkirat looked at the renders and said both were wrong; tracing the pixels confirmed it. On frame 14, of the 2,662 source pixels at 5–35% opacity, **92.5% render fully opaque under `--auto` and 90.9% under `--fade-color fd6050`** — the flag the tool prescribes does essentially nothing. The whole-canvas "+27%" was antialiasing rim elsewhere, and 0.16% mid-alpha against broadcast's working 4.25% should have been the tell.
+
+**Do Task 13 first.** Asking the user to run a flag that does not work is worse than saying nothing. This task is correct in shape and cannot ship until the escape hatch it points at actually functions.
+
+**Original reasoning, still valid for the delivery-channel half.** Measured 2026-08-22 on `notification.gif`. The detector identifies a flattened-fade signature, **names the colour `fd6050`**, counts **2,706 pixels on frame 14**, states that every one of them will be removed as background, and prescribes `--fade-color fd6050` — then delivers all of it as an **evidence string**. `--auto` applied `--protect-outline-color f05050,002864 --feather-band-multiplier 3.3` and cut the glow.
 
 The prescription is right, and free:
 
@@ -1327,6 +1333,173 @@ git commit -m "feat(auto): ask about a fade it can name rather than cutting it s
 
 ---
 
+### Task 13: `--fade-color` leaves the fade opaque — diagnose before building on it
+
+**Files:**
+- Investigate: `scripts/remove_gif_background.py:5311` (`recover_fade_alpha_frames`), `:7320-7346` (the fade render path), the `--fade-color` argument plumbing
+- Test: `scripts/harness/test_fade_color_actually_recovers.py`
+
+**Why — this blocks Task 12 and invalidates a documented workaround.** `notification.gif` is a genuine flattened fade: on frame 14, **3,807 pixels lie on the `fd6050` → white ray at 5–95% opacity**, with a pale stage that changes per frame (`ffd1cd` frame 14, `fea89f` frame 30, `fd6b5d` frame 50). The tool's own evidence names `fd6050` and prescribes `--fade-color fd6050`. Running it:
+
+| source opacity band (frame 14) | px | `--auto` | `--fade-color fd6050` |
+|---|---|---|---|
+| 0.05–0.35 | 2,662 | 92.5% opaque | **90.9% opaque** |
+| 0.35–0.65 | 114 | 100% opaque | **100% opaque** |
+| 0.65–0.95 | 1,031 | 100% opaque | **100% opaque** |
+
+**A second, independent defect in the same evidence string:** it states those pixels are *"below half opacity, and every one of them is removed as background."* Measured, only **1.8%** land at alpha 0. They are kept opaque. The warning describes a failure mode that does not occur, so anyone reasoning from it starts from a false premise.
+
+⛔ **Do not reach for §41.** §41 explains why `--recover-fade-alpha` is not auto-applied. It says nothing about why the explicit, manually-named `--fade-color` path leaves the fade opaque. Treat these as unrelated until evidence says otherwise.
+
+**First hypothesis to test, cheapest first:** does `--fade-color` actually reach `recover_fade_alpha_frames` when the palette detector has already reported no translucent colour in the art palette? The evidence for notification says exactly that — *"the fade detector found NO translucent colour in the art palette"* — so a plausible mechanism is that `--fade-color` names a colour into a path that has already short-circuited. **Verify by instrumenting, not by reading the call graph** — this repo has a standing record of signature-reading producing confident wrong answers.
+
+- [ ] **Step 1: Write the failing test, keyed on the ARTEFACT not a count**
+
+```python
+# scripts/harness/test_fade_color_actually_recovers.py
+import numpy as np
+from PIL import Image, ImageSequence
+
+BASE = np.array([0xfd, 0x60, 0x50], float)
+WHITE = np.array([255., 255., 255.])
+
+
+def _faint_source_pixels(src_path, frame=14, lo=0.05, hi=0.35):
+    """Pixels on the BASE->white ray at low opacity: the faintest fade stages."""
+    s = np.asarray(list(ImageSequence.Iterator(Image.open(src_path)))[frame]
+                   .convert('RGB')).astype(float)
+    d = WHITE - BASE
+    t = ((WHITE - s) @ d) / (d @ d)
+    recon = WHITE - t[..., None] * d
+    return (np.linalg.norm(s - recon, axis=-1) < 12) & (t >= lo) & (t < hi)
+
+
+def test_fade_color_makes_the_faintest_stages_translucent(tmp_path):
+    src = 'local/2026-08-22-fade-edge-cases/inputs/notification.gif'
+    out = tmp_path / 'f.webp'
+    subprocess.run([sys.executable, SCRIPT, src, str(out),
+                    '--fade-color', 'fd6050',
+                    '--protect-outline-color', 'f05050,002864'],
+                   capture_output=True, timeout=900, check=True)
+    m = _faint_source_pixels(src)
+    al = np.asarray(list(ImageSequence.Iterator(Image.open(out)))[14])[..., 3] / 255.
+    opaque = (al[m] >= 0.98).mean()
+    assert opaque < 0.25, (
+        f'{opaque:.1%} of the faintest fade stages came out fully opaque '
+        f'(measured 90.9% before this fix); --fade-color did not recover them')
+
+
+def test_a_source_with_NO_fade_is_unchanged_by_the_fix(tmp_path):
+    """secure.gif has no flattened fade. The fix must not manufacture alpha."""
+    src = 'local/2026-08-21-v6-timeout-trial/inputs/secure.gif'
+    a, b = tmp_path / 'a.webp', tmp_path / 'b.webp'
+    for o in (a, b):
+        subprocess.run([sys.executable, SCRIPT, src, str(o),
+                        '--protect-outline-color', '002864'],
+                       capture_output=True, timeout=900, check=True)
+    assert a.read_bytes() == b.read_bytes()
+```
+
+The threshold is 25%, not 0%: some of those pixels are genuine antialiasing against artwork and legitimately stay opaque. **90.9% is the number to beat and it is recorded in the assertion message**, so a partial fix cannot silently pass.
+
+- [ ] **Step 2: Run to verify it fails** — expected: the first test FAILS at ~90.9%.
+
+- [ ] **Step 3: Instrument before changing anything**
+
+Add a temporary log line inside `recover_fade_alpha_frames` reporting whether it ran, what `fade_hexes` it received, and how many pixels it unmixed. Run with `--fade-color fd6050` and read it. **Report what you found before writing a fix** — if the function never runs, the defect is in the plumbing and the renderer is innocent.
+
+- [ ] **Step 4: Fix whatever step 3 identified, then re-run step 1** — expected 2 passed.
+
+- [ ] **Step 5: Correct the evidence text's prediction**
+
+Whatever the fix, the string at `:2447` must stop claiming those pixels are "removed as background" when they are kept opaque. Derive the claim from what the renderer does, or state it as uncertain.
+
+- [ ] **Step 6: PRE/POST render diff, and show Harkirat**
+
+Run: `python3 scripts/harness/render_baseline.py --set standard --out /tmp/post-fade.json` and `--compare`. Then render `notification.gif` and put it in front of him — **he is the instrument that caught this and no metric here has yet proven it can fail on the right axis.**
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add scripts/remove_gif_background.py scripts/harness/test_fade_color_actually_recovers.py
+git commit -m "fix(fade): make --fade-color actually recover the fade it names"
+```
+
+---
+
+### Task 14: recommend `--remove-region` when an enclosed interior is background
+
+**Files:**
+- Modify: the recommendation assembler and the `--recover-fade-alpha` conflict warning
+- Test: `scripts/harness/test_remove_region_is_offered.py`
+
+**Why — one missing suggestion is the root of three separate user-visible failures.** Measured 2026-08-22, this command does what Harkirat was told was impossible:
+
+```
+--recover-fade-alpha --erosion-exempt-transient --remove-region "rect:238,332,168,206"
+```
+
+| broadcast render | enclosed near-white opaque px | mid-alpha |
+|---|---|---|
+| protect-only | 8,569 | 1.15% |
+| the recommended command | 8,569 | 4.25% |
+| **fade + `--remove-region`** | **0** | **4.22%** |
+
+`--remove-region` is applied at `:7729`, downstream of the fade path at `:7346`, so **it composes with everything** — including the path that ignores every protection flag.
+
+The tool never offers it. Worse, the conflict warning says *"Pick one: fade recovery, or region protection"*, which reads as a statement about the tool's capability and steers the user away from the working answer.
+
+**The same gap explains megaphone's sparkles (§13A.3) and broadcast's tower (§13A.2): there is no way to express "this enclosed interior is background."** Every protection mechanism — explicit outline, topological, band-interior — independently classifies an enclosed region of background colour as intentional design. `--remove-region` is the single escape hatch and nothing points at it.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_the_fade_conflict_warning_points_at_remove_region():
+    rec = _suggested('local/2026-08-22-fade-edge-cases/inputs/broadcast.gif')
+    blob = ' '.join(rec.get('evidence', [])) + rec['suggested_command']
+    assert '--remove-region' in blob, (
+        'the recommendation never mentions the one flag that composes with the '
+        'fade path and can remove an enclosed interior')
+
+
+def test_a_coinflip_region_offers_remove_region_as_the_other_answer():
+    """megaphone's sparkles: the recommender only ever offers to PROTECT."""
+    rec = _suggested('local/2026-08-21-v6-timeout-trial/inputs/megaphone.gif')
+    blob = ' '.join(rec.get('evidence', []))
+    assert '--remove-region' in blob, \
+        'no path offered for "this enclosed interior is background"'
+
+
+def test_an_unambiguous_asset_is_not_cluttered_with_it():
+    """secure.gif's regions enclose 50/50. Offering --remove-region there is noise."""
+    rec = _suggested('local/2026-08-21-v6-timeout-trial/inputs/secure.gif')
+    assert '--remove-region' not in ' '.join(rec.get('evidence', []))
+```
+
+- [ ] **Step 2: Run to verify it fails** — first two FAIL, third passes.
+
+- [ ] **Step 3: Emit the suggestion where a region is genuinely ambiguous**
+
+Two places, both already computing what is needed:
+- The coin-flip enclosure branch (shared with Task 10) already knows the region's bbox. Print the ready-to-paste `--remove-region rect:x,y,w,h` beside the protect option, so both answers are one paste away.
+- The `--recover-fade-alpha` conflict warning must stop implying a capability limit. Replace "Pick one: fade recovery, or region protection" with the accurate version: `--protect-outline-color` is ignored by the fade path, **but `--remove-region` is applied downstream and composes with it** — measured on broadcast.gif, 8,569 enclosed white px → 0 with the fade intact.
+
+- [ ] **Step 4: Run to verify it passes** — expected 3 passed.
+
+- [ ] **Step 5: Re-score the populations and report the noise rate**
+
+Run: `python3 scripts/harness/run_populations.py --out /tmp/post-rmregion.json`
+⚠️ **Report the fraction of the 797 that now carry a `--remove-region` suggestion.** A hint on every asset is not guidance, it is noise, and the third test only covers one negative.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/remove_gif_background.py scripts/harness/test_remove_region_is_offered.py
+git commit -m "feat(recommend): offer --remove-region when an enclosed interior may be background"
+```
+
+---
+
 ### Task 5: documentation, lessons section, and the release gates
 
 **Files:**
@@ -1374,7 +1547,7 @@ git commit -m "docs: record the min-dimension gap, the falsified q60 hypothesis 
 
 ## Self-Review
 
-**Spec coverage.** Trial findings 1 (min dimension) → Task 1. Finding 2 (no ranking) → Task 2. Finding 3 (runtime, no pre-flight estimate) → Task 3 plus the SKILL.md exception. Finding 5 (vacuous verify) → Task 4. Finding 7 (`--webp-quality` no-op) → Task 6. Finding 8 (stale dimensions after a fit) → Task 7. The 8-bit-alpha fringe → Task 9. `--auto` guessing on a coin-flip region → Task 10. `--recommend` emitting an exclusive flag pair → Task 11. A nameable-but-ambiguous fade cut silently → Task 12. The missing fade-plus-protection render path is deliberately NOT a task — it is a capability gap needing a design decision, filed as spec §14 question 8. Frame-stride weighting is deliberately NOT a task — it questions weights set on measurement, and needs its own, filed as spec §14 question 6. **Task 8 covers a defect class the trial did not file as a numbered finding because it is about the packaged prose rather than the code: SKILL.md's navigation recipe fails silently without `rg`, and 28.9% of the file is release notes. Findings 4 and 6 are deliberately NOT in this plan** — finding 4 (`--recommend` cannot infer intent) needs a design decision about whether the tool should ask, refuse, or annotate, and belongs in its own brainstorming pass; finding 6 (the "downscaling made this LARGER" diagnostic not feeding back into the search) is low severity and would touch the rung ordering this plan is forbidden to move. Both should be filed in `gif-deferred-list.md` rather than silently dropped.
+**Spec coverage.** Trial findings 1 (min dimension) → Task 1. Finding 2 (no ranking) → Task 2. Finding 3 (runtime, no pre-flight estimate) → Task 3 plus the SKILL.md exception. Finding 5 (vacuous verify) → Task 4. Finding 7 (`--webp-quality` no-op) → Task 6. Finding 8 (stale dimensions after a fit) → Task 7. The 8-bit-alpha fringe → Task 9. `--auto` guessing on a coin-flip region → Task 10. `--recommend` emitting an exclusive flag pair → Task 11. A nameable-but-ambiguous fade cut silently → Task 12. `--fade-color` leaving the fade opaque → Task 13, which BLOCKS Task 12. The missing `--remove-region` suggestion → Task 14. ⚠️ An earlier draft filed a "fade-plus-protection capability gap" as needing design; that was **retracted** — `--remove-region` composes with the fade path and was measured doing so. Frame-stride weighting is deliberately NOT a task — it questions weights set on measurement, and needs its own, filed as spec §14 question 6. **Task 8 covers a defect class the trial did not file as a numbered finding because it is about the packaged prose rather than the code: SKILL.md's navigation recipe fails silently without `rg`, and 28.9% of the file is release notes. Findings 4 and 6 are deliberately NOT in this plan** — finding 4 (`--recommend` cannot infer intent) needs a design decision about whether the tool should ask, refuse, or annotate, and belongs in its own brainstorming pass; finding 6 (the "downscaling made this LARGER" diagnostic not feeding back into the search) is low severity and would touch the rung ordering this plan is forbidden to move. Both should be filed in `gif-deferred-list.md` rather than silently dropped.
 
 **Placeholder scan.** No TBDs. Every code step carries the actual code. The one judgement call left to the implementer is the exact insertion point of the batch-summary hook, because that writer's local variable names were not read during planning — Task 2 Step 5 names what it needs (`summary_records` carrying source, output, width, height, frames, kb) so the implementer can bind it correctly.
 
