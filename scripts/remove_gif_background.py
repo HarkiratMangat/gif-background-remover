@@ -2208,11 +2208,37 @@ def _unprotect_hint(rid, bbox, ratio, checked):
     noise rather than guidance.
     """
     x0, y0, x1, y1 = (int(v) for v in bbox)
+    # ⚠️ THIS BOX IS THE SAMPLED FRAME'S EXTENT AND MAY BE TOO SMALL. `bbox_xyxy` is
+    # measured on one frame, but an interior can BREATHE across the animation -- on the
+    # broadcast tower the enclosed white runs 18,038 to 20,367 px. Measured 2026-08-22,
+    # rendering with each candidate box:
+    #
+    #     bbox as-is        rect:243,311,153,197   residue 2,340 px   artwork 23,399
+    #     true across-frames extent 243,303,154,213  residue 1,607    artwork 23,427
+    #     +8px uniform      rect:241,306,158,207   residue 1,905      artwork 23,416
+    #     +15%              rect:220,281,199,257   residue     0      artwork 22,191
+    #     hand-measured     rect:238,300,168,240   residue     0      artwork 23,478
+    #
+    # ⚠️ A PADDING HEURISTIC WAS BUILT AND REMOVED. The argument for it was that this flag
+    # re-keys only BACKGROUND-COLOURED pixels, so an oversized box should be free. That is
+    # FALSE and the table above is why: at +15% the box reaches the tower's outer silhouette
+    # and re-keys the antialiasing ramp there, costing 1,287 px of artwork. And no pad tuned
+    # on one asset is defensible -- even the exact across-frames extent still leaves 1,607 px,
+    # because the residue is scattered small blobs a bounding box does not describe.
+    #
+    # So the box is reported honestly as a STARTING POINT with the tradeoff named, rather
+    # than shipping a number tuned to one file. Deriving a real per-frame region is the
+    # correct fix and is filed as its own task.
     return (f"Region {rid}: if this enclosed interior is BACKGROUND rather than design "
             f"(a gap showing through a lattice, the white inside a sparkle), protecting it "
             f"is the wrong answer and no protection flag can express that. Add "
             f"--unprotect-region rect:{x0},{y0},{x1 - x0},{y1 - y0} to re-key it as "
-            f"background while leaving the artwork there untouched. It is also the only "
+            f"background while leaving the artwork there untouched. ⚠️ THIS BOX IS A "
+            f"STARTING POINT, not a measured answer: it is this region's extent on the "
+            f"SAMPLED frame, and an interior that grows across the animation will leave "
+            f"residue outside it -- widen it and re-check. Widen deliberately: measured on "
+            f"one asset, a 15% pad cleared the residue but reached the artwork's outer "
+            f"silhouette and trimmed 1,287 px of it. It is also the only "
             f"region flag that composes with --recover-fade-alpha, which ignores every "
             f"protection flag (references/lessons.md SS43). NOT applied automatically: "
             f"whether an interior is design or background is the user's call, not "

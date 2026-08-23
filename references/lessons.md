@@ -2689,4 +2689,16 @@ Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST 
 
 ⚠️ **Measure a boundary over a population fixed BEFORE you look at either render.** Selecting ring pixels *by alpha* selects a different set in each render, so "the ring got paler" can be pure selection artefact. The same mistake, on a different metric, produced a wrong "+27% recovered" claim in the same investigation.
 
-✅ **`--recommend` now offers it.** Any region whose outline does not enclose it on every frame gets a second note naming `--unprotect-region rect:x,y,w,h`, derived from the region's own bbox. On the broadcast tower the derived rect is `243,311,153,197` against the `238,300,168,240` a human measured by hand — close enough to paste. It is **offered, never applied**: which answer is right is a statement about intent, not about pixels, and the tool's standing rule is that an unverifiable check reports rather than guesses. A region enclosed on **every** frame gets no hint, because a hint on every asset is noise rather than guidance — that negative case is a falsifier, not an assumption.
+✅ **`--recommend` now offers it.** Any region whose outline does not enclose it on every frame gets a second note naming `--unprotect-region rect:x,y,w,h`, derived from the region's own bbox. On the broadcast tower the derived rect is `243,311,153,197` against the `238,300,168,240` a human measured by hand.
+
+⚠️ **THE DERIVED BOX IS A STARTING POINT AND THE HINT SAYS SO — it was nearly shipped as though it worked.** `bbox_xyxy` is the region's extent on the SAMPLED frame, and an interior that grows across the animation leaves residue outside it. Rendered with each candidate:
+
+| box | residue (worst frame) | artwork (navy) |
+|---|---|---|
+| bbox as-is `243,311,153,197` | **2,340 px** | 23,399 |
+| true across-frames extent `243,303,154,213` | 1,607 px | 23,427 |
+| +8px uniform | 1,905 px | 23,416 |
+| +15% pad | **0** | **22,191** |
+| hand-measured `238,300,168,240` | **0** | **23,478** |
+
+⚠️ **A padding heuristic was built and REMOVED, on an argument that measurement falsified.** The reasoning was that this flag re-keys only background-coloured pixels, so an oversized box costs nothing. At +15% the box reaches the artwork's outer silhouette and re-keys the antialiasing ramp there — **1,287 px of artwork gone**. And no pad tuned on one asset is defensible: even the exact across-frames extent still leaves 1,607 px, because the residue is scattered small blobs that a bounding box does not describe. **Reporting the box honestly with the tradeoff named beats shipping a number tuned to one file.** It is **offered, never applied**: which answer is right is a statement about intent, not about pixels, and the tool's standing rule is that an unverifiable check reports rather than guesses. A region enclosed on **every** frame gets no hint, because a hint on every asset is noise rather than guidance — that negative case is a falsifier, not an assumption.

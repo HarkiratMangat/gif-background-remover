@@ -48,6 +48,7 @@ Two design answers also landed: the min-dimension floor must be able to express 
 | — | **Task 11** — recommend flag conflicts | do beside Task 10; both are about a recommendation the renderer will not honour |
 | ✅ | **Task 14** — `--unprotect-region` | DONE 2026-08-22, 4 falsifiers passing |
 | ✅ | **Task 14b** — recommend it | DONE 2026-08-22, 3 falsifiers |
+| — | **Task 14c** — derive the region across frames | the 14b hint's box is one frame's extent and leaves 2,340 px residue; a padding constant was tested and rejected |
 | — | **Task 13** — diagnose `--fade-color` | **BLOCKS Task 12.** Investigation first, fix second; do not build a prompt around a flag that does not work |
 | last | **Task 12** — nameable fade asks | **blocked on Task 13.** Correct in shape, useless until the flag it prescribes works |
 
@@ -1445,6 +1446,34 @@ Any region whose outline does not enclose it on every frame now gets a second no
 **Offered, never applied.** Which answer is right is a statement about intent, not about pixels. Three falsifiers in `scripts/harness/test_unprotect_is_offered.py`; the load-bearing one asserts `secure.gif` (enclosure 1.000) does **not** get the hint, since a hint that fires on every asset is noise.
 
 ⚠️ **A test-harness bug worth recording:** the first version of that suite failed on all three assets while the feature worked, because it `json.loads`-ed output assuming the list shape a MULTI-input run emits. A single-input run does not emit that shape. **A parser that assumes one output shape is a test that can fail for reasons having nothing to do with the product.**
+
+---
+
+### Task 14c: derive the unprotect region from the animation, not one frame
+
+**Files:** `analyze()`'s candidate-region record · `_unprotect_hint` · **Test:** extend `test_unprotect_is_offered.py`
+
+**Why.** Task 14b's hint derives its box from `bbox_xyxy`, the region's extent on the SAMPLED frame. Measured 2026-08-22 by rendering with it: **2,340 px of residue**, because the interior breathes across the animation (18,038 → 20,367 px on broadcast).
+
+⛔ **A padding constant is NOT the fix, and this was tested rather than assumed.**
+
+| box | residue | artwork |
+|---|---|---|
+| bbox as-is | 2,340 | 23,399 |
+| across-frames extent | 1,607 | 23,427 |
+| +8px | 1,905 | 23,416 |
+| +15% | **0** | **22,191** |
+| hand-measured | **0** | 23,478 |
+
+The +15% pad clears the residue by reaching the artwork's outer silhouette — 1,287 px lost — which falsifies the "this flag only re-keys background so a big box is free" argument. And the exact across-frames extent still leaves 1,607 px, because the residue is scattered small blobs a rectangle does not describe.
+
+**So the region must be a MASK, not a box.** Record, per candidate region, the union across frames of its background-coloured interior, and let `--unprotect-region` accept that directly (or emit a `;`-joined multi-rect covering the components).
+
+- [ ] **Step 1:** falsifier — rendering with the tool's OWN suggested region must leave under 200 px of residue AND hold artwork within 1% of the hand-measured render. **Both halves**, per §43.
+- [ ] **Step 2:** run; expect residue ~2,340 on current code.
+- [ ] **Step 3:** implement the across-frames union in the region record.
+- [ ] **Step 4:** re-run; then `run_populations.py` and report how many assets gain a hint and how much larger the regions get.
+- [ ] **Step 5:** show Harkirat the render before merging.
 
 ---
 
