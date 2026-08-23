@@ -7172,6 +7172,21 @@ def optimize_to_target(rgb_frames, alpha_frames, durations, loop, output_path, t
     return {'hit_target': False, 'final_size_kb': round(size / 1024, 1), 'attempts': attempts}
 
 
+def _delivered_dimensions(path):
+    """`WxH` read back from the WRITTEN FILE, never computed from the winning rung.
+
+    A rung records what it ASKED for; the encoder records what it wrote, and the two can
+    differ by a rounding pixel. The claim being made is about the delivered artifact, so
+    it is measured on the delivered artifact. Returns `dimensions unreadable` rather than
+    a guess if the file cannot be opened -- an unverifiable claim says so (SS13).
+    """
+    try:
+        with Image.open(path) as im:
+            return f"{im.size[0]}x{im.size[1]}"
+    except Exception:
+        return "dimensions unreadable"
+
+
 def make_checkerboard(w, h, tile=8):
     y_idx, x_idx = np.indices((h, w))
     checker = ((x_idx // tile) + (y_idx // tile)) % 2
@@ -8107,7 +8122,15 @@ def process(input_path, output_path, args, diagnostics=None):
         timing = describe_written_timing(output_path, durations)
     out_w, out_h = alpha_frames[0].shape[1], alpha_frames[0].shape[0]
     print(f"Saved {output_path} ({timing})", file=sys.stderr)
-    print(f"Output: {out_w}x{out_h}, {size_bytes/1024:.1f} KB", file=sys.stderr)
+    # ⚠️ This line runs BEFORE any --target-kb fitting, so on a fitted run it is stale the
+    # moment the fit starts. Measured consequence 2026-08-22: a session reported 482x513 as
+    # the delivered dimensions of a file that was 120x128 -- and the tool had printed
+    # exactly "Output: 482x513" in that same run. Reporting faithfully what the tool said
+    # was still wrong, so the fix belongs in the output, not in operator discipline.
+    print(f"Output: {out_w}x{out_h}, {size_bytes/1024:.1f} KB"
+          + (" (BEFORE --target-kb fitting -- the delivered size and dimensions are "
+             "reported below)" if getattr(args, 'target_kb', None) else ""),
+          file=sys.stderr)
 
     # gifsicle pass matching the tier. No tier at all = no gifsicle either
     # -- the default is now genuinely "just remove the background" with no
@@ -8143,7 +8166,8 @@ def process(input_path, output_path, args, diagnostics=None):
                 args.target_kb, _fmt, args, log=fit_log)
             for line in fit_log:
                 print(line, file=sys.stderr)
-            print(f"Final: {os.path.getsize(output_path)/1024:.1f} KB "
+            print(f"Final: {os.path.getsize(output_path)/1024:.1f} KB, "
+                  f"{_delivered_dimensions(output_path)} "
                   f"(saved over {output_path})", file=sys.stderr)
     elif args.target_kb:
         final_size = os.path.getsize(output_path)
@@ -8161,11 +8185,13 @@ def process(input_path, output_path, args, diagnostics=None):
             for a in result['attempts']:
                 print(f"  tried {a['lever']}={a['value']}: {a['size_kb']} KB", file=sys.stderr)
             if result['hit_target']:
-                print(f"Hit target: {result['final_size_kb']} KB <= {args.target_kb} KB "
+                print(f"Final: {result['final_size_kb']} KB <= {args.target_kb} KB, "
+                      f"{_delivered_dimensions(output_path)} "
                       f"(saved over {output_path})", file=sys.stderr)
             else:
                 print(f"Could not fully reach {args.target_kb} KB; best achieved was "
-                      f"{result['final_size_kb']} KB (saved over {output_path}). "
+                      f"Final: {result['final_size_kb']} KB, "
+                      f"{_delivered_dimensions(output_path)} (saved over {output_path}). "
                       f"The source content may just be too complex/long for this "
                       f"target without a manual reduction in scope (e.g. trimming "
                       f"frames).", file=sys.stderr)
