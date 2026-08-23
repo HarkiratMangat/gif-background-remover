@@ -2550,19 +2550,25 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             "keys the background to a faint non-zero alpha instead of removing it "
             "(measured 2026-08-20: bg_removed_worst 0.0000 on the worst case). "
             + (
-                f"⚠️ EXPECT THE OUTER FALLOFF OF ANY SOFT GLOW OR HALO TO BE CUT on this "
+                f"⚠️ EXPECT THE OUTER FALLOFF OF ANY SOFT GLOW OR HALO TO BE LOST on this "
                 f"asset: {_ramp['faint_px']} pixels on frame {_ramp['frame_index']} unmix "
                 f"cleanly as {_ramp['color']} fading toward the background (below half "
-                f"opacity), and every one of them is removed as background. If that falloff "
-                f"is artwork, re-run with --fade-color {_ramp['color']} and a WebP/AVIF "
-                f"output, which bypasses detection entirely. This is NOT applied "
+                f"opacity), and NONE of them is reconstructed as translucent. ⚠️ This used to "
+                f"say every one of them is REMOVED as background; measured 2026-08-22, that is "
+                f"not what happens -- only 1.8% land at alpha 0. What they do depends on what "
+                f"else protects them: fully opaque pale blobs when a protection flag covers "
+                f"them, removed outright when nothing does. Neither is the fade. If that "
+                f"falloff is artwork, re-run with --recover-fade-alpha --fade-color "
+                f"{_ramp['color']} -- BOTH flags, --fade-color does nothing on its own -- and a "
+                f"WebP/AVIF output, which bypasses detection entirely. This is NOT applied "
                 f"automatically and the reason is measured, not caution: across the 91 assets "
                 f"in exactly this branch, this asset's ramp statistics interleave with the "
                 f"ones that render as a translucent ghost of the whole frame, so no threshold "
                 f"separates them (references/lessons.md SS41)."
                 if _ramp else
                 "If you can see a fade the detector missed, name its colour with "
-                "--fade-color, which bypasses detection entirely."
+                "--recover-fade-alpha --fade-color <hex> -- both flags, --fade-color does "
+                "nothing on its own -- which bypasses detection entirely."
             ))
     elif (any(r['classification'] == 'gradient_fade' for r in band_regions)
           and _fade_ok is None):
@@ -2955,6 +2961,11 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
         'suggested_command': suggested,
         'not_applicable_reason': _not_applicable,
         'ambiguous_protection': _ambiguous,
+        'nameable_fade': ({'color': _ramp['color'], 'faint_px': _ramp['faint_px'],
+                           'frame_index': _ramp['frame_index']}
+                          if _ramp and any(r['classification'] == 'gradient_fade'
+                                           for r in band_regions) and _fade_ok is False
+                          else None),
         'evidence': ([_not_applicable] if _not_applicable else []) + evidence + region_notes,
         'analysis': report,
     }
@@ -8946,6 +8957,7 @@ def auto_run(input_path, output_path, args, parser):
     _pending = [a for a in (rec.get('ambiguous_protection') or [])
                 if a['outline_color'] not in _assumed_colors(args, 'assume_protect')
                 and a['outline_color'] not in _assumed_colors(args, 'assume_remove')]
+    _questions = []
     if _pending:
         _lines = [
             f"  region {a['region_id']}, outline {a['outline_color']}, bbox "
@@ -8953,8 +8965,9 @@ def auto_run(input_path, output_path, args, parser):
             f"{a['frames_checked']} frames ({a['enclosure_ratio'] * 100:.0f}%)"
             for a in _pending]
         _colors = ",".join(dict.fromkeys(a['outline_color'] for a in _pending))
-        raise SystemExit(
-            "ERROR: --auto will not guess a coin-flip protection decision.\n"
+        _questions.append(
+            "COIN-FLIP PROTECTION -- --auto will not guess whether these enclosed interiors "
+            "are design or background.\n"
             + "\n".join(_lines)
             + f"\n  Is each of these an interior DESIGN element to protect, or BACKGROUND "
               f"showing through to remove? Partial enclosure is evidence for neither.\n"
@@ -8964,6 +8977,45 @@ def auto_run(input_path, output_path, args, parser):
               f"    --assume-remove {_colors}   (treat them as background; drop the outline "
               f"colour)\n"
               f"  Either flag may name a subset; every listed colour must be answered.")
+    # ⚠️ A FADE THE TOOL CAN NAME BUT NOT DECIDE IS A QUESTION, NOT A SILENCE. The detector
+    # identifies the flattened-fade signature, names the colour, counts the pixels and
+    # prescribes the flag -- and used to deliver all of it as an EVIDENCE STRING, while --auto
+    # went ahead and cut the falloff. An autonomous run reads flags, not prose.
+    # ⚠️ THE REFUSAL TO AUTO-APPLY IS CORRECT AND IS PRESERVED. references/lessons.md SS41
+    # measured 91 assets in exactly this branch whose ramp statistics interleave with ones
+    # that render as a translucent ghost of the whole frame; no threshold separates them. The
+    # defect was the delivery channel, not the decision -- so this asks rather than lowering a
+    # threshold that has already been shown not to exist.
+    _fade = rec.get('nameable_fade')
+    if _fade and not getattr(args, 'fade_color', None) and not getattr(args, 'assume_no_fade', False):
+        _questions.append(
+            f"NAMEABLE FADE -- --auto will not decide whether this asset's soft falloff is artwork.\n"
+            f"  {_fade['faint_px']} pixels on frame {_fade['frame_index']} unmix cleanly as "
+            f"{_fade['color']} fading toward the background, below half opacity. Nothing "
+            f"reconstructs them, so a glow, halo or sparkle trail there will be lost.\n"
+            f"  The tool will not choose for you, and the reason is measured rather than "
+            f"cautious: across the 91 assets in exactly this branch, this one's ramp "
+            f"statistics interleave with assets that render as a translucent ghost of the "
+            f"whole frame, so no threshold separates them (references/lessons.md SS41).\n"
+            f"  Answer it and re-run:\n"
+            f"    --recover-fade-alpha --fade-color {_fade['color']}   (it IS artwork; both "
+            f"flags, and a .webp/.avif/.apng output)\n"
+            f"    --assume-no-fade   (it is not; proceed exactly as before)")
+
+    # ⚠️ ONE refusal carrying EVERY unanswered question, never one per run. An unattended
+    # caller pays a whole tool call per refusal, and asking serially turns two questions into
+    # two lost calls and a session that thinks the tool is looping.
+    if _questions:
+        raise SystemExit("ERROR: --auto stopped with "
+                         + (f"{len(_questions)} questions it will not answer for you.\n\n"
+                            if len(_questions) > 1 else
+                            "a question it will not answer for you.\n\n")
+                         + "\n\n".join(_questions)
+                         + "\n\n  Pass the answers together and re-run; nothing was written.")
+    if getattr(args, 'assume_no_fade', False) and _fade:
+        print(f"assumption applied: treating the {_fade['color']} falloff as background, not "
+              f"artwork -- answered by flag rather than by measurement.", file=sys.stderr)
+
     _removed = _assumed_colors(args, 'assume_remove')
     if _removed or _assumed_colors(args, 'assume_protect'):
         print(f"assumption applied: "
@@ -9745,6 +9797,12 @@ def main():
                         f"the source already declared transparent, i.e. changes nothing on a "
                         f"source whose cut is already clean. Ignored unless the source carries "
                         f"transparency that reads as its background.")
+    p.add_argument('--assume-no-fade', action='store_true',
+                    help="Pre-answer --auto's other question: the soft falloff the detector "
+                         "can NAME but cannot decide about is background, not artwork -- "
+                         "proceed and let it be cut. The opposite answer is "
+                         "--recover-fade-alpha --fade-color <hex>, which the refusal prints "
+                         "ready to paste.")
     p.add_argument('--assume-protect', default=None, metavar='HEX[,HEX...]',
                     help='Pre-answer --auto\'s coin-flip protection question: treat the '
                          'regions these outline colours enclose as interior DESIGN and '
