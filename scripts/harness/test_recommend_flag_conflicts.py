@@ -106,3 +106,47 @@ def test_the_fade_alternative_is_PUBLISHED_complete_and_runnable():
     for flag, _dest in R.FADE_EXCLUSIVE_FLAGS:
         assert flag not in alt, f'alternative_command still pairs {flag} with the fade path'
     assert '<output.webp>' in alt, 'the alternative names a container that cannot hold a fade'
+
+
+PIXEL_SABER = os.path.join(ROOT, 'local/Diors-builds Emojis/others/Pixel Saber.gif')
+
+
+@pytest.mark.skipif(not os.path.exists(PIXEL_SABER),
+                    reason='local/Diors-builds Emojis/ is gitignored third-party material')
+def test_the_alternative_receives_the_same_overrides_as_the_suggestion():
+    """`alternative_command` is a COMMAND, and must be runnable on the same terms.
+
+    --allow-changing-background was appended to `suggested_command` only, so on a
+    changing-background asset the alternative was refused the moment anyone ran it --
+    one path fixed, the other not, on a field whose entire purpose is to be runnable.
+
+    ⚠️ FIXTURE PROVENANCE: Pixel Saber is the ONLY asset in the intersection across the
+    304 assets of labelled + trial + emoji + small_aa -- 14 have an alternative_command,
+    exactly 1 of those also has a changing background. That is why this test names an
+    asset instead of sweeping: the sweep was run, and it returned one. Proven non-vacuous
+    against the pre-fix code, where the alternative came back WITHOUT the flag.
+    """
+    def _rec(*flags):
+        r = subprocess.run([sys.executable, SCRIPT, PIXEL_SABER, '--recommend', *flags],
+                           capture_output=True, text=True, timeout=1800)
+        assert r.returncode == 0, r.stderr[-3000:]
+        start = min(i for i in (r.stdout.find('{'), r.stdout.find('[')) if i >= 0)
+        doc, _ = json.JSONDecoder().raw_decode(r.stdout[start:])
+        return doc[0]['recommendation'] if isinstance(doc, list) else doc
+
+    # WITH the override: both commands exist and BOTH carry it.
+    rec = _rec('--allow-changing-background')
+    alt = rec.get('alternative_command')
+    assert alt, 'the fixture no longer produces an alternative_command; this test is vacuous'
+    assert '--allow-changing-background' in (rec['suggested_command'] or ''), \
+        'the CLI did not forward --allow-changing-background to recommend()'
+    assert '--allow-changing-background' in alt, \
+        f'the alternative would be refused if run: {alt}'
+
+    # WITHOUT it: the asset is not applicable, and NEITHER field may hold a command.
+    # An alternative that outlives the refusal is an escape hatch stapled to a refusal.
+    bare = _rec()
+    assert bare.get('not_applicable_reason'), 'the fixture stopped being a refusal case'
+    assert bare.get('suggested_command') is None
+    assert bare.get('alternative_command') is None, \
+        f'a runnable command survived a not-applicable verdict: {bare.get("alternative_command")}'

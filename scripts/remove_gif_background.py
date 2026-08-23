@@ -2943,6 +2943,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             f"If the goal is a smaller file, use --target-kb / --resize-max-dim on it directly; if "
             f"it is a recolour, that is outside what this skill does.")
         suggested = None
+        _alt_command = None
 
     _bgs = report.get('background_color_stability') or {}
     if _bgs.get('changes'):
@@ -2962,9 +2963,19 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                                "and not a refusal. " + _bg_msg)
             if suggested:
                 suggested += " --allow-changing-background"
+            # ⚠️ THE ALTERNATIVE IS A COMMAND TOO. Appending the override to `suggested`
+            # alone leaves `alternative_command` refused the moment anyone runs it -- one
+            # path fixed, the other not, on a field whose entire purpose is to be runnable.
+            if _alt_command:
+                _alt_command += " --allow-changing-background"
         elif _not_applicable is None:
             _not_applicable = _bg_msg
+            # ⚠️ THE ALTERNATIVE DIES WITH THE SUGGESTION. Nulling only `suggested` handed an
+            # autonomous run a runnable command on an asset the tool had just declared NOT
+            # APPLICABLE -- a refusal with an escape hatch stapled to it. Found by a
+            # falsification pass, minutes after `alternative_command` was added.
             suggested = None
+            _alt_command = None
     elif _bgs.get('changes') is None and _bgs.get('unverified_reason'):
         # UNVERIFIED, not clean. Said out loud rather than folded into silence, because the
         # thing being reported is that a check could not run -- see SS13/SS16/SS17.
@@ -9881,9 +9892,21 @@ def main():
         if len(args.input_paths) > 1:
             print(json.dumps(run_read_only(
                 args.input_paths, 'recommendation',
-                lambda pth: recommend(pth, tolerance=args.tolerance)), indent=2))
+                lambda pth: recommend(
+                    pth, tolerance=args.tolerance,
+                    allow_changing_background=getattr(
+                        args, 'allow_changing_background', False))), indent=2))
             return
-        rec = recommend(args.input_gif, tolerance=args.tolerance)
+        # ⚠️ --allow-changing-background MUST reach here. Both CLI --recommend paths used to
+        # drop it, so `--recommend --allow-changing-background` returned not_applicable and a
+        # null command while the identical in-process call returned a working one. auto_run
+        # (:8959) forwarded it correctly, which is why this survived: the flag worked on the
+        # flagship path and silently did nothing on the one people read first. Exactly the
+        # failure the --auto branch's own comment describes -- a documented override that does
+        # not work on some paths.
+        rec = recommend(args.input_gif, tolerance=args.tolerance,
+                        allow_changing_background=getattr(
+                            args, 'allow_changing_background', False))
         print(json.dumps(rec, indent=2))
         return
 
