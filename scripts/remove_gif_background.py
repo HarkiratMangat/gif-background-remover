@@ -629,6 +629,12 @@ def measure_edge_hardness(rgb, bg_rgb, tolerance=15, band_multiplier=4.0):
 # silently handed an 8-bit container the 1-bit code path.
 EIGHT_BIT_ALPHA_FORMATS = ('webp', 'avif', 'apng')
 
+#: --webp-quality's argparse default, bound as a constant so the "this flag cannot take
+#: effect" warning compares against the DEFAULT rather than a literal 90. A warning keyed
+#: on a literal is silently disarmed the day the default moves -- the same failure mode as
+#: a guard keyed on a message string.
+WEBP_QUALITY_DEFAULT = 90
+
 
 def _avif_available():
     """True if this Pillow can write AVIF -- via built-in support or the plugin."""
@@ -8069,6 +8075,20 @@ def process(input_path, output_path, args, diagnostics=None):
                       + ("" if total == sum(durations)
                          else f" -- WARNING: source was {sum(durations)}ms"))
     elif _fmt == 'webp':
+        # ⚠️ --webp-quality is READ ONLY on the lossy branch. render_frames_to_webp's
+        # lossless path overrides the caller with quality=100, so on the DEFAULT path the
+        # flag is parsed and thrown away. Measured 2026-08-22: the same render at
+        # --webp-quality 70 and 45 produced byte-identical 403.1 KB output, and the user
+        # got no signal at all -- a session then spent two renders concluding the tool was
+        # broken. Deliberately NOT making the flag imply --webp-lossy: lossless is the
+        # measured-correct default for flat vector art, and silently switching someone to
+        # lossy because they nudged a number trades a silent no-op for a silent behaviour
+        # change, which is worse. Say so instead, and name the flag that arms it.
+        if not args.webp_lossy and args.webp_quality != WEBP_QUALITY_DEFAULT:
+            print(f"WARNING: --webp-quality {args.webp_quality} has NO EFFECT without "
+                  f"--webp-lossy -- the default WebP path is lossless and encodes at "
+                  f"quality 100 regardless. Add --webp-lossy to make it take effect, or "
+                  f"drop the flag.", file=sys.stderr)
         size_bytes = render_frames_to_webp(
             rgb_frames, alpha_frames, durations, loop, output_path,
             lossless=not args.webp_lossy, quality=args.webp_quality,
@@ -9188,7 +9208,7 @@ def main():
                          'flat vector art is usually SMALLER as well as '
                          'better (measured 2109 KB lossless vs 3005 KB lossy '
                          'on the same asset). Use only to hit a hard byte cap.')
-    p.add_argument('--webp-quality', type=int, default=90,
+    p.add_argument('--webp-quality', type=int, default=WEBP_QUALITY_DEFAULT,
                     help='Quality 0-100 for --webp-lossy (default 90). Alpha '
                          'is always kept at maximum quality.')
     p.add_argument('--webp-method', type=int, default=2,
