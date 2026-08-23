@@ -4513,6 +4513,13 @@ def verify(input_path, output_path, tolerance=15):
     report = {'input_path': input_path, 'output_path': output_path}
 
     if in_rgb[0].shape != out_rgb[0].shape:
+        # ⚠️ THIS PATH RUNS NO PIXEL CHECKS AT ALL, and it is the NORMAL path: every
+        # --crop'ped or --resize-max-dim'd deliverable lands here. Measured in the v6
+        # trial 2026-08-22 -- all four initial --verify runs did nothing, in 0.9-2.0s,
+        # and returned a document that reads like a pass; the real checks (13.9s and
+        # 39.0s) only ran after re-rendering uncropped. A check that cannot run must SAY
+        # so rather than return the shape of success (SS13, SS16, SS17) -- the rule this
+        # project already applies to every other measure, now applied to the verifier.
         report['dimensions_match'] = False
         ih, iw = in_rgb[0].shape[:2]
         oh, ow = out_rgb[0].shape[:2]
@@ -4520,10 +4527,20 @@ def verify(input_path, output_path, tolerance=15):
         report['output_dims'] = [ow, oh]
         report['note'] = ('Input/output canvas size differs (crop/resize likely used) -- '
                            'pixel-position checks are skipped; only the timing check ran.')
+        report['checks_skipped'] = [
+            f'pixel checks skipped: output {ow}x{oh} differs from source {iw}x{ih} '
+            f'(--crop or --resize-max-dim). Nothing about the ARTWORK was checked. '
+            f'Re-render without them, verify that, then re-apply them to the verified '
+            f'flags.']
+        report['verified'] = False
         report['timing'] = _timing_line(output_path, in_durations, out_alpha)
         return report
 
     report['dimensions_match'] = True
+    #: Skips accumulate here. A check that declines to run appends its reason; `verified`
+    #: is true only when the list is empty, so a pass can never be manufactured by a check
+    #: quietly not running.
+    report['checks_skipped'] = []
 
     # Align input frames to output frames by DURATION, not raw index --
     # the encoder can coalesce consecutive identical frames (real confirmed
@@ -4951,6 +4968,7 @@ def verify(input_path, output_path, tolerance=15):
             'fringe and no thin protected region. Read edge_hardness.alpha_only_source and the '
             'detected background colour.')
     report['timing'] = _timing_line(output_path, in_durations, out_alpha)
+    report['verified'] = not report['checks_skipped']
     return report
 
 
@@ -9452,6 +9470,10 @@ def main():
                     f'{args.output_gif!r} does not. Run the processing first '
                     f'(same command WITHOUT --verify), then re-run with --verify.')
         report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
+        # A session that reads only the console must not have to notice the absence of
+        # fields to learn that nothing was checked.
+        for _skip in report.get('checks_skipped') or []:
+            print('WARNING: --verify did NOT check any pixels. ' + _skip, file=sys.stderr)
         print(json.dumps(report, indent=2))
         return
 
