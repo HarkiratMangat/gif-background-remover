@@ -170,6 +170,8 @@ The reader is `Image.open` — format-agnostic, so anything Pillow decodes works
 ⚠️ **If the SOURCE is a WebP or AVIF rather than a GIF**, read `references/lessons.md` §17 before trusting any timing. Pillow populates `info['duration']` during `seek()` for GIF but only during `load()` for WebP/AVIF, so a seek-only read returns the PREVIOUS frame's value — a real 124-frame source came back one bogus frame prepended and the last dropped, 240 ms short, while the script reported "durations preserved exactly". Fixed in the script, but the failure mode is worth recognising if you see it anywhere else.
 
 ### One invocation per JOB, not per FILE
+⚠️ **`--recommend` already contains everything `--analyze` returns — its JSON embeds the full analyze report under an `"analysis"` key.** Calling both on the same asset computes the same analysis twice for zero new information (confirmed 2026-08-23: three independent gate-8 trial sessions all ran `--analyze` then `--recommend` on all 10 assets, paying for it twice on every one). If you want recommendations, call `--recommend` alone and read `.analysis` for the raw fields `--analyze` would have given you.
+
 **2+ files in one job -> pass them all to ONE invocation. Never N separate calls.** Every mode takes several paths:
 ```
 python scripts/remove_gif_background.py a.gif b.gif c.gif --recommend
@@ -186,6 +188,7 @@ python scripts/remove_gif_background.py a.gif b.gif c.gif --auto --out-dir out/
 ⚠️ **This is measured, not a style preference.** The 2026-08-19 three-agent trial cost **50-74 tool calls** for a five-asset job -- roughly 10-15 per asset -- because all three sessions independently invoked the tool once per file. Per-run boilerplate (the container ranking above all) is emitted once per PROCESS: measured on three real assets, one invocation prints that block once and back-references it twice, where three invocations print it three times.
 
 ### 0. Start with `--auto` unless a check below says otherwise
+⚠️ **"0" means "the default render step," not "the first thing you run."** The two sections above this one ("Check content type FIRST", "check this SECOND") are checks against `--analyze`'s output and come first in reading order for a reason — this step assumes you already know content type and animation style before reaching for `--auto`. Confirmed 2026-08-23: three independent fresh gate-8 trial sessions all read past the confusing "0" label and correctly ran `--analyze` (then `--recommend`, for its concrete suggested flags) before ever calling `--auto` — the numbering didn't cause wrong behaviour, but it's misleading enough that it's worth naming explicitly rather than relying on every future session re-deriving the same correction.
 ```
 python scripts/remove_gif_background.py <input.gif> <output.gif> --auto
 ```
@@ -199,6 +202,16 @@ python scripts/remove_gif_background.py <input.gif> <output.gif> --auto
 --assume-remove  f0c850            # treat them as background; drop that outline colour
 ```
 Either flag — `--assume-protect` or `--assume-remove` — may name a subset, and every listed colour must be answered or the run still stops. **Measured refusal rate across 304 real assets: 12.8%** — enclosure-only 29, fade-only 8, both 2; emoji 19.7%, small antialiased icons 7.0% — so it fires on a minority, not on everything. If you are working with a person, show them the region and ask; if you are not, decide from the request (a user who said "remove the sparkles" has already answered it) and pass the flag.
+
+⛔ **`--auto` also REFUSES a "nameable fade" it cannot classify — the other 8 of those 304 refusals, and this one was undocumented here until three fresh gate-8 trial sessions all hit it blind and had to reverse-engineer it from the live error text.** This fires when a colour unmixes cleanly as fading toward the background on some frames, but the asset's ramp statistics sit close enough to assets that render as "a translucent ghost of the whole frame" when reconstructed that no threshold safely separates the two automatically. The refusal names the colour, the pixel count and the frame it measured it on:
+```
+NAMEABLE FADE -- --auto will not decide whether this asset's soft falloff is artwork.
+  2706 pixels on frame 14 unmix cleanly as fd6050 fading toward the background, below half opacity.
+  Answer it and re-run:
+    --recover-fade-alpha --fade-color fd6050   (it IS artwork; both flags, and a .webp/.avif/.apng output)
+    --assume-no-fade                            (it is not; proceed exactly as before)
+```
+Same rule as the coin-flip refusal: decide from the request if no one is there to ask, and say the run acted on an assumption. Weigh the tool's own stated risk of the wrong answer (a "ghost" render) against the smaller, more contained risk of losing a soft glow/falloff — that asymmetry is real evidence, not a coin flip, even though no one is available to confirm it.
 
 ⚠️ **`--auto` does not replace the two checks above it.** Content type and animation style decide whether the defaults are safe *at all*, and `--auto` cannot tell you that a pinhole needs `--hole-size-range` (§14) or that a sub-region needs `--remove-region` (§15). Run those checks first; use `--auto` as the starting point for everything they do not flag, and go manual for what they do.
 

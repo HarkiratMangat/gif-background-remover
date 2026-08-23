@@ -2914,6 +2914,24 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     if _fade_alternative is not None:
         _alt_command = (f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} "
                         f"<output.webp> " + " ".join(_fade_alternative))
+        # ⚠️ recommended_format IS COMPUTED FROM THE SOURCE, INDEPENDENTLY OF WHICH
+        # COMMAND WON THE FADE-VS-PROTECT TRADEOFF ABOVE -- so it can say "webp-or-avif"
+        # (correct, given the source has a real fade) while `suggested_command`, having
+        # just dropped --recover-fade-alpha in favour of protection, renders to a GIF.
+        # Both fields are individually true; nothing said they could disagree. Confirmed
+        # 2026-08-23 gate-8 trial: one of three fresh sessions read `suggested_command`
+        # literally, shipped a GIF, and never noticed recommended_format still said
+        # webp-or-avif two lines above it -- the other two sessions caught the tension
+        # themselves and overrode it, which means it is real to miss, not hypothetical.
+        _fmt = (report.get('recommended_format') or '')
+        if 'webp' in _fmt or 'avif' in _fmt or 'apng' in _fmt:
+            evidence.insert(1, (
+                "FORMAT NOTE: recommended_format above still says " + repr(_fmt) + " because "
+                "the SOURCE genuinely has a fade -- but suggested_command, having just dropped "
+                "--recover-fade-alpha for protection, renders to a GIF and will NOT reconstruct "
+                "that fade. These two fields are not contradicting each other by mistake: pick "
+                "suggested_command for a GIF that protects the design, or alternative_command "
+                "for the container recommended_format is actually describing."))
 
     if _eh.get('source_background_already_transparent'):
         # Not a not_applicable_reason: unlike an alpha-only source, running the command here is
@@ -4191,8 +4209,8 @@ def compute_alpha_mask(rgb, protected, args, removal_scope=None, rgb_key=None):
 
 def build_protected_mask(rgb, args):
     H, W, _ = rgb.shape
+    union = np.zeros((H, W), dtype=bool)
     if args.protect_outline_color:
-        union = np.zeros((H, W), dtype=bool)
         for hex_color in args.protect_outline_color.split(','):
             hex_color = hex_color.strip()
             if not hex_color:
@@ -4205,11 +4223,14 @@ def build_protected_mask(rgb, args):
                       f"frame.", file=sys.stderr)
                 continue
             union |= ndimage.binary_fill_holes(omask, structure=STRUCTURE)
-        return union
-    elif args.protect_region:
-        return parse_protect_regions(args.protect_region, (H, W))
-    else:
-        return np.zeros((H, W), dtype=bool)
+    if args.protect_region:
+        # Combinable with --protect-outline-color, not exclusive -- a region whose
+        # outline never fully encloses on any frame gets a geometric backstop
+        # alongside whatever the outline colour does manage to enclose. See
+        # build_protected_masks_robust's docstring for the render-path case this
+        # was built for.
+        union |= parse_protect_regions(args.protect_region, (H, W))
+    return union
 
 
 def detect_anomalous_frame_sizes(sizes, window=5, local_ratio_threshold=0.8, gap_ratio_threshold=1.08):
@@ -4354,10 +4375,11 @@ def build_protected_masks_robust(rgb_frames, args):
     n = len(rgb_frames)
     H, W, _ = rgb_frames[0].shape
 
-    if args.protect_region:
-        return [parse_protect_regions(args.protect_region, (H, W)) for _ in range(n)]
+    region_masks = ([parse_protect_regions(args.protect_region, (H, W))] * n
+                     if args.protect_region else None)
     if not args.protect_outline_color:
-        return [np.zeros((H, W), dtype=bool) for _ in range(n)]
+        return (region_masks if region_masks is not None
+                else [np.zeros((H, W), dtype=bool) for _ in range(n)])
 
     hex_colors = [c.strip() for c in args.protect_outline_color.split(',') if c.strip()]
     per_color_masks = {}  # hex -> list of per-frame filled masks
@@ -4416,6 +4438,33 @@ def build_protected_masks_robust(rgb_frames, args):
                     ~color_mask(rgb_frames[bi], bg_for_clamp, args.tolerance),
                     structure=STRUCTURE)
                 frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & silhouette
+
+        # ⚠️ A STRUCTURALLY weak enclosure -- never a full closed ring on ANY single
+        # frame, not an otherwise-good outline briefly interrupted -- is invisible to
+        # the anomaly detector above: if every frame is similarly (mediocrely) sized,
+        # none of them looks anomalous relative to the others, so bad_idxs stays empty
+        # and nothing gets corrected. Confirmed real case, 2026-08-23 gate-8 trial: a
+        # design element the same colour as the true background (a fin highlight, a
+        # body panel) whose enclosing outline pinches to a point at the shape's own
+        # tip can never form a closed ring around it on any frame by construction, not
+        # just occasionally -- best-frame enclosure measured at 45-70% across three
+        # affected assets, never higher. Different frames' partial framings of the
+        # SAME element rarely miss the identical pixels (the shape moves/rotates), so
+        # unioning every frame's filled mask -- clamped to each frame's own silhouette,
+        # same safety principle as the borrow above -- recovers what no single frame
+        # can. This runs unconditionally (not just when bad_idxs fired) because the
+        # structurally-weak case produces NO bad_idxs at all. It can only ADD protected
+        # area, never remove any, so it cannot make an already-good frame worse.
+        if any(mm.any() for mm in frame_masks):
+            bg_for_clamp = hex_to_rgb(args.bg_color)
+            union_all = np.zeros((H, W), dtype=bool)
+            for mm in frame_masks:
+                union_all |= mm
+            for i in range(n):
+                silhouette = ndimage.binary_fill_holes(
+                    ~color_mask(rgb_frames[i], bg_for_clamp, args.tolerance),
+                    structure=STRUCTURE)
+                frame_masks[i] = frame_masks[i] | (union_all & silhouette)
         per_color_masks[hex_color] = frame_masks
 
     result = []
@@ -4423,6 +4472,8 @@ def build_protected_masks_robust(rgb_frames, args):
         union = np.zeros((H, W), dtype=bool)
         for hex_color in hex_colors:
             union |= per_color_masks[hex_color][i]
+        if region_masks is not None:
+            union |= region_masks[i]
         result.append(union)
     return result
 
@@ -9258,6 +9309,23 @@ def auto_run(input_path, output_path, args, parser):
 
 
 
+def _warn_if_overwriting_explicit_output(output_path):
+    """
+    `_default_output_path`/`derive_output_path` already refuse to silently overwrite a
+    DERIVED name (they escalate to `_v2`, `_v3`, ...). An EXPLICITLY given output path
+    skips that entirely and writes straight through -- confirmed 2026-08-23 while
+    investigating a real accidental overwrite: an agent re-running this tool on a path
+    it named itself (the normal shape of an iterative session) would silently destroy
+    its own prior output with no warning printed. Not a refusal -- an explicit path may
+    genuinely be an intentional re-render of the same delivery -- but it must not be
+    silent.
+    """
+    if output_path and os.path.exists(output_path):
+        print(f"WARNING: {output_path!r} already exists and will be overwritten. "
+              f"This path was given explicitly, not derived, so it is not "
+              f"auto-versioned the way a default output name would be.", file=sys.stderr)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -9942,6 +10010,7 @@ def main():
         if not args.bg_color:
             _im = Image.open(args.input_gif)
             args.bg_color = rgb_to_hex(detect_bg_color(np.array(_im.convert('RGB'))))
+        _warn_if_overwriting_explicit_output(args.output_gif)
         auto_run(args.input_gif, args.output_gif, args, p)
         return
 
@@ -9963,8 +10032,6 @@ def main():
         args.bg_color = rgb_to_hex(detect_bg_color(rgb0))
         print(f'Auto-detected background color: #{args.bg_color}', file=sys.stderr)
 
-    if args.protect_outline_color and args.protect_region:
-        p.error('Use only one of --protect-outline-color or --protect-region')
     if args.tumble_safe and (args.protect_outline_color or args.protect_region):
         p.error('--tumble-safe replaces --protect-outline-color/--protect-region '
                  '(their single-frame enclosure geometry does not generalize '
@@ -9974,6 +10041,7 @@ def main():
         p.error('--keep-bg-blob-if-near only applies with --tumble-safe')
 
     apply_pixel_art_preset(args)
+    _warn_if_overwriting_explicit_output(args.output_gif)
     process(args.input_gif, args.output_gif, args)
 
 
