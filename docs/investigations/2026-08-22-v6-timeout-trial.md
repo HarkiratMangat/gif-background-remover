@@ -478,6 +478,9 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 | 1 | Edge-cleanup erosion defaults to 0 on every 8-bit-alpha output, leaving a ~1px light fringe; `edge_fringe_check` reports it clean | **high** — visible on every WebP/AVIF the manual path has ever produced, and the check that should catch it does not | yes |
 | 1 | `--auto` applies `--protect-outline-color f0c850` and protects the sparkles the user asked to remove | **high** — the autonomy path produces wrong art, silently | partly |
 | 1b | Frame-stride damage is priced by file size, not by visible damage; stride 3-4 is plainly choppy to a viewer | medium — a destructiveness ordering that does not match perception | needs measurement |
+| 1c | `--recommend` emits `--protect-outline-color` together with `--recover-fade-alpha`, which the renderer refuses to honour; the conflict surfaces only at render time | **high** — a recommended command that silently drops protection | yes |
+| 1d | The fade detector names the fading colour and the flag that fixes it, then delivers both only as evidence prose `--auto` never reads | **high** — the glow is cut silently on an asset the tool correctly diagnosed | yes |
+| 1e | No render path both recovers a flattened fade AND honours an explicit protected region | medium — a real capability gap, currently recorded only as an exclusivity note | needs design |
 | 2 | `--target-kb` has no min-dimension constraint; silently violates a stated floor | **high** — ships wrong artwork silently | yes |
 | 3 | Final dimensions never reprinted after a fit; the last printed `Output:` line is stale | **high** — directly caused a false compliance report | yes |
 | 4 | `SKILL.md`'s navigation recipe is `rg`-only; the `grep` substitute returns 0 matches at exit 0 | **high** — silent failure at the skill's entry point | yes |
@@ -489,7 +492,7 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 | 10 | Correct in-run diagnostic ("downscaling made this LARGER") not fed back into the search | low | yes |
 | 11 | Min-dimension enforcement must cover `--resize-max-dim` and the compress tiers, not only the fit | medium — the planned fix reaches one consumer of several | yes |
 
-Findings 1, 1b, 2, 3, 4, 5, 6, 8, 9 and 11 are covered by `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md`. Findings 1, 7 and 10 are partly covered and partly open — see the OPEN QUESTIONS section below, which must be settled before the plan is executed.
+Findings 1, 1c, 1d, 2, 3, 4, 5, 6, 8, 9 and 11 are covered by `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md`. Findings 1, 7 and 10 are partly covered and partly open — see the OPEN QUESTIONS section below, which must be settled before the plan is executed.
 
 
 ---
@@ -548,6 +551,87 @@ Harkirat chose **ask the user** for a coin-flip enclosure region.
 
 ---
 
+## 13A. Three more edge cases, supplied by Harkirat 2026-08-22
+
+Two new assets from `Diors-builds Emojis`, plus a confirmation on megaphone. All three are about the same underlying thing: **the tool knows the answer and does not act on it.**
+
+Raw artifacts: `local/2026-08-22-fade-edge-cases/` — `--recommend` JSON, four renders, comparison strips.
+
+### 13A.1 `notification.gif` — the fade detector names the fix and declines to apply it
+
+> "the fading red signal animation, which `--auto` or `--recover-fade-alpha` doesn't detect."
+
+**It does detect it.** `--recommend`'s own evidence, verbatim:
+
+> A band-interior region's colour distance from the background moves across frames, which is the signature of a flattened fade — but the fade detector found NO translucent colour in the art palette, so there is nothing for `--recover-fade-alpha` to reconstruct. NOT recommending it […] ⚠️ **EXPECT THE OUTER FALLOFF OF ANY SOFT GLOW OR HALO TO BE CUT on this asset: 2706 pixels on frame 14 unmix cleanly as `fd6050` fading toward the background (below half opacity), and every one of them is removed as background. If that falloff is artwork, re-run with `--fade-color fd6050`** […] This is NOT applied automatically and the reason is measured, not caution: across the 91 assets in exactly this branch, this asset's ramp statistics interleave with the ones that render as a translucent ghost of the whole frame, so no threshold separates them (`references/lessons.md` §41).
+
+So the tool: identifies the fade, **names the exact colour**, counts the pixels, names the frame, prescribes the flag — and then puts all of it in an **evidence string**, which is the one place an autonomous run never looks. `--auto` applied `--protect-outline-color f05050,002864 --feather-band-multiplier 3.3` and nothing else.
+
+**Measured — the prescription works, and costs nothing:**
+
+| notification render | partial-alpha px | near-white opaque px | background at corners |
+|---|---|---|---|
+| `--auto` | 39,457 | 385,074 | 0.000 |
+| `--fade-color fd6050` | **50,094** (+27%) | **385,074** (identical) | 0.000 |
+
+**+10,637 recovered falloff pixels, with byte-identical background removal.** The refusal to auto-apply is defensible — §41's 91-asset interleaving is real evidence, and this repo's own rule is that an unverifiable check must say so rather than guess. **What is not defensible is the delivery channel.** `CLAUDE.md` already legislates this: *"a warning in `--recommend`'s evidence does not count as a fix on its own: an autonomous run takes the suggested flags verbatim, so a warning nobody reads changes nothing."* This is that rule being broken by the tool it was written for.
+
+**The fix is not a better threshold — it is a different exit.** When the detector can name a colour and count its pixels but cannot clear the §41 ambiguity, `--auto` should **stop and ask** (the same shape Harkirat chose for the coin-flip regions in §13.4), with `--fade-color fd6050` printed as the ready-to-paste answer, and `--assume-no-fade` to decline. A run that neither asks nor was pre-answered stops. It does not silently cut the glow.
+
+### 13A.2 `broadcast.gif` — `--recommend` emits a self-contradictory command
+
+> "im unable to *both* fade the yellow signal animation AND remove the white areas inside of the tower […] The skill seems to only be able to handle either complete background removal, with broken fade animation, OR correct fade animation but not complete background removal."
+
+**Confirmed, and it is worse than a limitation — the recommender proposes the impossible combination itself.** `--recommend` returned:
+
+```
+--protect-outline-color 002864 --recover-fade-alpha --erosion-exempt-transient
+```
+
+Running exactly that command produces, on stderr:
+
+> **WARNING: `--recover-fade-alpha` takes its own render path and does NOT apply `--protect-outline-color`. It is being IGNORED for this run — not weakened, ignored. Pick one: fade recovery, or region protection.** (`references/lessons.md` §34.4)
+
+The exclusivity is real and documented in the code (`scripts/remove_gif_background.py:5420`): the fade path *"derives protection topologically, ignores every protection flag, and zeroes alpha only below 1/255 instead of at `--tolerance`."*
+
+**Measured on the two branches:**
+
+| broadcast render | partial-alpha px | % of canvas | protection |
+|---|---|---|---|
+| `--protect-outline-color 002864` only | 480,028 | 1.95% | applied |
+| the recommended command | **1,717,942** | **6.99%** | **ignored** |
+
+3.6× the partial alpha when the fade path runs — the fade genuinely is recovered — and the protection flag it was handed does nothing.
+
+**Three separate defects stacked here:**
+
+1. **`--recommend` produces a flag pair the renderer refuses to honour.** Two mutually exclusive flags, emitted together, with no `not_applicable_reason` and no ranking between them. An autonomous run pastes it and gets a silently unprotected output.
+2. **The conflict is only reported at render time, on stderr.** By then the user has already committed to a multi-minute render.
+3. **Neither branch does what Harkirat asked**, because the underlying capability genuinely does not exist: there is no path that recovers a flattened fade *and* honours an explicit protected region. §34.4 records the exclusivity; nothing records it as a gap to close.
+
+⚠️ **Honest limit of this measurement.** The counts above are whole-canvas. They prove the fade recovers and the protection flag is ignored; they do **not** isolate the tower's white interior specifically, and near-white-opaque came out comparable in both branches (522k vs 528k). Harkirat's report that the tower interior survives is the observation of record here — this measurement is consistent with it but does not independently confirm it. Isolating that region needs the interior mask, not a whole-canvas count. Recording the gap rather than implying more precision than was taken.
+
+### 13A.3 `megaphone.gif` — `--auto` does not remove the sparkle interiors, confirmed twice
+
+> "for the megaphone.gif artwork, currently the `--auto` mode doesn't remove the white area inside of the yellow sparkles."
+
+This is the same defect as §12.13.1, independently observed by Harkirat: `--auto` prints `applying: --protect-outline-color f0c850,002864` and therefore **protects** the sparkle interiors rather than removing them. Two independent observations of the same behaviour on the same asset, from opposite directions — a log line here, a look at the output there.
+
+Task 10 (`--auto` asks on a coin-flip region) is the fix, and this confirmation raises its priority: it is no longer a hypothetical about what an autonomous run *would* do.
+
+### 13A.4 The pattern all three share
+
+Every one of these is the tool **being right and staying quiet about it in the one channel that matters**:
+
+- notification: names `fd6050`, prescribes `--fade-color`, files it in evidence prose.
+- broadcast: knows the two flags are exclusive, and warns only after being asked to run both.
+- megaphone: reports the enclosure as a coin flip, then acts as if it were verified.
+
+**A tool that has computed the right answer and routes it somewhere an autonomous run cannot act on has not solved the problem — it has documented it.** That is the same failure the release-gate list already records for changelogs (*"a changelog reads like documentation and is not"*), one level down: **an evidence string reads like a warning and is not.**
+
+
+---
+
 ## 14. OPEN QUESTIONS — settle these before executing the plan
 
 **1. ✅ ANSWERED 2026-08-22 — see §13.** The removal is correct; the fringe and the frame-count reduction are not. Two new findings came out of it. The questions below are what remains open.
@@ -575,3 +659,7 @@ Contact sheets of all four delivered files are in `local/2026-08-21-v6-timeout-t
 **5. Should the erosion default change for 8-bit-alpha formats, or should `--auto`'s calibration simply always run?** §13.1 shows `--auto` reaches erosion 1 and a clean edge while the manual path takes 0 and keeps a fringe. Flipping the default to 1 is the blunt fix; making the calibration unconditional is the better one but is slower. This needs a PRE/POST render diff over the corpus before either is chosen — a fringe is not the only thing erosion changes, and this repo has 448 renders' worth of evidence that erosion above 1 destroys artwork.
 
 **6. Does `_STRIDE_COST` need re-weighting after §13.2?** One person's reaction on one asset is a signal, not a measurement. Deciding this needs the same treatment `galaxy.gif` got: a real comparison, on real assets, of what a viewer notices at stride 2, 3 and 4 against what a deep downscale costs. Do not edit the weights on the strength of this report alone.
+
+**7. Should a fade the detector can NAME but not disambiguate become an `--auto` question, or stay a silent no-op?** §13A.1 measured `--fade-color fd6050` as +27% recovered falloff at zero cost to background removal, on an asset the tool itself identified. §41's 91-asset interleaving is a real reason not to auto-apply it — but "cannot decide" and "say nothing" are different answers, and the tool currently picks the second.
+
+**8. Should a fade-plus-protection render path exist at all?** §13A.2 is a genuine capability gap, not a bug: `--recover-fade-alpha` derives protection topologically and cannot accept an explicit region. Closing it is real work on the fade renderer. Deciding NOT to close it is legitimate — but then `--recommend` must never emit the pair, and the exclusivity needs to reach the user before the render, not during it.

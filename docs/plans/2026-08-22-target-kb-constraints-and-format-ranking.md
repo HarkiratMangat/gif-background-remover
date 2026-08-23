@@ -45,6 +45,8 @@ Two design answers also landed: the min-dimension floor must be able to express 
 | 6th | **Task 3** — pre-flight cost estimate | needs no design decision |
 | 7th | **Task 1** — min-dimension floor | largest, and gated on open question 2 |
 | 8th | **Task 2** — format ranking | gated on open question 1 |
+| — | **Task 11** — recommend flag conflicts | do beside Task 10; both are about a recommendation the renderer will not honour |
+| — | **Task 12** — nameable fade asks | do beside Tasks 10/11; all three share the refuse-and-pre-answer shape, and should share one implementation |
 
 Task 10 slots beside Task 1 (both touch recommendation handling). Task 5 (docs) runs last regardless, and Task 5's gates cover everything above it.
 
@@ -1151,6 +1153,180 @@ git commit -m "feat(auto): refuse a coin-flip protection decision instead of gue
 
 ---
 
+### Task 11: `--recommend` must never emit two mutually exclusive flags
+
+**Files:**
+- Modify: `scripts/remove_gif_background.py` — the recommendation assembler (search `suggested_command`)
+- Test: `scripts/harness/test_recommend_flag_conflicts.py`
+
+**Why.** Measured 2026-08-22 on `broadcast.gif`. `--recommend` returned:
+
+```
+--protect-outline-color 002864 --recover-fade-alpha --erosion-exempt-transient
+```
+
+Running that exact command prints:
+
+> WARNING: `--recover-fade-alpha` takes its own render path and does NOT apply `--protect-outline-color`. It is being IGNORED for this run — not weakened, ignored. Pick one: fade recovery, or region protection.
+
+The exclusivity is real and long documented (`:5420`, `references/lessons.md` §34.4). **The recommender does not know about it.** An autonomous run pastes the suggested command and gets an output whose protection silently did nothing — and only learns at render time, after committing to the render.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# scripts/harness/test_recommend_flag_conflicts.py
+import json
+import subprocess
+import sys
+
+CONFLICTS = [({'--recover-fade-alpha'}, {'--protect-outline-color', '--protect-region',
+                                         '--protect-band-only'})]
+
+
+def _suggested(path):
+    r = subprocess.run([sys.executable, SCRIPT, path, '--recommend'],
+                       capture_output=True, text=True, timeout=900)
+    d = json.loads(r.stdout[r.stdout.index('['):r.stdout.rindex(']') + 1])
+    return d[0]['recommendation']
+
+
+def test_broadcast_does_not_recommend_an_exclusive_pair():
+    rec = _suggested('local/2026-08-22-fade-edge-cases/inputs/broadcast.gif')
+    cmd = rec['suggested_command']
+    for left, right in CONFLICTS:
+        if any(f in cmd for f in left):
+            assert not any(f in cmd for f in right), (
+                f'suggested_command pairs {left} with {right}: {cmd}')
+
+
+def test_the_conflict_is_EXPLAINED_not_just_dropped():
+    """Silently dropping one flag would pass the test above and lose information."""
+    rec = _suggested('local/2026-08-22-fade-edge-cases/inputs/broadcast.gif')
+    blob = ' '.join(rec.get('evidence', [])) + str(rec.get('not_applicable_reason'))
+    assert 'fade' in blob.lower() and 'protect' in blob.lower(), \
+        'the recommendation dropped a flag without saying which tradeoff was taken'
+    assert '34.4' in blob or 'exclusive' in blob.lower() or 'pick one' in blob.lower()
+
+
+def test_an_asset_with_no_conflict_is_unaffected():
+    """secure.gif needs protection and no fade -- its command must not change."""
+    rec = _suggested('local/2026-08-21-v6-timeout-trial/inputs/secure.gif')
+    assert '--protect-outline-color 002864' in rec['suggested_command']
+```
+
+- [ ] **Step 2: Run to verify it fails** — expected: the first two FAIL, the third passes.
+
+- [ ] **Step 3: Add a conflict table and resolve at assembly time**
+
+Declare the exclusivity once, next to the renderer's own check so the two cannot drift:
+
+```python
+# Flags the RENDERER refuses to honour together. Declared here so --recommend
+# cannot suggest a pair the renderer will drop. Measured 2026-08-22: --recommend
+# returned "--protect-outline-color 002864 --recover-fade-alpha" for broadcast.gif
+# and the renderer ignored the protection. See references/lessons.md SS34.4.
+MUTUALLY_EXCLUSIVE_FLAGS = [
+    ({'recover_fade_alpha'}, {'protect_outline_color', 'protect_region',
+                              'protect_band_only'}),
+]
+```
+
+When a conflict is detected, the recommendation must **choose, say which, and say what was given up** — not silently drop one:
+
+> Two applicable flags are mutually exclusive: `--recover-fade-alpha` reconstructs the flattened fade but takes its own render path and ignores every protection flag (§34.4). Recommending `--protect-outline-color 002864` because a protected region is a stated requirement and a fade is a quality improvement. **To take the fade instead, drop `--protect-outline-color` and accept topological protection.**
+
+⛔ **Do not pick the fade by default.** A protected region usually comes from an explicit user instruction; a fade is inferred. Losing an instruction is worse than losing an improvement.
+
+- [ ] **Step 4: Run to verify it passes** — expected 3 passed.
+
+- [ ] **Step 5: Re-score the populations**
+
+Run: `python3 scripts/harness/run_populations.py --out /tmp/post-conflict.json`
+This changes which command is suggested for any asset hitting both branches. **Report how many of the 797 move**, and confirm no asset that previously got protection silently loses it.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/remove_gif_background.py scripts/harness/test_recommend_flag_conflicts.py
+git commit -m "fix(recommend): never suggest a flag pair the renderer refuses to honour"
+```
+
+---
+
+### Task 12: a nameable-but-ambiguous fade becomes a question, not silence
+
+**Files:**
+- Modify: `scripts/remove_gif_background.py:2440-2460` (the fade evidence branch) and the `--auto` gate
+- Test: `scripts/harness/test_nameable_fade_asks.py`
+
+**Why.** Measured 2026-08-22 on `notification.gif`. The detector identifies a flattened-fade signature, **names the colour `fd6050`**, counts **2,706 pixels on frame 14**, states that every one of them will be removed as background, and prescribes `--fade-color fd6050` — then delivers all of it as an **evidence string**. `--auto` applied `--protect-outline-color f05050,002864 --feather-band-multiplier 3.3` and cut the glow.
+
+The prescription is right, and free:
+
+| notification render | partial-alpha px | near-white opaque px | corner alpha |
+|---|---|---|---|
+| `--auto` | 39,457 | 385,074 | 0.000 |
+| `--fade-color fd6050` | **50,094** (+27%) | **385,074** (identical) | 0.000 |
+
+⚠️ **The refusal to auto-apply is CORRECT and must be preserved.** `references/lessons.md` §41 measured 91 assets in this exact branch whose ramp statistics interleave with ones that render as a translucent ghost of the whole frame. **Do not "fix" this by lowering a threshold** — that experiment has been run and the populations do not separate. The defect is the delivery channel, not the decision.
+
+`CLAUDE.md` already states the rule this violates: *"a warning in `--recommend`'s evidence does not count as a fix on its own: an autonomous run takes the suggested flags verbatim, so a warning nobody reads changes nothing."*
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_auto_stops_on_a_nameable_fade_and_prints_the_answer(tmp_path):
+    src = 'local/2026-08-22-fade-edge-cases/inputs/notification.gif'
+    r = subprocess.run([sys.executable, SCRIPT, src, str(tmp_path / 'n.webp'), '--auto'],
+                       capture_output=True, text=True, timeout=900)
+    out = r.stdout + r.stderr
+    assert r.returncode != 0, '--auto silently cut a fade it had already named'
+    assert '--fade-color fd6050' in out, 'the refusal did not print the ready answer'
+    assert '--assume-no-fade' in out, 'no way for an unattended run to decline'
+
+
+def test_a_pre_answered_run_applies_the_named_fade(tmp_path):
+    src = 'local/2026-08-22-fade-edge-cases/inputs/notification.gif'
+    out = tmp_path / 'y.webp'
+    r = subprocess.run([sys.executable, SCRIPT, src, str(out), '--auto',
+                        '--fade-color', 'fd6050'],
+                       capture_output=True, timeout=900)
+    assert r.returncode == 0 and out.exists()
+
+
+def test_an_asset_with_NO_nameable_fade_is_not_made_to_ask(tmp_path):
+    """secure.gif has no fade at all. Without this the gate fires on everything."""
+    src = 'local/2026-08-21-v6-timeout-trial/inputs/secure.gif'
+    out = tmp_path / 's.webp'
+    r = subprocess.run([sys.executable, SCRIPT, src, str(out), '--auto'],
+                       capture_output=True, timeout=900)
+    assert r.returncode == 0 and out.exists(), '--auto refused an asset with no fade'
+```
+
+- [ ] **Step 2: Run to verify it fails** — the first two FAIL, the third passes.
+
+- [ ] **Step 3: Implement the gate and `--assume-no-fade`**
+
+The branch at `:2447` already computes `_ramp['color']`, `_ramp['faint_px']` and `_ramp['frame_index']`. Promote that from an evidence string to a refusal condition under `--auto`: stop, print the ready-to-paste `--fade-color <colour>`, print `--assume-no-fade` as the decline, and keep the §41 reasoning in the message so the user understands why the tool will not choose.
+
+Gate it on the detector having actually NAMED a colour. A fade it cannot name is a different case and must keep today's behaviour.
+
+- [ ] **Step 4: Run to verify it passes** — expected 3 passed.
+
+- [ ] **Step 5: Measure the firing rate before merging**
+
+Run: `python3 scripts/harness/run_populations.py --out /tmp/post-fade.json`
+⚠️ **§41 says 91 assets sit in this branch.** If the gate fires on all 91, `--auto` has been made to ask on more than a tenth of the corpus and is worse, not better. **Report the rate.** If it is high, narrow the gate to assets where the named colour accounts for a material pixel count, and say what the cutoff is and how it was chosen.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/remove_gif_background.py scripts/harness/test_nameable_fade_asks.py
+git commit -m "feat(auto): ask about a fade it can name rather than cutting it silently"
+```
+
+---
+
 ### Task 5: documentation, lessons section, and the release gates
 
 **Files:**
@@ -1198,7 +1374,7 @@ git commit -m "docs: record the min-dimension gap, the falsified q60 hypothesis 
 
 ## Self-Review
 
-**Spec coverage.** Trial findings 1 (min dimension) → Task 1. Finding 2 (no ranking) → Task 2. Finding 3 (runtime, no pre-flight estimate) → Task 3 plus the SKILL.md exception. Finding 5 (vacuous verify) → Task 4. Finding 7 (`--webp-quality` no-op) → Task 6. Finding 8 (stale dimensions after a fit) → Task 7. The 8-bit-alpha fringe → Task 9. `--auto` guessing on a coin-flip region → Task 10. Frame-stride weighting is deliberately NOT a task — it questions weights set on measurement, and needs its own, filed as spec §14 question 6. **Task 8 covers a defect class the trial did not file as a numbered finding because it is about the packaged prose rather than the code: SKILL.md's navigation recipe fails silently without `rg`, and 28.9% of the file is release notes. Findings 4 and 6 are deliberately NOT in this plan** — finding 4 (`--recommend` cannot infer intent) needs a design decision about whether the tool should ask, refuse, or annotate, and belongs in its own brainstorming pass; finding 6 (the "downscaling made this LARGER" diagnostic not feeding back into the search) is low severity and would touch the rung ordering this plan is forbidden to move. Both should be filed in `gif-deferred-list.md` rather than silently dropped.
+**Spec coverage.** Trial findings 1 (min dimension) → Task 1. Finding 2 (no ranking) → Task 2. Finding 3 (runtime, no pre-flight estimate) → Task 3 plus the SKILL.md exception. Finding 5 (vacuous verify) → Task 4. Finding 7 (`--webp-quality` no-op) → Task 6. Finding 8 (stale dimensions after a fit) → Task 7. The 8-bit-alpha fringe → Task 9. `--auto` guessing on a coin-flip region → Task 10. `--recommend` emitting an exclusive flag pair → Task 11. A nameable-but-ambiguous fade cut silently → Task 12. The missing fade-plus-protection render path is deliberately NOT a task — it is a capability gap needing a design decision, filed as spec §14 question 8. Frame-stride weighting is deliberately NOT a task — it questions weights set on measurement, and needs its own, filed as spec §14 question 6. **Task 8 covers a defect class the trial did not file as a numbered finding because it is about the packaged prose rather than the code: SKILL.md's navigation recipe fails silently without `rg`, and 28.9% of the file is release notes. Findings 4 and 6 are deliberately NOT in this plan** — finding 4 (`--recommend` cannot infer intent) needs a design decision about whether the tool should ask, refuse, or annotate, and belongs in its own brainstorming pass; finding 6 (the "downscaling made this LARGER" diagnostic not feeding back into the search) is low severity and would touch the rung ordering this plan is forbidden to move. Both should be filed in `gif-deferred-list.md` rather than silently dropped.
 
 **Placeholder scan.** No TBDs. Every code step carries the actual code. The one judgement call left to the implementer is the exact insertion point of the batch-summary hook, because that writer's local variable names were not read during planning — Task 2 Step 5 names what it needs (`summary_records` carrying source, output, width, height, frames, kb) so the implementer can bind it correctly.
 
