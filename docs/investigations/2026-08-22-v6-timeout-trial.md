@@ -469,14 +469,14 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 
 ---
 
-## 12. Findings, ranked
+## 15. Findings, ranked
 
 **Severity rule:** *high = ships wrong artwork, or a false claim about it, silently.* Everything else is medium or below regardless of how annoying it is.
 
 | # | finding | severity | fixable in-tool |
 |---|---|---|---|
 | 1 | Edge-cleanup erosion defaults to 0 on every 8-bit-alpha output, leaving a ~1px light fringe; `edge_fringe_check` reports it clean | **high** — visible on every WebP/AVIF the manual path has ever produced, and the check that should catch it does not | yes |
-| 1 | `--auto` applies `--protect-outline-color f0c850` and protects the sparkles the user asked to remove | **high** — the autonomy path produces wrong art, silently | partly |
+| 1a | `--auto` applies `--protect-outline-color f0c850` and protects the sparkles the user asked to remove | **high** — the autonomy path produces wrong art, silently | partly |
 | 1b | Frame-stride damage is priced by file size, not by visible damage; stride 3-4 is plainly choppy to a viewer | medium — a destructiveness ordering that does not match perception | needs measurement |
 | 1c | `--recommend` emits `--protect-outline-color` together with `--recover-fade-alpha`, which the renderer refuses to honour; the conflict surfaces only at render time | **high** — a recommended command that silently drops protection | yes |
 | 1d | The fade detector names the fading colour and the flag that fixes it, then delivers both only as evidence prose `--auto` never reads | **high** — the glow is cut silently on an asset the tool correctly diagnosed | yes |
@@ -489,11 +489,11 @@ The earlier ranking asserted "high" six times with no rule behind it. The rule: 
 | 6 | No ranking between format outputs; a strictly-dominated file ships with equal billing | **high** — user cannot tell which file is damaged | yes |
 | 7 | `--target-kb` runtime exceeds tool timeouts on >100-frame assets, with no pre-flight estimate; `--verify` does too | medium — kills sessions, but loudly | partly |
 | 8 | `--verify` silently vacuous on cropped output | medium — a pass that was never computed | yes |
-| 9 | 28.9% of `SKILL.md` is release notes a working session does not need | medium — context cost, with load-bearing facts buried in it | yes |
+| 9 | `SKILL.md` release-note bloat — was 28.9% of the file | medium | ⚠️ **partly fixed**: the v6.1.0 bump moved v6.0.0's entry to `references/version-history.md`, taking the header to **12.4%**. The older summaries remain. |
 | 10 | Correct in-run diagnostic ("downscaling made this LARGER") not fed back into the search | low | yes |
 | 11 | Min-dimension enforcement must cover `--resize-max-dim` and the compress tiers, not only the fit | medium — the planned fix reaches one consumer of several | yes |
 
-Findings 1, 1c, 1d, 2, 3, 4, 5, 6, 8, 9 and 11 are covered by `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md`. Findings 1, 7 and 10 are partly covered and partly open — see the OPEN QUESTIONS section below, which must be settled before the plan is executed.
+**STATUS as of 2026-08-22:** findings **1f fixed** (`--unprotect-region`, plus the recommender offering it) and **9 partly fixed** (header 28.9% → 12.4%). Everything else is open. Findings 1, 1a, 1c, 1d, 2, 3, 4, 5, 6, 8 and 11 are covered by `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md`. Findings 1, 7 and 10 are partly covered and partly open — see §16 OPEN QUESTIONS below, which must be settled before the plan is executed.
 
 
 ---
@@ -666,7 +666,7 @@ Every one of these is the tool **being right and staying quiet about it in the o
 
 ---
 
-## 14. OPEN QUESTIONS — settle these before executing the plan
+## 16. OPEN QUESTIONS — settle these before executing the plan
 
 **1. ✅ ANSWERED 2026-08-22 — see §13.** The removal is correct; the fringe and the frame-count reduction are not. Two new findings came out of it. The questions below are what remains open.
 

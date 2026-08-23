@@ -22,6 +22,28 @@
 
 ---
 
+## STATUS — read this first
+
+This plan is the queue for the skill-improvement session. **Two tasks are already implemented and merged into this branch; the rest are open.**
+
+| | task | state |
+|---|---|---|
+| ✅ | **14** `--unprotect-region` | shipped v6.1.0 — 4 falsifiers |
+| ✅ | **14b** `--recommend` offers it | shipped v6.1.0 — 3 falsifiers |
+| ⚠️ | **8** SKILL.md debloat | **8b partly done** by the v6.1.0 bump (header 28.9% → 12.4%); **8a untouched** and higher severity |
+| 🔴 | **9** 8-bit-alpha erosion fringe | open — **do first**, the only defect a user noticed unprompted |
+| 🔴 | **7, 6, 4, 3, 1, 2** | open, in that order |
+| 🔴 | **10, 11, 14c** | open — all three share the refuse-and-pre-answer shape, build together |
+| ⛔ | **13** diagnose `--fade-color` | open — **BLOCKS 12** |
+| ⛔ | **12** nameable fade asks | blocked on 13 |
+| — | **5** docs and release gates | runs last regardless |
+
+**Two open design questions gate Tasks 1 and 2** — see spec §16. Two items are deliberately NOT tasks and are filed as questions instead: frame-stride weighting (§16 q6) and the ignored downscale diagnostic.
+
+⚠️ **Three implementations in this plan's own history were built and REJECTED on measurement** — `--remove-region` as the interior fix (−73% artwork), temporal stabilisation of the region mask (lag-1 flip rate 0.062 = animation, not noise), and a bbox padding constant (−1,287 px artwork). Each is written up where it belongs. **Do not rebuild one without repeating the measurement that killed it.**
+
+---
+
 ## ⛔ Gate before any task starts
 
 **✅ Answered 2026-08-22 — see the spec's §13.** Harkirat reviewed the delivered files directly. The background removal itself is correct. Two things are not, and both were invisible to every measurement in this plan:

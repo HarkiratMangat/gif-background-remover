@@ -47,7 +47,9 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ### `[P0 · M · Opus5-Med]` The tool cannot express "this enclosed interior is background", and `--fade-color` does not recover the fade it names *(filed 2026-08-22, assets from Harkirat, corrected the same day after he reviewed the renders)*
 
-📄 `docs/investigations/2026-08-22-v6-timeout-trial.md` §13A · 📄 plan Tasks 11, 12 (blocked), 13, 14 · 📁 `local/2026-08-22-fade-edge-cases/`
+📄 `docs/investigations/2026-08-22-v6-timeout-trial.md` §13A (findings table at §15, open questions at §16) · 📄 `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md` — **read its STATUS block first** · 📁 `local/2026-08-22-fade-edge-cases/`
+
+⚠️ **THIS ITEM AND THE P0 ABOVE IT ARE ONE BODY OF WORK AND FOLD INTO ONE SKILL-IMPROVEMENT SESSION.** The plan is the queue: 16 tasks, two shipped in v6.1.0 (`--unprotect-region` and the recommender offering it), one partly done (SKILL.md debloat, header 28.9% → 12.4%), the rest open with a stated order and two design questions gating Tasks 1 and 2.
 
 ⚠️ **`--fade-color` DOES NOT WORK on `notification.gif`, and the first draft of this item said it did.** Traced pixel-by-pixel: on frame 14, of the 2,662 source pixels at 5–35% opacity on the `fd6050` → white ray, **92.5% render fully opaque under `--auto` and 90.9% under `--fade-color fd6050`** — the flag the tool's own evidence prescribes moves it by 1.6 points. The earlier "+27% partial alpha" figure was whole-canvas antialiasing rim and never touched the fade; 0.16% mid-alpha against broadcast's working 4.25% was the tell and was not read. **A second defect in the same evidence string:** it predicts those pixels are *"removed as background"* when only **1.8%** reach alpha 0 — they are kept opaque. Task 13 diagnoses this and **BLOCKS Task 12**; do not build a user prompt around a flag that does not function. ⛔ Do not attribute this to `references/lessons.md` §41 — that explains the auto-apply refusal, not the manual path's failure.
 
