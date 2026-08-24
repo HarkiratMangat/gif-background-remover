@@ -1,17 +1,6 @@
 # Skill version history
 
-## v6.2.1 — full entry
-
-**v6.2.1** was a *correction* bump: doc-quality fixes from a fresh-eyes review (doc-coauthoring's reader-testing method, a real subagent with only the packaged files) — no code or behaviour change.
-- **The description didn't mention resize/crop/shrink at all**, so a bare "resize this sprite" request risked never triggering the skill — confirmed by the reader-testing subagent, which correctly triggered on 4 of 5 realistic requests and flagged this one as genuinely risky. Added, and kept under the 1024-char limit by trimming redundant "Use when" phrasing elsewhere.
-- **The new `--fade-protect-region`/`--fade-protect-colors` sentence (v6.2.0) didn't state they only mean something alongside `--recover-fade-alpha --fade-color <hex> ` on a `.webp`/`.avif`/`.apng` output** — the same subagent nearly built a command missing that dependency, reading the body alone. Now explicit.
-- **Trimmed the five-rule `edge_hardness` block and added an inline summary of the three standalone compression levers**, per progressive-disclosure guidance from `skill-creator`/`plugin-dev:skill-development` — asset-name-level measured evidence stays in `references/lessons.md` at its existing pointers; the body keeps the rule and the one-clause why.
-
-## v6.2.0 — full entry
-
-**v6.2.0** was a *minor* bump: two new `--recover-fade-alpha` flags for a case named colours alone cannot express, plus a real (if partial) fix for border banding.
-- **`--fade-protect-region circle:cx,cy,r | rect:x,y,w,h` and `--fade-protect-colors <hex[,hex…]>`.** For a design element that shares a named `--fade-color` hue with something that genuinely fades but must never fade itself — there is no way to say "this hex fades here but not there" through colour alone, since it is the literal same palette entry in both places. Confirmed real case: a spinning icon reused its badge's outline colour and rendered with visibly inconsistent opacity across its own shape when it should always be fully opaque. The region force-opaques only confidently-art pixels within it (not the whole disc — an earlier version painted a visible solid disc over the region, including true background peeking through a concave gap in the protected shape), and `--fade-protect-colors` further restricts it to one named colour family (without it, the region also force-opaqued a different, legitimately-fading design element that happened to overlap the same area).
-- **A softmax blend between a pixel's best and 2nd-best palette match, when both are the same named fading family, smooths some border banding.** A real but partial improvement — it can soften the seam between two flat regions, not make either region itself gradate, so a border painted as distinct flat bands in the source GIF is not fully fixed by this alone.
+**v6.2.0 is still PENDING as of 2026-08-24** — not yet minted, since it hasn't merged. Its full entry belongs here only once a real merge happens; until then the working detail lives in `SKILL.md`'s own version header (see the note there about why three fake version numbers briefly existed on the unmerged branch and were folded back into one pending entry).
 
 ## v6.1.1 — full entry
 
