@@ -5594,6 +5594,39 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
             else:
                 provisional = np.vstack([provisional, w[None, :]])
                 parents.append(w)
+        # ⚠️ ABSORB THE NAMED COLOUR'S OWN PALER STAGES. A named anchor's own fade
+        # has intermediate stops that survive build_art_palette's provisional pass
+        # as INDEPENDENT entries whenever they sit more than FADE_RESIDUAL_TOLERANCE
+        # off the exact bg->anchor line -- and a real hand-animated fade routinely
+        # does, since it is not required to be a mathematically exact blend, only a
+        # visually smooth one. Confirmed real case (hurricane.gif, 2026-08-23): naming
+        # one outline colour (052a75) left six of its own paler stages (down to
+        # cosine 0.978) stuck as separate "solid" palette entries, rendering as a
+        # visible ghost of the original boundary reappearing on frames where the
+        # design shrinks, instead of blending. Absorbing every OTHER candidate that
+        # is near-collinear with a named anchor AND closer to the background (a
+        # plausible paler stage of the same ray, never a more-saturated one) folds
+        # the whole family into one fading element. The 0.97 cosine floor is the
+        # loosest threshold that still excluded every genuinely-distinct solid colour
+        # checked by hand on this asset (0.762-0.93 for real other design colours);
+        # tightening it risks missing real stages, loosening it risks absorbing an
+        # unrelated colour that happens to point the same rough direction.
+        _absorb_bg = np.asarray(bg_rgb, dtype=np.float32)
+        for w in list(parents):
+            dw = w - _absorb_bg
+            dwn = float(np.linalg.norm(dw))
+            if dwn <= 0:
+                continue
+            for cand in provisional:
+                if any(float(np.linalg.norm(cand - p)) < 1e-6 for p in parents):
+                    continue
+                dc = cand - _absorb_bg
+                dcn = float(np.linalg.norm(dc))
+                if dcn <= 0 or dcn >= dwn:
+                    continue  # only paler (closer to bg) than the named anchor
+                cos = float(dw @ dc) / (dwn * dcn)
+                if cos >= 0.97:
+                    parents.append(cand)
     else:
         _auto_fi = sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))
         parents = [provisional[i] for i in _auto_fi]
@@ -5639,6 +5672,14 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                     f"detected art colour. Detected: " +
                     ', '.join('#%02x%02x%02x' % tuple(int(v) for v in c) for c in palette))
             fading.add(i)
+        # The named colours' own absorbed family members (see the collinear-family
+        # loop above) must ALSO be marked fading here, not just the exact hexes the
+        # caller typed -- `parents` already carries the whole family, `want` does
+        # not. Missing this was a real bug: the family survived as separate palette
+        # entries (protected from being merged away) but rendered fully opaque
+        # anyway, because nothing told the unmix step they were fading too.
+        fading |= {i for i, c in enumerate(palette)
+                   if any(float(np.linalg.norm(c - q)) < 1e-6 for q in parents)}
         say("fading colours (from --fade-color): " +
             ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in sorted(fading)))
     else:
