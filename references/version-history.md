@@ -1,5 +1,11 @@
 # Skill version history
 
+## v6.2.0 — full entry
+
+**v6.2.0** was a *minor* bump: two new `--recover-fade-alpha` flags for a case named colours alone cannot express, plus a real (if partial) fix for border banding.
+- **`--fade-protect-region circle:cx,cy,r | rect:x,y,w,h` and `--fade-protect-colors <hex[,hex…]>`.** For a design element that shares a named `--fade-color` hue with something that genuinely fades but must never fade itself — there is no way to say "this hex fades here but not there" through colour alone, since it is the literal same palette entry in both places. Confirmed real case: a spinning icon reused its badge's outline colour and rendered with visibly inconsistent opacity across its own shape when it should always be fully opaque. The region force-opaques only confidently-art pixels within it (not the whole disc — an earlier version painted a visible solid disc over the region, including true background peeking through a concave gap in the protected shape), and `--fade-protect-colors` further restricts it to one named colour family (without it, the region also force-opaqued a different, legitimately-fading design element that happened to overlap the same area).
+- **A softmax blend between a pixel's best and 2nd-best palette match, when both are the same named fading family, smooths some border banding.** A real but partial improvement — it can soften the seam between two flat regions, not make either region itself gradate, so a border painted as distinct flat bands in the source GIF is not fully fixed by this alone.
+
 ## v6.1.1 — full entry
 
 **v6.1.1** was a *correction* bump: two packaged files pointed at things the sandbox cannot open, and the gate meant to catch that could not see either of them.
