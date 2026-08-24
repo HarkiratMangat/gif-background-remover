@@ -5284,6 +5284,19 @@ FADE_BARRIER_ALPHA = 0.5         # unmixed alpha at/above which a solid colour b
 FADE_EDGE_DILATE = 3             # px around true background that may carry partial alpha
 FADE_OPAQUE_BLOCK = 0.90         # a fading colour this opaque occludes what it covers
 FADE_ART_PRIOR = 0.30            # ...but only where art is present in >=30% of frames
+FADE_SEAL_BG_T = 0.05            # unmixed alpha below which a pixel counts as
+                                  # background-degenerate for the FADE_SEAL_BG_MAX check
+FADE_SEAL_BG_MAX = 0.5           # an enclosed pocket freed by loosening ambiguous-only
+                                  # seals must be <50% background-degenerate (t<FADE_SEAL_BG_T)
+                                  # to promote -- protected same-colour-as-background design
+                                  # (crystal.gif's white interior) measures 97%+; genuine
+                                  # fading art sealed by its own seams (hurricane.gif) measures <8%
+FADE_SEAL_MIN_SIZE = 50          # a candidate pocket smaller than this is a stray AA speck,
+                                  # not a sealed-off region of real content -- confirmed real
+                                  # case (crystal.gif): dozens of 1px pockets right on the
+                                  # sparkle's own edge individually pass FADE_SEAL_BG_MAX
+                                  # trivially and, promoted, leave a thin mis-coloured rim;
+                                  # hurricane.gif's real sealed pockets measure 75,000+ px
 
 
 def unmix_against_palette(rgb, bg_rgb, palette):
@@ -5307,6 +5320,40 @@ def unmix_against_palette(rgb, bg_rgb, palette):
     res = np.sqrt(np.maximum(r2[n, k], 0.0))
     shape = rgb.shape[:2]
     return k.reshape(shape), t[n, k].reshape(shape), res.reshape(shape)
+
+
+def fading_seam_mask(rgb, palette, fading_idx, tolerance):
+    """True where a pixel is well-explained as a blend of TWO fading-family
+    palette colours -- an internal seam between elements already known to
+    fade (e.g. an outline touching the field it outlines), not a background
+    or solid-art boundary. unmix_against_palette only tests ONE colour
+    blended with the BACKGROUND, so a two-art-colour seam always reads as
+    high-residual/"unexplained" there and becomes an impermeable flood
+    barrier -- confirmed on hurricane.gif, where such a seam ring (thicker
+    than the edge-dilate margin during the badge's fast shrink/regrow
+    frames) sealed off part of the badge's OWN fading interior, freezing it
+    fully opaque. No-op whenever fewer than two colours are flagged fading
+    (every asset with a single named/detected fade colour), which is every
+    asset this mechanism has a documented regression history on.
+    """
+    if len(fading_idx) < 2:
+        return np.zeros(rgb.shape[:2], dtype=bool)
+    flat = rgb.reshape(-1, 3).astype(np.float32)
+    best_res2 = np.full(len(flat), np.inf, dtype=np.float32)
+    for ii in range(len(fading_idx)):
+        a = palette[fading_idx[ii]]
+        for jj in range(ii + 1, len(fading_idx)):
+            b = palette[fading_idx[jj]]
+            d = b - a
+            dd = float(d @ d)
+            if dd < 1e-6:
+                continue
+            v = flat - a
+            tproj = np.clip((v @ d) / dd, 0.0, 1.0)
+            recon = a + tproj[:, None] * d
+            r2 = ((flat - recon) ** 2).sum(1)
+            best_res2 = np.minimum(best_res2, r2)
+    return (np.sqrt(best_res2) <= tolerance).reshape(rgb.shape[:2])
 
 
 def build_art_palette(rgb_frames, bg_rgb, sample_stride=8, protect_parents=None,
@@ -5606,11 +5653,17 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         # design shrinks, instead of blending. Absorbing every OTHER candidate that
         # is near-collinear with a named anchor AND closer to the background (a
         # plausible paler stage of the same ray, never a more-saturated one) folds
-        # the whole family into one fading element. The 0.97 cosine floor is the
-        # loosest threshold that still excluded every genuinely-distinct solid colour
-        # checked by hand on this asset (0.762-0.93 for real other design colours);
-        # tightening it risks missing real stages, loosening it risks absorbing an
-        # unrelated colour that happens to point the same rough direction.
+        # the whole family into one fading element. ⚠️ WIDENED 0.97 -> 0.95 the same
+        # day, on the same asset: the outer octagon border has its own bevel
+        # highlight at cosine 0.9607 with the named outline (042a75) -- confirmed
+        # by Harkirat pointing at exactly this ("part of the outline flashing
+        # white while the rest fades") -- and 0.97 excluded it, leaving that one
+        # side of the border frozen fully opaque while the rest faded normally.
+        # 0.95 is the loosest threshold that still excludes every genuinely-distinct
+        # solid colour checked by hand on this asset (0.762-0.93 for real other
+        # design colours); tightening it risks missing real stages, loosening it
+        # risks absorbing an unrelated colour that happens to point the same rough
+        # direction.
         _absorb_bg = np.asarray(bg_rgb, dtype=np.float32)
         for w in list(parents):
             dw = w - _absorb_bg
@@ -5625,7 +5678,7 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                 if dcn <= 0 or dcn >= dwn:
                     continue  # only paler (closer to bg) than the named anchor
                 cos = float(dw @ dc) / (dwn * dcn)
-                if cos >= 0.97:
+                if cos >= 0.95:
                     parents.append(cand)
     else:
         _auto_fi = sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))
@@ -5714,6 +5767,7 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
 
     bg = np.asarray(bg_rgb, dtype=np.float32)
     solid_idx = [i for i in range(len(palette)) if i not in fading]
+    fading_idx = sorted(fading)
     struct8 = ndimage.generate_binary_structure(2, 2)
 
     # ART PRIOR -- how often each pixel position is SOLID art across the whole
@@ -5738,7 +5792,9 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
     for rgb in rgb_frames:
         k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
         solid = np.isin(k, solid_idx)
-        art_prior += ((res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA)))
+        seam = fading_seam_mask(rgb, palette, fading_idx, FADE_RESIDUAL_TOLERANCE)
+        art_prior += (((res > FADE_RESIDUAL_TOLERANCE) & ~seam)
+                      | (solid & (t >= FADE_BARRIER_ALPHA)))
     art_prior /= max(len(rgb_frames), 1)
 
     out_rgb, out_alpha = [], []
@@ -5752,14 +5808,55 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         coverage_ok += int((res <= FADE_RESIDUAL_TOLERANCE).sum())
 
         solid = np.isin(k, solid_idx)
-        barrier = (res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA))
+        seam = fading_seam_mask(rgb, palette, fading_idx, FADE_RESIDUAL_TOLERANCE)
+        ambiguous = (res > FADE_RESIDUAL_TOLERANCE) & ~seam
+        definite = solid & (t >= FADE_BARRIER_ALPHA)
         # A near-opaque translucent element occludes; block it, but only where
         # solid art usually lives (see art_prior above).
-        barrier |= (t >= FADE_OPAQUE_BLOCK) & (~solid) & (art_prior >= FADE_ART_PRIOR)
+        soft_block = (t >= FADE_OPAQUE_BLOCK) & (~solid) & (art_prior >= FADE_ART_PRIOR)
+        barrier = ambiguous | definite | soft_block
         lab, _ = ndimage.label(~barrier)
         border = set(np.unique(np.concatenate(
             [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
         outside = np.isin(lab, list(border)) if border else np.zeros_like(barrier)
+
+        # A pocket sealed ONLY by ambiguous pixels (never DEFINITE solid art or
+        # a genuine near-opaque occluder) is not necessarily protected design --
+        # it can be the fading art's OWN interior, cut off from the border only
+        # because two of its colours meet at an angle unmix_against_palette
+        # can't explain as a single background blend (confirmed real case:
+        # hurricane.gif frame 78, where a spinning icon's edge sealed off part
+        # of the badge's own translucent field). Re-test such a pocket with
+        # ambiguous pixels excluded from the barrier entirely; if THAT reaches
+        # the border, nothing solid was actually sealing it. Still refuse a
+        # pocket that is itself mostly background-coloured -- that is the
+        # signature of protected same-colour-as-background interior design
+        # (confirmed real case: crystal.gif's white interior, indistinguishable
+        # from true background by colour alone and protected ONLY by staying
+        # enclosed), which this same loosening would otherwise also expose.
+        enclosed = (~barrier) & (~outside)
+        if enclosed.any() and ambiguous.any():
+            loose_barrier = definite | soft_block
+            lab_loose, _ = ndimage.label(~loose_barrier)
+            border_loose = set(np.unique(np.concatenate(
+                [lab_loose[0], lab_loose[-1], lab_loose[:, 0], lab_loose[:, -1]]))) - {0}
+            loose_reachable = (np.isin(lab_loose, list(border_loose))
+                               if border_loose else np.zeros_like(barrier))
+            promote = np.zeros_like(barrier)
+            for cid in np.unique(lab[enclosed]):
+                if cid == 0:
+                    continue
+                comp = lab == cid
+                if comp.sum() < FADE_SEAL_MIN_SIZE:
+                    continue
+                if not loose_reachable[comp].any():
+                    continue
+                if (t[comp] < FADE_SEAL_BG_T).mean() >= FADE_SEAL_BG_MAX:
+                    continue
+                promote |= comp
+            if promote.any():
+                outside = outside | promote
+
         bgside = ndimage.binary_dilation(outside, struct8, iterations=FADE_EDGE_DILATE)
 
         alpha = np.full(rgb.shape[:2], 255.0, dtype=np.float32)
