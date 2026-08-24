@@ -5860,14 +5860,26 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
     protect_mask = None
     protect_k = None
     if protect_region_spec:
-        protect_mask = parse_protect_regions(protect_region_spec, rgb_frames[0].shape[:2])
+        try:
+            protect_mask = parse_protect_regions(protect_region_spec, rgb_frames[0].shape[:2])
+        except ValueError as e:
+            raise SystemExit(
+                f"--fade-protect-region '{protect_region_spec}' could not be parsed: {e}. "
+                f"Expected circle:cx,cy,r or rect:x,y,w,h, `;`-separated for several.")
         if protect_colors_spec:
-            _pc = [np.array(hex_to_rgb(h.strip()), dtype=np.float32)
+            _pc = [(h.strip(), np.array(hex_to_rgb(h.strip()), dtype=np.float32))
                    for h in protect_colors_spec.split(',') if h.strip()]
             _pc_families = set()
-            for w in _pc:
+            for _hex, w in _pc:
                 dists = [float(np.linalg.norm(palette[i] - w)) for i in fading_idx]
-                nearest_i = fading_idx[int(np.argmin(dists))]
+                nearest_j = int(np.argmin(dists))
+                if dists[nearest_j] > 30:
+                    raise SystemExit(
+                        f"--fade-protect-colors #{_hex} does not match any detected "
+                        f"fading colour (nearest is #{rgb_to_hex(tuple(int(v) for v in palette[fading_idx[nearest_j]]))}, "
+                        f"distance {dists[nearest_j]:.1f}). Detected fading colours: " +
+                        ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in fading_idx))
+                nearest_i = fading_idx[nearest_j]
                 _pc_families.add(family_of[nearest_i])
             protect_k = [i for i in fading_idx if family_of[i] in _pc_families]
     struct8 = ndimage.generate_binary_structure(2, 2)
@@ -8036,6 +8048,18 @@ def process(input_path, output_path, args, diagnostics=None):
             protect_colors_spec=getattr(args, 'fade_protect_colors', None))
         for line in fade_log:
             print(line, file=sys.stderr)
+    elif getattr(args, 'fade_protect_region', None) or getattr(args, 'fade_protect_colors', None):
+        _fp_named = [f for f, v in (
+            ('--fade-protect-region', getattr(args, 'fade_protect_region', None)),
+            ('--fade-protect-colors', getattr(args, 'fade_protect_colors', None)),
+        ) if v]
+        print("WARNING: " + " and ".join(_fp_named) + " only " +
+              ("apply" if len(_fp_named) > 1 else "applies") +
+              " alongside --recover-fade-alpha -- without it " +
+              ("they are" if len(_fp_named) > 1 else "it is") +
+              " being IGNORED for this run, not weakened. Add --recover-fade-alpha "
+              "--fade-color <hex> and a .webp/.avif/.apng output to use them.",
+              file=sys.stderr)
 
     rgb_frames = []
     alpha_frames = []

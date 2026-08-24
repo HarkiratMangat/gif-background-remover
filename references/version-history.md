@@ -1,5 +1,12 @@
 # Skill version history
 
+## v6.2.1 — full entry
+
+**v6.2.1** was a *correction* bump: doc-quality fixes from a fresh-eyes review (doc-coauthoring's reader-testing method, a real subagent with only the packaged files) — no code or behaviour change.
+- **The description didn't mention resize/crop/shrink at all**, so a bare "resize this sprite" request risked never triggering the skill — confirmed by the reader-testing subagent, which correctly triggered on 4 of 5 realistic requests and flagged this one as genuinely risky. Added, and kept under the 1024-char limit by trimming redundant "Use when" phrasing elsewhere.
+- **The new `--fade-protect-region`/`--fade-protect-colors` sentence (v6.2.0) didn't state they only mean something alongside `--recover-fade-alpha --fade-color <hex> ` on a `.webp`/`.avif`/`.apng` output** — the same subagent nearly built a command missing that dependency, reading the body alone. Now explicit.
+- **Trimmed the five-rule `edge_hardness` block and added an inline summary of the three standalone compression levers**, per progressive-disclosure guidance from `skill-creator`/`plugin-dev:skill-development` — asset-name-level measured evidence stays in `references/lessons.md` at its existing pointers; the body keeps the rule and the one-clause why.
+
 ## v6.2.0 — full entry
 
 **v6.2.0** was a *minor* bump: two new `--recover-fade-alpha` flags for a case named colours alone cannot express, plus a real (if partial) fix for border banding.
