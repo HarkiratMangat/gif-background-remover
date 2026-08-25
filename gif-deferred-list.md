@@ -21,12 +21,6 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 *Ordered by priority, P1 first. Every item here is genuinely open: if you find a `✅ CLOSED` marker in a body under this heading, that is the drift `audit_docs.py`'s tracker gate exists to catch — report it rather than trusting either half.*
 
-### `[P3 · S · Sonnet5-High]` `recommend()` never suggests the combinable `--protect-outline-color` + `--protect-region` union *(filed 2026-08-25, from the /code-review medium-effort pass on commit range main...8393c35)*
-
-`build_protected_mask`/`build_protected_masks_robust` were changed earlier this branch to UNION `--protect-outline-color` and `--protect-region` when both are passed, instead of treating them as alternatives — confirmed real and correct (commit `679b9b0` also fixed the batch-manifest path to allow the same combination). But `recommend()`'s per-region `elif` chain (~line 2500) still picks exactly ONE mechanism per region; it never suggests combining both for a region that would benefit (e.g. a partially-enclosing outline needing a geometric backstop). Since `--recommend`'s `suggested_command` is what an autonomous `--auto` run takes verbatim, this means the union capability the code already supports is functionally unreachable by any unattended run — only a human who manually combines the flags by hand can use it.
-
-**Not fixed inline in the review-fix pass, deliberately.** This is a design decision (WHEN is a region's evidence strong enough to justify suggesting both flags together, and what's the exact trigger condition against `outline_color_verified`/`enclosure_ratio`/`circularity_ratio`?) rather than a mechanical bug — forcing an ad hoc implementation without that decision risked a worse mechanism than doing it properly in a scoped session. Do: look at `_unpprotect_hint`/the `partial_outline` branch (~line 2511-2526) as the closest existing precedent for "region evidence is ambiguous, offer a hint rather than a flat pick," and design the union-suggestion trigger the same way.
-
 ### `[P0 · L (first slice: Task 9) · Opus5-Med]` v6.0.0 output defects — a 1px alpha fringe on every WebP/AVIF, plus nine more *(filed 2026-08-22, from the timeout trial + Harkirat's own claude.ai session + his review of the delivered files)*
 
 **Two claude.ai sessions timed out on a two-GIF job. Reproducing it found ten defects; asking Harkirat to look at the output found an eleventh that all ten measurements had missed.**
