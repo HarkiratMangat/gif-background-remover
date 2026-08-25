@@ -1,0 +1,483 @@
+{
+  "n_frames_total": 76,
+  "frames_sampled": 40,
+  "nominated_frames": [],
+  "detected_bg_color": "f7f7f9",
+  "fade_colors_confirmed": true,
+  "fade_colors_detected": [
+    "c5adad"
+  ],
+  "fade_palette_is_ladder": null,
+  "fade_ramp_candidate": null,
+  "has_fully_transparent_frame": false,
+  "fully_transparent_frames": [],
+  "background_color_stability": {
+    "changes": false,
+    "unverified_reason": null,
+    "frames_scanned": 76,
+    "reference_coverage_frame_0": 0.90909,
+    "min_reference_coverage": 0.90318,
+    "min_reference_coverage_frame_index": 31,
+    "distinct_corner_colors": 1,
+    "frames_unreadable": 0,
+    "recolored_frame_indexes": [],
+    "recolored_colors": [],
+    "peak_recolored_plane_coverage": 0.0,
+    "recolor_distance_threshold": 40,
+    "recolor_collapse_threshold": 0.15
+  },
+  "source_has_pre_existing_transparency": false,
+  "edge_hardness": {
+    "boundary_px": 3707,
+    "transition_band_px": 5752,
+    "ratio": 1.552,
+    "appears_hard_edged": false,
+    "ratio_max_across_frames": 1.82,
+    "ratio_min_across_frames": 0.629,
+    "antialiasing_blend_ratio": 1.863,
+    "change_line_density": 1.0,
+    "plateau_cliff_ratio": 0.001,
+    "plateau_cliff_samples": 12394,
+    "composited_color_count": 228,
+    "band_measures_are_vacuous": false,
+    "hard_edged_reasons": [],
+    "hard_edged_suppressed_notes": [],
+    "measured_on_alpha_composite": false,
+    "alpha_only_source": false,
+    "source_background_already_transparent": false,
+    "source_background_transparent_reason": null,
+    "source_alpha_levels": 1,
+    "source_is_hard_alpha_cutout": false
+  },
+  "tumble_risk": {
+    "worst_margin_ratio": null,
+    "worst_margin_frame_index": null,
+    "background_outside_largest_component": 0.025,
+    "tumble_safe_would_strand_background": false,
+    "likely_tumble_risk": false
+  },
+  "band_interior_regions": [
+    {
+      "pixel_count": 559,
+      "bbox_xyxy": [
+        413,
+        200,
+        464,
+        229
+      ],
+      "mean_color": "e1e2e3",
+      "mean_distance_from_bg": 37.7,
+      "distance_span_across_frames": 0.7,
+      "frames_seen": 43,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": null
+    },
+    {
+      "pixel_count": 781,
+      "bbox_xyxy": [
+        317,
+        227,
+        392,
+        255
+      ],
+      "mean_color": "e1e2e3",
+      "mean_distance_from_bg": 37.6,
+      "distance_span_across_frames": 0.6,
+      "frames_seen": 45,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": null
+    },
+    {
+      "pixel_count": 8177,
+      "bbox_xyxy": [
+        322,
+        353,
+        473,
+        438
+      ],
+      "mean_color": "eeeeee",
+      "mean_distance_from_bg": 21.7,
+      "distance_span_across_frames": 23.3,
+      "frames_seen": 148,
+      "classification": "gradient_fade",
+      "band_only_width": null,
+      "recommendation": "--recover-fade-alpha with a .webp/.avif output (or --dither-mode none if it must be a GIF)",
+      "inside_protected_region_id": 2
+    },
+    {
+      "pixel_count": 1155,
+      "bbox_xyxy": [
+        396,
+        410,
+        460,
+        443
+      ],
+      "mean_color": "eeeeee",
+      "mean_distance_from_bg": 17.7,
+      "distance_span_across_frames": 4.8,
+      "frames_seen": 16,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": 2
+    },
+    {
+      "pixel_count": 392,
+      "bbox_xyxy": [
+        331,
+        360,
+        386,
+        379
+      ],
+      "mean_color": "e0e2e4",
+      "mean_distance_from_bg": 38.1,
+      "distance_span_across_frames": 0.6,
+      "frames_seen": 2,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": 2
+    },
+    {
+      "pixel_count": 272,
+      "bbox_xyxy": [
+        368,
+        451,
+        406,
+        463
+      ],
+      "mean_color": "efeeec",
+      "mean_distance_from_bg": 18.9,
+      "distance_span_across_frames": 2.1,
+      "frames_seen": 2,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": 2
+    },
+    {
+      "pixel_count": 359,
+      "bbox_xyxy": [
+        422,
+        252,
+        467,
+        270
+      ],
+      "mean_color": "e2e2e2",
+      "mean_distance_from_bg": 37.3,
+      "distance_span_across_frames": 0.7,
+      "frames_seen": 6,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": 2
+    },
+    {
+      "pixel_count": 127,
+      "bbox_xyxy": [
+        615,
+        246,
+        628,
+        268
+      ],
+      "mean_color": "f8efd0",
+      "mean_distance_from_bg": 42.9,
+      "distance_span_across_frames": 18.9,
+      "frames_seen": 3,
+      "classification": "gradient_fade",
+      "band_only_width": null,
+      "recommendation": "--recover-fade-alpha with a .webp/.avif output (or --dither-mode none if it must be a GIF)",
+      "inside_protected_region_id": null
+    },
+    {
+      "pixel_count": 352,
+      "bbox_xyxy": [
+        317,
+        288,
+        378,
+        300
+      ],
+      "mean_color": "e2e2e5",
+      "mean_distance_from_bg": 36.4,
+      "distance_span_across_frames": 0.7,
+      "frames_seen": 4,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": null
+    },
+    {
+      "pixel_count": 72,
+      "bbox_xyxy": [
+        447,
+        367,
+        466,
+        374
+      ],
+      "mean_color": "e1e1e3",
+      "mean_distance_from_bg": 37.7,
+      "distance_span_across_frames": 3.2,
+      "frames_seen": 3,
+      "classification": "solid_tint",
+      "band_only_width": 4,
+      "recommendation": "--protect-band-only 4",
+      "inside_protected_region_id": 2
+    },
+    {
+      "pixel_count": 121,
+      "bbox_xyxy": [
+        635,
+        455,
+        645,
+        475
+      ],
+      "mean_color": "f9eec6",
+      "mean_distance_from_bg": 39.6,
+      "distance_span_across_frames": 22.8,
+      "frames_seen": 2,
+      "classification": "gradient_fade",
+      "band_only_width": null,
+      "recommendation": "--recover-fade-alpha with a .webp/.avif output (or --dither-mode none if it must be a GIF)",
+      "inside_protected_region_id": null
+    },
+    {
+      "pixel_count": 131,
+      "bbox_xyxy": [
+        143,
+        256,
+        156,
+        278
+      ],
+      "mean_color": "f9eec5",
+      "mean_distance_from_bg": 40.8,
+      "distance_span_across_frames": 22.0,
+      "frames_seen": 2,
+      "classification": "gradient_fade",
+      "band_only_width": null,
+      "recommendation": "--recover-fade-alpha with a .webp/.avif output (or --dither-mode none if it must be a GIF)",
+      "inside_protected_region_id": null
+    }
+  ],
+  "small_removed_regions": {
+    "sizes_sample": [
+      473,
+      472,
+      465,
+      463,
+      440,
+      433,
+      418,
+      392,
+      374,
+      371,
+      356,
+      343,
+      322,
+      321,
+      312,
+      311,
+      311,
+      311,
+      310,
+      307
+    ],
+    "count": 467,
+    "max_small_region_px": 473,
+    "persistent_count": 0,
+    "transient_count": 467,
+    "max_transient_region_px": 473,
+    "min_persistent_region_px": null,
+    "suggested_erosion_exempt_max_size": 521,
+    "erosion_exempt_suppressed_reason": null
+  },
+  "candidate_regions": [
+    {
+      "id": 2,
+      "pixel_count": 30191,
+      "bbox_xyxy": [
+        307,
+        151,
+        525,
+        462
+      ],
+      "center_xy": [
+        394.5,
+        333.2
+      ],
+      "suggested_protect_region": "circle:395,333,156",
+      "frames_enclosed": 40,
+      "frames_sampled": 40,
+      "enclosure_ratio": 1.0,
+      "region_canvas_fraction": 0.0629,
+      "likely_intentional_design": true,
+      "candidate_outline_color": null,
+      "outline_color_verified": false,
+      "outline_enclosure_all_frames": null,
+      "outline_background_leak": null,
+      "partial_outline": {
+        "color": "281450",
+        "frames_sampled": 40,
+        "frames_with_enclosure": 40,
+        "best_frame_index": 38,
+        "best_frame_enclosed_px": 19102,
+        "best_frame_enclosed_fraction": 0.633,
+        "total_enclosed_px_across_frames": 333259,
+        "leaks_into_background": false
+      },
+      "circularity_ratio": 0.38,
+      "circle_region_safe": false,
+      "note": "No verified enclosing outline color was found, AND this region's shape is not close to circular (circularity 0.38 of 1.0) -- a circle protect-region would likely bleed past the true edge in some directions and fall short in others. Prefer manually identifying the true enclosing outline color (zoom into a frame) over --protect-region for this one, or use rect: only if the true shape is genuinely axis-aligned rectangular."
+    },
+    {
+      "id": 8,
+      "pixel_count": 30,
+      "bbox_xyxy": [
+        432,
+        306,
+        448,
+        317
+      ],
+      "center_xy": [
+        441.3,
+        310.9
+      ],
+      "suggested_protect_region": "circle:441,311,8",
+      "frames_enclosed": 20,
+      "frames_sampled": 40,
+      "enclosure_ratio": 0.5,
+      "region_canvas_fraction": 0.0001,
+      "likely_intentional_design": false,
+      "candidate_outline_color": "f0c800",
+      "outline_color_verified": true,
+      "outline_enclosure_all_frames": {
+        "frames_checked": 76,
+        "frames_enclosed": 18,
+        "enclosure_ratio_all_frames": 0.237,
+        "anomalous_frame_indices": [
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60
+        ],
+        "anomalous_frame_count": 27
+      },
+      "outline_background_leak": {
+        "leaked_pixel_count": 0,
+        "leak_frame_index": null,
+        "over_protects_background": false
+      },
+      "partial_outline": null,
+      "circularity_ratio": 0.02,
+      "circle_region_safe": false,
+      "note": "Verified outline color found -- use --protect-outline-color, NOT --protect-region, since this shape's circularity (0.02 of 1.0) means a bounding circle would be a poor approximation of the true (non-circular) enclosed shape."
+    },
+    {
+      "id": 12,
+      "pixel_count": 31,
+      "bbox_xyxy": [
+        481,
+        327,
+        498,
+        333
+      ],
+      "center_xy": [
+        490.8,
+        329.0
+      ],
+      "suggested_protect_region": "circle:491,329,8",
+      "frames_enclosed": 20,
+      "frames_sampled": 40,
+      "enclosure_ratio": 0.5,
+      "region_canvas_fraction": 0.0001,
+      "likely_intentional_design": false,
+      "candidate_outline_color": "f0c800",
+      "outline_color_verified": true,
+      "outline_enclosure_all_frames": {
+        "frames_checked": 76,
+        "frames_enclosed": 39,
+        "enclosure_ratio_all_frames": 0.513,
+        "anomalous_frame_indices": [
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60
+        ],
+        "anomalous_frame_count": 27
+      },
+      "outline_background_leak": {
+        "leaked_pixel_count": 0,
+        "leak_frame_index": null,
+        "over_protects_background": false
+      },
+      "partial_outline": null,
+      "circularity_ratio": 0.03,
+      "circle_region_safe": false,
+      "note": "Verified outline color found -- use --protect-outline-color, NOT --protect-region, since this shape's circularity (0.03 of 1.0) means a bounding circle would be a poor approximation of the true (non-circular) enclosed shape."
+    },
+    {
+      "id": 19,
+      "pixel_count": 23,
+      "bbox_xyxy": [
+        636,
+        456,
+        647,
+        481
+      ],
+      "center_xy": [
+        641.3,
+        466.3
+      ],
+      "suggested_protect_region": "circle:641,466,12",
+      "frames_enclosed": 1,
+      "frames_sampled": 40,
+      "enclosure_ratio": 0.025,
+      "region_canvas_fraction": 0.0,
+      "likely_intentional_design": false,
+      "candidate_outline_color": null,
+      "outline_color_verified": false,
+      "outline_enclosure_all_frames": null,
+      "outline_background_leak": null,
+      "partial_outline": null,
+      "circularity_ratio": 0.04,
+      "circle_region_safe": false,
+      "note": "No verified enclosing outline color was found, AND this region's shape is not close to circular (circularity 0.04 of 1.0) -- a circle protect-region would likely bleed past the true edge in some directions and fall short in others. Prefer manually identifying the true enclosing outline color (zoom into a frame) over --protect-region for this one, or use rect: only if the true shape is genuinely axis-aligned rectangular."
+    }
+  ],
+  "recommended_format": "webp-or-avif"
+}

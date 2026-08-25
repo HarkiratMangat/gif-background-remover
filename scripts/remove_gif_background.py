@@ -2512,6 +2512,23 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             elif region.get('partial_outline'):
                 _po = region['partial_outline']
                 outline_colors.append(_po['color'])
+                _backstop = ""
+                # partial_outline is the exact case build_protected_mask/
+                # build_protected_masks_robust's union was built for (SS45): an outline
+                # that never fully encloses on any single frame. The per-frame
+                # substitution already recovers most of it, but only when
+                # circle_region_safe -- a poorly-fitting circle/rect would bleed past
+                # the true edge and make things worse, the same gate the
+                # not-outline-color-verified branch below already uses for the same
+                # reason. Suggesting both together, not instead of the substitution.
+                if region['circle_region_safe']:
+                    flags.append(f"--protect-region {region['suggested_protect_region']}")
+                    _backstop = (
+                        f" Shape is also circular enough (circularity "
+                        f"{region['circularity_ratio']}) to trust a geometric backstop -- "
+                        f"adding --protect-region {region['suggested_protect_region']} "
+                        f"alongside the outline colour, unioned rather than a replacement, "
+                        f"to cover whatever the per-frame substitution still misses.")
                 region_notes.append(
                     f"Region {rid}: no colour ENCLOSES this design region on a single "
                     f"frame, but outline {_po['color']} encloses part of it on "
@@ -2524,7 +2541,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                     f"substitution propagates the closed frames' shape to the open ones, "
                     f"clamped to each frame's own silhouette. The alternative here is not a "
                     f"weaker protection but NONE -- measured on a real asset, that cost "
-                    f"976,800px of artwork (references/lessons.md SS26).")
+                    f"976,800px of artwork (references/lessons.md SS26)." + _backstop)
             elif not region['outline_color_verified']:
                 if region['circle_region_safe']:
                     flags.append(f"--protect-region {region['suggested_protect_region']}")
