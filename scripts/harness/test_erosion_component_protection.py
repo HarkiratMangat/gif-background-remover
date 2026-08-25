@@ -308,6 +308,72 @@ def _calibrate(monkeypatch, curve, **kw):
     return best, table, log
 
 
+class _BlendCurve(_Curve):
+    """Same shape as `_Curve`, for the SECOND signal (`measure_outer_ring_blend_fraction`).
+
+    Kept as a separate class (not just reusing `_Curve` for both) so a test can give the two
+    signals genuinely different curves -- the whole point of combining them is that one can see
+    what the other cannot, and `_Curve`'s own docstring explains why a fake frame set cannot
+    express an arbitrary curve without this kind of monkeypatch in the first place.
+    """
+
+    def __call__(self, rgb, alpha, bg, pal, opaque_min=250, ring_width=2, lo=0.08, hi=0.92,
+                 _unmix_cache=None, _cache_key=None):
+        return self.curve[int(alpha[0, 0])]
+
+
+def _calibrate_dual(monkeypatch, bg_curve, blend_curve, **kw):
+    """Like `_calibrate`, but drives BOTH signals `calibrate_edge_cleanup_erosion` now combines
+    by per-frame max -- added alongside `measure_outer_ring_blend_fraction` itself (SS45.2) so the
+    combination logic has real coverage: every pre-existing test here monkeypatches only
+    `measure_outer_ring_background_fraction`, and the synthetic frames are always below
+    `opaque_min`, so `measure_outer_ring_blend_fraction` runs unmocked in those tests and always
+    returns None (empty ring) -- meaning the max() reduces to the single old signal and the new
+    one is silently never exercised. This helper patches both so a test can express a scenario
+    (like galaxy.gif's real one) where the two signals disagree.
+    """
+    import remove_gif_background as m
+    levels = sorted(set(bg_curve) | set(blend_curve))
+
+    def fake_erode(alpha_frames, iterations, tiny_masks=None, **_):
+        return [np.full((4, 4), iterations, dtype=np.uint8) for _ in alpha_frames]
+
+    monkeypatch.setattr(m, 'erode_alpha_edge_protecting_damaged_components', fake_erode)
+    monkeypatch.setattr(m, 'measure_outer_ring_background_fraction', _Curve(bg_curve))
+    monkeypatch.setattr(m, 'measure_outer_ring_blend_fraction', _BlendCurve(blend_curve))
+    frames = [np.zeros((4, 4), dtype=np.uint8)]
+    log = []
+    best, table = m.calibrate_edge_cleanup_erosion(
+        frames, frames, (0, 0, 0), [(255, 255, 255)], candidates=tuple(levels), log=log, **kw)
+    return best, table, log
+
+
+def test_blend_fraction_rescues_an_asset_the_background_fraction_signal_cannot_see(monkeypatch):
+    """galaxy.gif's real shape: background-fraction reads 0.0 at EVERY level (SS45.2) -- its own
+    floor is unreachable-by-design blind to the halo -- while blend-fraction separates cleanly.
+    Before the dual-signal combination this asset was stuck selecting erosion=0 no matter how
+    visible the halo was, because there was nothing else to escalate on.
+    """
+    best, table, log = _calibrate_dual(
+        monkeypatch,
+        bg_curve={0: 0.0, 1: 0.0, 2: 0.0, 3: 0.0},
+        blend_curve={0: 0.5989, 1: 0.1359, 2: 0.0003, 3: 0.0001})
+    assert best == 1, (best, table)
+
+
+def test_blend_fraction_signal_does_not_disturb_an_already_correct_background_fraction_pick(monkeypatch):
+    """rocket.gif/secure.gif's real shape: background-fraction alone already separates cleanly and
+    picks 1; blend-fraction agrees there is nothing further to escalate for. The max() combination
+    must not push these past the level the (already-correct) single signal already reached -- the
+    regression guard for SS45.2 not costing the assets that never needed the second signal.
+    """
+    best, table, log = _calibrate_dual(
+        monkeypatch,
+        bg_curve={0: 0.486, 1: 0.0362, 2: 0.0369, 3: 0.0386},
+        blend_curve={0: 0.486, 1: 0.0425, 2: 0.0383, 3: 0.0386})
+    assert best == 1, (best, table)
+
+
 def test_calibrator_picks_2_on_a_convex_curve(monkeypatch):
     best, table, log = _calibrate(monkeypatch, {0: 0.95, 1: 0.69, 2: 0.00, 3: 0.00})
     assert best == 2, (best, table)

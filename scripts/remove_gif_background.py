@@ -5368,7 +5368,18 @@ def unmix_family_blend(rgb, bg_rgb, palette, fading_idx, softmax_t):
     bg = np.asarray(bg_rgb, dtype=np.float32)
     fam = palette[fading_idx]
     d = fam - bg
-    dd = (d * d).sum(1)
+    # Floored, not bare `(d*d).sum(1)`: a fading-family member injected via
+    # `force_include` (a named --fade-color, or an absorbed collinear stage)
+    # is NOT guaranteed to clear the >40-unit-from-background floor normal
+    # palette candidates must -- if one lands at or near the background, an
+    # unfloored `dd` divides by ~0 and NaNs that member's `t`/`res`, and
+    # because this function SUMS weights across the whole family (rather than
+    # `argmin`, which naturally skips a NaN candidate), one degenerate member
+    # would poison the blended result for every pixel, not just pixels near
+    # it. Flooring instead makes that member's `t` collapse to ~0 and its
+    # `res` blow up to `|v|`, so it correctly earns ~zero softmax weight
+    # instead of corrupting the sum.
+    dd = np.maximum((d * d).sum(1), 1e-6)
     v = (rgb.astype(np.float32) - bg).reshape(-1, 3)
     proj = v @ d.T
     t = np.clip(proj / dd, 0.0, 1.0)
@@ -5651,6 +5662,57 @@ def detect_fade_ladder(bg_rgb, colors, min_members=3, min_cos=0.95):
             'distance_span_ratio': round(gd[0] / max(gd[-1], 1e-6), 2)}
 
 
+def _nearest_anchor_by_cosine(color, anchor_dirs, bg_arr):
+    """Which anchor's own background-ray `color` is most COLLINEAR with
+    (highest cosine), not which anchor it is numerically closest to.
+
+    Shared by `family_of` and `--fade-protect-colors` so both use the SAME
+    test the absorption loops build these families with in the first place.
+    Nearest-EUCLIDEAN-DISTANCE was measured WRONG here (see the comment above
+    `family_of`'s call site): a pale colour sits numerically close to any
+    anchor regardless of hue, so a Euclidean-nearest lookup can silently
+    assign a pale absorbed member to the wrong family.
+    """
+    d = np.asarray(color, dtype=np.float32) - bg_arr
+    dn = float(np.linalg.norm(d))
+    best_j, best_cos = 0, -2.0
+    for j, ad in enumerate(anchor_dirs):
+        adn = float(np.linalg.norm(ad))
+        if dn <= 0 or adn <= 0:
+            cos = 1.0 if dn <= 0 else -2.0
+        else:
+            cos = float(d @ ad) / (dn * adn)
+        if cos > best_cos:
+            best_cos, best_j = cos, j
+    return best_j
+
+
+def _absorb_collinear_paler_stages(anchor, provisional, parents, bg_arr, cos_floor=0.95):
+    """Fold every OTHER provisional candidate that is near-collinear with
+    `anchor`'s own ray from the background, and paler than it (closer to the
+    background), into `parents` -- shared by the named `--fade-color` branch
+    and the auto-detect branch of `recover_fade_alpha_frames`, which both
+    need to absorb a fading anchor's own paler stages the same way (see
+    `references/lessons.md` SS34.2/SS45.1 for the real bugs this closes).
+    Mutates and returns `parents`.
+    """
+    dw = anchor - bg_arr
+    dwn = float(np.linalg.norm(dw))
+    if dwn <= 0:
+        return parents
+    for cand in provisional:
+        if any(float(np.linalg.norm(cand - p)) < 1e-6 for p in parents):
+            continue
+        dc = cand - bg_arr
+        dcn = float(np.linalg.norm(dc))
+        if dcn <= 0 or dcn >= dwn:
+            continue  # only paler (closer to bg) than the anchor
+        cos = float(dw @ dc) / (dwn * dcn)
+        if cos >= cos_floor:
+            parents.append(cand)
+    return parents
+
+
 def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, protect_region_spec=None, protect_colors_spec=None):
     """
     Full alpha for every frame by palette unmixing, recovering translucency that
@@ -5726,20 +5788,7 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
         # direction.
         _absorb_bg = np.asarray(bg_rgb, dtype=np.float32)
         for w in list(parents):
-            dw = w - _absorb_bg
-            dwn = float(np.linalg.norm(dw))
-            if dwn <= 0:
-                continue
-            for cand in provisional:
-                if any(float(np.linalg.norm(cand - p)) < 1e-6 for p in parents):
-                    continue
-                dc = cand - _absorb_bg
-                dcn = float(np.linalg.norm(dc))
-                if dcn <= 0 or dcn >= dwn:
-                    continue  # only paler (closer to bg) than the named anchor
-                cos = float(dw @ dc) / (dwn * dcn)
-                if cos >= 0.95:
-                    parents.append(cand)
+            _absorb_collinear_paler_stages(w, provisional, parents, _absorb_bg)
     else:
         _auto_fi = sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))
         parents = [provisional[i] for i in _auto_fi]
@@ -5780,21 +5829,9 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
         # freezes that stage fully opaque instead of fading with the rest of its
         # family. Anchored on each auto-detected colour's own ray from the
         # background, same 0.95 cosine floor Defect B widened the named case to.
+        _auto_absorb_bg = np.asarray(bg_rgb, dtype=np.float32)
         for w in list(parents):
-            dw = w - np.asarray(bg_rgb, dtype=np.float32)
-            dwn = float(np.linalg.norm(dw))
-            if dwn <= 0:
-                continue
-            for cand in provisional:
-                if any(float(np.linalg.norm(cand - p)) < 1e-6 for p in parents):
-                    continue
-                dc = cand - np.asarray(bg_rgb, dtype=np.float32)
-                dcn = float(np.linalg.norm(dc))
-                if dcn <= 0 or dcn >= dwn:
-                    continue  # only paler (closer to bg) than its anchor
-                cos = float(dw @ dc) / (dwn * dcn)
-                if cos >= 0.95:
-                    parents.append(cand)
+            _absorb_collinear_paler_stages(w, provisional, parents, _auto_absorb_bg)
     palette = build_art_palette(rgb_frames, bg_rgb, protect_parents=parents,
                                 force_include=parents if fade_hexes else None)
     if len(palette) == 0:
@@ -5892,20 +5929,8 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
     _family_anchors = want if fade_hexes else _auto_anchors
     bg_arr = np.asarray(bg_rgb, dtype=np.float32)
     anchor_dirs = [w - bg_arr for w in _family_anchors]
-    family_of = {}
-    for i in fading_idx:
-        d = palette[i] - bg_arr
-        dn = float(np.linalg.norm(d))
-        best_j, best_cos = 0, -2.0
-        for j, ad in enumerate(anchor_dirs):
-            adn = float(np.linalg.norm(ad))
-            if dn <= 0 or adn <= 0:
-                cos = 1.0 if dn <= 0 else -2.0
-            else:
-                cos = float(d @ ad) / (dn * adn)
-            if cos > best_cos:
-                best_cos, best_j = cos, j
-        family_of[i] = best_j
+    family_of = {i: _nearest_anchor_by_cosine(palette[i], anchor_dirs, bg_arr)
+                 for i in fading_idx}
     protect_mask = None
     protect_k = None
     if protect_region_spec:
@@ -5928,8 +5953,17 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
                         f"fading colour (nearest is #{rgb_to_hex(tuple(int(v) for v in palette[fading_idx[nearest_j]]))}, "
                         f"distance {dists[nearest_j]:.1f}). Detected fading colours: " +
                         ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in fading_idx))
-                nearest_i = fading_idx[nearest_j]
-                _pc_families.add(family_of[nearest_i])
+                # Family assignment uses the SAME cosine test family_of itself
+                # uses on the TYPED hex directly -- not the nearest palette
+                # entry's own family via a second Euclidean lookup, which
+                # reproduces the exact pale-colour-nearest-wrong-anchor bug
+                # family_of's own history already measured and fixed (a typed
+                # hex landing closer in raw RGB to the WRONG anchor than to
+                # the one it names would otherwise silently inherit the wrong
+                # palette entry's family). The distance check above still
+                # validates the hex matches a REAL detected colour; this only
+                # changes which family that match is credited to.
+                _pc_families.add(_nearest_anchor_by_cosine(w, anchor_dirs, bg_arr))
             protect_k = [i for i in fading_idx if family_of[i] in _pc_families]
     struct8 = ndimage.generate_binary_structure(2, 2)
 
@@ -6057,10 +6091,16 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
         # k/t/res.
         blend = exact & np.isin(k, fading_idx)
         if blend.any() and len(fading_idx) >= 1:
-            t_fam, rgb_fam = unmix_family_blend(rgb, bg_rgb, palette, fading_idx,
+            # Restricted to the BLEND-eligible subset (typically a small
+            # border fraction of the frame) rather than the whole image --
+            # unmix_family_blend otherwise redoes, for every pixel, the same
+            # per-family projection/residual work unmix_against_palette
+            # already did above for the frame as a whole.
+            _sel = rgb[blend][None, :, :]
+            t_sel, rgb_sel = unmix_family_blend(_sel, bg_rgb, palette, fading_idx,
                                                 FADE_BLEND_SOFTMAX_T)
-            alpha[blend] = t_fam[blend] * 255.0
-            rgb_out[blend] = rgb_fam[blend]
+            alpha[blend] = t_sel[0] * 255.0
+            rgb_out[blend] = rgb_sel[0]
 
         # Corners where two art colours meet the background are not a clean
         # two-colour blend. Unmix them generically; the alpha floor keeps the
@@ -7291,7 +7331,8 @@ def measure_outer_ring_background_fraction(rgb, alpha, bg_rgb, palette,
 
 
 def measure_outer_ring_blend_fraction(rgb, alpha, bg_rgb, palette, opaque_min=250,
-                                       ring_width=2, lo=0.08, hi=0.92):
+                                       ring_width=2, lo=0.08, hi=0.92, _unmix_cache=None,
+                                       _cache_key=None):
     """
     Fraction of the outermost NEAR-OPAQUE ring that unmixes as a genuine
     background/art BLEND (neither purely one nor the other) rather than a clean
@@ -7331,7 +7372,22 @@ def measure_outer_ring_blend_fraction(rgb, alpha, bg_rgb, palette, opaque_min=25
     pal = np.asarray(palette, np.float32).reshape(-1, 3)
     if len(pal) == 0:
         return None
-    k, t, res = unmix_against_palette(rgb, bg_rgb, pal)
+    # `_unmix_cache`/`_cache_key`, when the caller supplies them: unmix_
+    # against_palette's result depends only on `rgb`/`bg_rgb`/`palette`, none
+    # of which change across erosion candidates in calibrate_edge_cleanup_
+    # erosion's loop -- only `alpha` (and hence `ring`) does. LAZY (computed
+    # only on the first candidate whose ring is actually non-empty for this
+    # frame, cached for the rest) rather than precomputed up front, because
+    # eagerly unmixing every frame before any candidate is even checked would
+    # do the work even for a frame no candidate ever produces a ring for --
+    # and would run on whatever `rgb` shape the caller passes before this
+    # function's own ring check has had a chance to short-circuit.
+    if _unmix_cache is not None and _cache_key in _unmix_cache:
+        t, res = _unmix_cache[_cache_key]
+    else:
+        _, t, res = unmix_against_palette(rgb, bg_rgb, pal)
+        if _unmix_cache is not None:
+            _unmix_cache[_cache_key] = (t, res)
     is_blend = ring & (res <= FADE_RESIDUAL_TOLERANCE) & (t > lo) & (t < hi)
     return float(is_blend[ring].mean())
 
@@ -7464,6 +7520,13 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
     """
     log = log if log is not None else []
     table = {}
+    # LAZY per-frame cache, shared across every candidate in this call: unmix_
+    # against_palette's result is invariant across erosion candidates for a
+    # given frame (only `alpha`/`ring` changes per candidate), so measure_
+    # outer_ring_blend_fraction computes it at most once per frame -- on
+    # whichever candidate first has a non-empty ring for that frame -- instead
+    # of once per (candidate, frame) pair.
+    _unmix_cache = {}
     for e in candidates:
         if e == 0:
             cand_alpha = alpha_frames
@@ -7492,9 +7555,10 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
         # erosion=1 under the combined rule too -- confirmed on real measured
         # values (references/lessons.md SS45), not assumed.
         vals = []
-        for rgb, al in zip(rgb_frames, cand_alpha):
+        for fi, (rgb, al) in enumerate(zip(rgb_frames, cand_alpha)):
             bgv = measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)
-            blv = measure_outer_ring_blend_fraction(rgb, al, bg_rgb, palette)
+            blv = measure_outer_ring_blend_fraction(rgb, al, bg_rgb, palette,
+                                                     _unmix_cache=_unmix_cache, _cache_key=fi)
             if bgv is None and blv is None:
                 continue
             vals.append(max(v for v in (bgv, blv) if v is not None))
