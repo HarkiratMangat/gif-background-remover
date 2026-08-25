@@ -80,6 +80,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 44. [A flag the tool accepts and discards, and a decision it makes without saying so — eight instances of one shape](#44-a-flag-the-tool-accepts-and-discards-and-a-decision-it-makes-without-saying-so--eight-instances-of-one-shape)
 45. [Auto-detected fades never absorbed their own family; galaxy's erosion metric read zero at every level; and blending only the top two family members just relocates the border's cliff](#45-auto-detected-fades-never-absorbed-their-own-family-galaxys-erosion-metric-read-zero-at-every-level-and-blending-only-the-top-two-family-members-just-relocates-the-borders-cliff)
 46. [A doc fix for the --analyze/--recommend redundancy did not stop it recurring — the guarantee moved into the tool](#46-a-doc-fix-for-the---analyze---recommend-redundancy-did-not-stop-it-recurring--the-guarantee-moved-into-the-tool)
+47. [Six region/colour-list flags silently kept only the LAST occurrence when typed twice instead of joined](#47-six-regioncolour-list-flags-silently-kept-only-the-last-occurrence-when-typed-twice-instead-of-joined)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -116,6 +117,8 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Something works here but might not in the claude.ai sandbox | §24 (two defects invisible from the repo) |
 | `--recommend`'s command fails with "No such file or directory" | §24.1 (repo-relative path) |
 | An agent kept calling `--analyze` then `--recommend` on the same file despite the docs saying not to | §46 (the rule was documented once; a live in-tool reminder replaced it) |
+| A `--protect-region`/`--protect-outline-color`/etc. region only partially applied, or one of several intended regions never got protected | §47 (the flag was passed twice instead of joined -- the second occurrence silently discarded the first) |
+| `error: a flag was repeated instead of joined` | §47 (this is the fix working -- join the values inside one occurrence, per the character it names) |
 | AVIF output fails after all the work is done | §24.2 (missing capability guard) |
 | Pixel art on a COLOURED background read as antialiased | §23 (both measures fail; check the art by eye) |
 | Background left behind in patches after `--tumble-safe` | §25 (it keeps only the LARGEST bg component) |
@@ -2877,4 +2880,20 @@ The 2026-08-19 three-agent trial measured 50-74 tool calls on a five-asset job a
 ⚠️ **Deliberately NOT done: making `--analyze` refuse, or silently redirect to `--recommend`.** Both would be a correctness change disguised as a UX fix — `--analyze` is a real, independently useful mode (raw fields with no synthesized command, for a session that wants to reason from scratch rather than take a suggestion), and refusing it because it is SOMETIMES called redundantly would break every legitimate standalone use. The note only ever informs; it never changes what `--analyze` returns or whether it runs.
 
 **Verified:** three falsifiers in this repo's own harness test suite for this fix — the note prints on a real `--analyze` call, the note does not leak onto stdout and corrupt the JSON a caller would parse (the actual failure mode that would make this fix worse than doing nothing), and `--recommend` itself does not print the note (nagging the already-correct call would be its own new noise). Whether this actually changes AGENT behaviour, as opposed to just existing, is exactly what a third fresh-session trial against the current build would measure, and is not something this repo can determine on its own.
+
+## 47. Six region/colour-list flags silently kept only the LAST occurrence when typed twice instead of joined
+
+**Also searched as:** duplicate flag · region only half protected · lost a region · silently overwritten · argparse default None · last value wins · flag passed twice · systemic audit finding
+
+`recommend()` was fixed (§46's sibling fix, same session) to stop suggesting `--protect-region` as two separate flag occurrences when two different regions each wanted one — a harsh post-fix audit asked the next question rather than stopping at "my own patch is correct": is the underlying CLI bug bigger than the one call site that motivated the fix?
+
+**It is.** `--protect-region`, `--fade-protect-region`, `--fade-protect-colors`, `--remove-region`, `--unprotect-region` and `--translucent-region` are all plain `argparse` arguments — `default=None`, no `action='append'` — and every one of them documents a multi-value syntax joined WITHIN one occurrence (`;` for a region list, `,` for a colour list). Passing any of them a SECOND time is never a valid way to add a second value, but nothing said so: argparse silently keeps only the final occurrence's value, discarding every earlier one with zero warning. Confirmed empirically before assuming it: `argparse.parse_args(['--protect-region', 'circle:1,2,3', '--protect-region', 'circle:4,5,6'])` returns `circle:4,5,6` alone.
+
+**The failure is not hypothetical or confined to `recommend()`'s own output.** A human unfamiliar with this tool's specific `;`-join convention reaching for "pass the flag twice" is a completely ordinary CLI habit — plenty of other tools DO use repeated flags for multiple values, which is exactly what makes this a plausible mistake rather than an exotic one. And an agent reasoning about flags directly, rather than pasting `--recommend`'s already-correct `suggested_command`, has no protection at all. The consequence is silent: a region's protection simply vanishes, with the render completing normally and reporting success.
+
+⚠️ **Recommend()'s own fix (collecting into `protect_regions`/`outline_colors` and joining once, §46's neighbour) closes the failure mode ONLY for the tool's own suggestions — it does nothing for the raw CLI.** Two separate fixes were needed for two separate entry points to the same underlying landmine; fixing one and assuming the other is covered would have been the same class of gap this whole audit was run to catch.
+
+**The fix: refuse loudly instead of silently overwriting.** `refuse_repeated_region_flags` counts occurrences directly from `sys.argv` (argparse itself records no provenance past the final parsed value, the same limitation `typed_option_names` already works around for a different purpose) for both the space-separated and `=`-joined argv forms, and calls `p.error()` naming which flag was repeated, how many times, and the CORRECT separator character for that specific flag — `--protect-outline-color`/`--fade-protect-colors` use `,`, the five region-geometry flags use `;`, and the error message must name the right one or it sends the user toward a syntax that still fails.
+
+**Verified:** five falsifiers in this repo's own harness test suite for this fix — two flags typed twice each refuse with the correct separator named, the `=`-joined form is also caught (not just the space-separated form), a single occurrence is NOT flagged (the real falsifier: a guard that fires on everything would pass the positive tests trivially), and the documented `;`-joined multi-region syntax still works and is correctly left alone. The `--batch` manifest path is unaffected by construction — it never puts per-job region flags into `sys.argv` at all, since manifest entries are JSON keys, not repeated CLI tokens.
 

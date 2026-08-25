@@ -2422,6 +2422,14 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             f"--protect-outline-color/--protect-region.")
 
     outline_colors = []
+    # Collected and joined ONCE after the loop, same reason outline_colors is: if two
+    # different regions each suggest a --protect-region (possible from both branches
+    # below), appending "--protect-region X" twice makes a SECOND flag occurrence that
+    # argparse silently lets win over the first -- confirmed empirically, not assumed
+    # (default=None, no action='append') -- dropping the first region's protection with
+    # no warning. The flag's own multi-region ';'-joined syntax already exists for
+    # exactly this.
+    protect_regions = []
     if not tumble_safe:
         for region in report['candidate_regions']:
             rid = region['id']
@@ -2522,7 +2530,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                 # not-outline-color-verified branch below already uses for the same
                 # reason. Suggesting both together, not instead of the substitution.
                 if region['circle_region_safe']:
-                    flags.append(f"--protect-region {region['suggested_protect_region']}")
+                    protect_regions.append(region['suggested_protect_region'])
                     _backstop = (
                         f" Shape is also circular enough (circularity "
                         f"{region['circularity_ratio']}) to trust a geometric backstop -- "
@@ -2544,7 +2552,7 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                     f"976,800px of artwork (references/lessons.md SS26)." + _backstop)
             elif not region['outline_color_verified']:
                 if region['circle_region_safe']:
-                    flags.append(f"--protect-region {region['suggested_protect_region']}")
+                    protect_regions.append(region['suggested_protect_region'])
                     region_notes.append(
                         f"Region {rid}: no verified outline color, but shape is circular "
                         f"(circularity {region['circularity_ratio']}) -- falling back to "
@@ -2562,6 +2570,8 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
 
     if outline_colors:
         flags.append(f"--protect-outline-color {','.join(dict.fromkeys(outline_colors))}")
+    if protect_regions:
+        flags.append(f"--protect-region {';'.join(dict.fromkeys(protect_regions))}")
 
     band_regions = report.get('band_interior_regions', [])
     _fade_ok = report.get('fade_colors_confirmed')
@@ -9452,6 +9462,43 @@ def apply_pixel_art_preset(args, argv=None):
                   f"mean it.", file=sys.stderr)
 
 
+#: Every one of these is a plain argparse value (default=None, no action='append')
+#: whose spec syntax already supports MULTIPLE values joined within ONE occurrence --
+#: ';' for a region list, ',' for a colour list. A second occurrence of the same flag
+#: is never a valid way to add a second value: argparse silently keeps only the LAST
+#: occurrence, discarding the first with no warning. Found auditing the exact same
+#: pattern in recommend()'s own suggestion logic (references/lessons.md SS46) --
+#: recommend() could no longer produce it, but a human (or an agent reasoning about
+#: flags directly rather than pasting recommend()'s output) typing the flag twice
+#: instead of joining hits the identical silent-overwrite landmine on the raw CLI.
+_SINGLE_OCCURRENCE_REGION_FLAGS = {
+    '--protect-outline-color': ',', '--fade-protect-colors': ',',
+    '--protect-region': ';', '--fade-protect-region': ';',
+    '--remove-region': ';', '--unprotect-region': ';', '--translucent-region': ';',
+}
+
+
+def refuse_repeated_region_flags(argv, error_fn):
+    """Refuse loudly rather than silently keep only the last occurrence.
+
+    Counts occurrences directly from argv (both `--flag value` and `--flag=value`
+    forms) since argparse itself records no provenance past the final parsed value.
+    """
+    counts = {}
+    for tok in argv:
+        name = tok.split('=', 1)[0]
+        if name in _SINGLE_OCCURRENCE_REGION_FLAGS:
+            counts[name] = counts.get(name, 0) + 1
+    dupes = [f for f, n in counts.items() if n > 1]
+    if dupes:
+        _examples = '; '.join(
+            f"{f} was passed {counts[f]} times -- join the values with "
+            f"'{_SINGLE_OCCURRENCE_REGION_FLAGS[f]}' inside ONE occurrence instead"
+            for f in dupes)
+        error_fn(f"a flag was repeated instead of joined, which silently drops every "
+                 f"value but the last: {_examples}.")
+
+
 def typed_option_names(argv=None):
     """
     The long-option names the user ACTUALLY typed, as attribute names.
@@ -10494,6 +10541,7 @@ def main():
                         'the fringe without eating thin strokes. In-memory: costs one erosion '
                         'pass per candidate, not one render.')
     args = p.parse_args()
+    refuse_repeated_region_flags(sys.argv[1:], p.error)
 
     # Which positional is an INPUT and which is THE OUTPUT depends on the mode, so it
     # cannot be expressed in argparse itself. Everything downstream keeps reading

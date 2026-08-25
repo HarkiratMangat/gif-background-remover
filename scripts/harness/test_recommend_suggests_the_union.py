@@ -75,3 +75,36 @@ def test_partial_outline_with_safe_circle_gets_a_region_backstop_unioned_not_rep
         f'expected the backstop region flag in the suggested command: {cmd}')
     assert any('backstop' in n.lower() for n in rec['evidence']), (
         'the evidence text should explain why a region backstop was added')
+
+
+def test_two_regions_each_suggesting_protect_region_are_joined_not_repeated():
+    """Real bug found auditing the fix above: --protect-region is a plain argparse
+    value (default=None, no action='append'), confirmed empirically -- passing it
+    TWICE means the second occurrence silently overwrites the first with no warning,
+    dropping that region's protection entirely. Two regions in the same asset can each
+    independently suggest a --protect-region (the partial_outline branch above, or the
+    pre-existing not-outline-verified branch) -- they must be collected and joined with
+    ';' into ONE flag, the same multi-region syntax --protect-region already documents,
+    never appended as two separate occurrences of the flag."""
+    report = _report()
+    regions = report['candidate_regions']
+    po = _partial_outline_region(report)
+    po['circle_region_safe'] = True
+    po['circularity_ratio'] = 0.91
+    other = next(r for r in regions if r is not po and not r['outline_color_verified'])
+    other['likely_intentional_design'] = True  # else this region is filtered out
+    # before the elif chain runs at all -- confirmed by first getting this test wrong.
+    other['circle_region_safe'] = True
+    other['circularity_ratio'] = 0.90
+    other['suggested_protect_region'] = 'circle:999,888,77'
+    with patch.object(M, 'analyze', return_value=report):
+        rec = M.recommend('unused-path-analyze-is-mocked.gif')
+    cmd = rec['suggested_command'] or ''
+    assert cmd.count('--protect-region') == 1, (
+        "two regions each suggesting a region must produce ONE joined "
+        "--protect-region occurrence, not two separate ones (the second would "
+        f"silently win and drop the first region's protection): {cmd}")
+    assert po['suggested_protect_region'] in cmd
+    assert 'circle:999,888,77' in cmd
+    assert f"{po['suggested_protect_region']};circle:999,888,77" in cmd, (
+        f"expected both regions joined by ';' in one flag: {cmd}")
