@@ -2212,6 +2212,18 @@ def analyze(input_path, max_samples=40, tolerance=15):
 # result -- nothing downstream reads it and no verdict depends on it.
 _FORMAT_RANK_EMITTED = False
 
+# Printed to stderr whenever --analyze is used standalone. SKILL.md documented the
+# redundancy this names after the 2026-08-19 trial, and the 2026-08-23 trial found three
+# independent fresh sessions still calling --analyze then --recommend on the same file,
+# on all 10 assets, despite the rule already being written down. A paragraph that must be
+# read and retained before acting is a weaker guarantee than a note printed at the exact
+# moment the redundant call is made -- references/lessons.md SS46.
+_ANALYZE_RECOMMEND_NOTE = (
+    "NOTE: --recommend's JSON already embeds everything --analyze returns, under an "
+    "\"analysis\" key. If you also plan to call --recommend on this file, call it "
+    "alone next time -- you don't need both."
+)
+
 
 def _unprotect_hint(rid, bbox, ratio, checked):
     """The counter-option an ambiguous enclosure verdict was never offering.
@@ -10470,9 +10482,11 @@ def main():
             print(json.dumps(run_read_only(
                 args.input_paths, 'analysis',
                 lambda pth: analyze(pth, tolerance=args.tolerance)), indent=2))
+            print(_ANALYZE_RECOMMEND_NOTE, file=sys.stderr)
             return
         report = analyze(args.input_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
+        print(_ANALYZE_RECOMMEND_NOTE, file=sys.stderr)
         return
 
     if args.recommend:
