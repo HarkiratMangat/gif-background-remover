@@ -4387,13 +4387,29 @@ def build_protected_masks_robust(rgb_frames, args):
     n = len(rgb_frames)
     H, W, _ = rgb_frames[0].shape
 
-    region_masks = ([parse_protect_regions(args.protect_region, (H, W))] * n
+    # Independent copies, not `[mask] * n` -- that aliases one array n times, and this
+    # function already mutates same-shaped per-frame lists in place elsewhere
+    # (`frame_masks[bi] |= ...` below), which would silently apply one frame's change
+    # to every frame's region mask at once if ever written the same way here.
+    region_masks = ([parse_protect_regions(args.protect_region, (H, W)).copy()
+                      for _ in range(n)]
                      if args.protect_region else None)
     if not args.protect_outline_color:
         return (region_masks if region_masks is not None
                 else [np.zeros((H, W), dtype=bool) for _ in range(n)])
 
     hex_colors = [c.strip() for c in args.protect_outline_color.split(',') if c.strip()]
+    # Each frame's own filled silhouette (color_mask + binary_fill_holes against the
+    # background) does not depend on which outline hex_color is being processed -- only
+    # on rgb_frames/bg_color/tolerance, all fixed for this call. Computed once here and
+    # reused by both the borrow branch and the union branch below, for every colour,
+    # instead of each hex_color in hex_colors recomputing all n frames' silhouettes from
+    # scratch (an n_frames * n_colors cost collapsed to n_frames total).
+    _bg_for_clamp = hex_to_rgb(args.bg_color)
+    own_silhouettes = [ndimage.binary_fill_holes(
+                           ~color_mask(rgb, _bg_for_clamp, args.tolerance),
+                           structure=STRUCTURE)
+                        for rgb in rgb_frames]
     per_color_masks = {}  # hex -> list of per-frame filled masks
     for hex_color in hex_colors:
         outline_rgb = hex_to_rgb(hex_color)
@@ -4442,14 +4458,10 @@ def build_protected_masks_robust(rgb_frames, args):
             # borrowed mask describes ANOTHER frame's geometry and would
             # otherwise protect background this frame does not cover (the white
             # wedge above the tall crystal's tip, ~1,600 px/frame).
-            bg_for_clamp = hex_to_rgb(args.bg_color)
             own_raw = list(frame_masks)
             for bi in bad_idxs:
                 nearest = min(good_idxs, key=lambda gi: abs(gi - bi))
-                silhouette = ndimage.binary_fill_holes(
-                    ~color_mask(rgb_frames[bi], bg_for_clamp, args.tolerance),
-                    structure=STRUCTURE)
-                frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & silhouette
+                frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & own_silhouettes[bi]
 
         # ⚠️ A STRUCTURALLY weak enclosure -- never a full closed ring on ANY single
         # frame, not an otherwise-good outline briefly interrupted -- is invisible to
@@ -4468,15 +4480,11 @@ def build_protected_masks_robust(rgb_frames, args):
         # structurally-weak case produces NO bad_idxs at all. It can only ADD protected
         # area, never remove any, so it cannot make an already-good frame worse.
         if any(mm.any() for mm in frame_masks):
-            bg_for_clamp = hex_to_rgb(args.bg_color)
             union_all = np.zeros((H, W), dtype=bool)
             for mm in frame_masks:
                 union_all |= mm
             for i in range(n):
-                silhouette = ndimage.binary_fill_holes(
-                    ~color_mask(rgb_frames[i], bg_for_clamp, args.tolerance),
-                    structure=STRUCTURE)
-                frame_masks[i] = frame_masks[i] | (union_all & silhouette)
+                frame_masks[i] = frame_masks[i] | (union_all & own_silhouettes[i])
         per_color_masks[hex_color] = frame_masks
 
     result = []
@@ -5398,7 +5406,10 @@ def unmix_family_blend(rgb, bg_rgb, palette, fading_idx, softmax_t):
     r2 = np.maximum((v * v).sum(1)[:, None] - 2.0 * t * proj + (t * t) * dd, 0.0)
     res = np.sqrt(r2)
     w = np.exp(-res / softmax_t)
-    wsum = w.sum(1)
+    # Floored for the same reason `dd` is: if every family member's residual is large
+    # enough that its softmax weight underflows to 0.0 in float32 simultaneously, an
+    # unfloored wsum divides by ~0 and NaNs t_blend/rgb_blend for that pixel.
+    wsum = np.maximum(w.sum(1), 1e-12)
     t_blend = (w * t).sum(1) / wsum
     rgb_blend = (w[:, :, None] * fam[None, :, :]).sum(1) / wsum[:, None]
     shape = rgb.shape[:2]
@@ -8235,6 +8246,16 @@ def process(input_path, output_path, args, diagnostics=None):
                   + " being IGNORED for this run -- not weakened, ignored. Pick one: fade "
                     "recovery, or region protection. (references/lessons.md SS34.4)",
                   file=sys.stderr)
+        # --fade-protect-colors only means anything as a restriction WITHIN a
+        # --fade-protect-region -- recover_fade_alpha_frames only inspects it inside
+        # `if protect_region_spec:`. Named alone it is silently never read at all,
+        # unlike every other exclusive/dependent flag pair in this file, which all warn.
+        if (getattr(args, 'fade_protect_colors', None)
+                and not getattr(args, 'fade_protect_region', None)):
+            print("WARNING: --fade-protect-colors only restricts a --fade-protect-region "
+                  "-- without a region it is being IGNORED for this run, not applied more "
+                  "broadly. Add --fade-protect-region circle:cx,cy,r|rect:x,y,w,h, or drop "
+                  "--fade-protect-colors.", file=sys.stderr)
         fade_log = []
         recovered_rgb, recovered_alpha = recover_fade_alpha_frames(
             rgb_frames_raw, hex_to_rgb(args.bg_color),
@@ -9166,10 +9187,6 @@ def _run_one_job(job_input, job_output, base_args, arg_parser, overrides=None,
         setattr(job_args, key, value)
     apply_pixel_art_preset(job_args)
 
-    if job_args.protect_outline_color and job_args.protect_region:
-        raise ValueError("job sets both protect_outline_color and protect_region "
-                         "-- use only one")
-
     job_label = os.path.basename(job_input)
     with _prefixed_stderr(f"  [{job_label}] "):
         if not job_args.bg_color:
@@ -9455,8 +9472,18 @@ def post_render_fringe_check(input_path, output_path, tolerance=15):
         return None
     bg = detect_bg_color(in_rgb[0])
     pal = build_art_palette(in_rgb[::max(1, len(in_rgb) // 8)], bg)
-    vals = [v for rgb, al in zip(out_rgb, out_alpha)
-            if (v := measure_outer_ring_background_fraction(rgb, al, bg, pal)) is not None]
+    # Same two-signal max() combination calibrate_edge_cleanup_erosion uses (SS45.2):
+    # background_fraction alone reads 0.0000 on a halo that is more art than
+    # background (galaxy/secure/broadcast), which would let this exact class of
+    # regression pass --verify clean. blend_fraction is the signal that actually
+    # sees it.
+    vals = []
+    for rgb, al in zip(out_rgb, out_alpha):
+        bgv = measure_outer_ring_background_fraction(rgb, al, bg, pal)
+        blv = measure_outer_ring_blend_fraction(rgb, al, bg, pal)
+        if bgv is None and blv is None:
+            continue
+        vals.append(max(v for v in (bgv, blv) if v is not None))
     return round(float(np.mean(vals)), 4) if vals else None
 
 
