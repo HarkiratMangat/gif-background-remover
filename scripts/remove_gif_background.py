@@ -5336,33 +5336,50 @@ def unmix_against_palette(rgb, bg_rgb, palette):
     return k.reshape(shape), t[n, k].reshape(shape), res.reshape(shape)
 
 
-def unmix_top2_against_palette(rgb, bg_rgb, palette):
-    """Same model as unmix_against_palette, but also returns the SECOND-best
-    palette match. Exists only to soften a border where two palette entries in
-    the same fading family sit close enough in colour space that neighbouring
-    antialiased pixels flip which one argmin prefers -- each match is
-    individually correct, but adjacent pixels land on different points along
-    different background-blend rays, producing a visible step instead of a
-    smooth ramp (confirmed on hurricane.gif's octagon border, frame 35: alpha
-    stepped 43->50->93-96->113-115->212 instead of ramping). Elsewhere the
-    caller ignores k2/t2/res2 entirely, so this changes nothing on its own.
+def unmix_family_blend(rgb, bg_rgb, palette, fading_idx, softmax_t):
+    """Softmax-weighted blend of a pixel's alpha/colour over EVERY fading-family
+    palette entry, not just the best two.
+
+    Generalises the top-2 blend above to close a discontinuity top-2 cannot
+    reach: which TWO entries rank best can itself flip between neighbouring
+    pixels once a family has 3+ members sitting close in colour space -- a
+    bevel-shaded ladder the absorption loop pulls in easily has 5-9 (confirmed
+    on hurricane.gif: `db4b86,fd6050,052a75,c7939e,2f377d,5a4f8c,816d8e,
+    9078a7,ceb7c3` are all one fading_idx). Two REAL adjacent source pixels at
+    (203,41)->(204,41), both legitimately blending, still stepped 22->122
+    under the top-2 mechanism because pixel 203 rediscovered its own genuinely
+    closest pair (`db4b86`,`c7939e`) and pixel 204 a DIFFERENT pair (`ceb7c3`,
+    `c7939e`) -- each pixel's own top-2 blend was individually correct, but
+    which two members WON that ranking was itself a discrete decision that
+    flipped between them. Summing every family member's contribution,
+    weighted by how well each explains the pixel, removes that second
+    discreteness: a ray losing the "top-2" contest fades its influence out
+    continuously via the same softmax decay instead of dropping to zero the
+    moment it stops ranking second.
+
+    A residual far past `FADE_RESIDUAL_TOLERANCE` earns essentially zero
+    softmax weight regardless of how many family members exist, so this is a
+    strict generalisation of the top-2 case, not a different rule: with a
+    single fading colour (crystal/gift/love/heart's usual case) it reduces to
+    plain single-ray unmixing, and with exactly two nearby members it reduces
+    to the top-2 blend, both confirmed by corpus diff (references/lessons.md
+    SS45).
     """
     bg = np.asarray(bg_rgb, dtype=np.float32)
-    d = palette - bg
+    fam = palette[fading_idx]
+    d = fam - bg
     dd = (d * d).sum(1)
     v = (rgb.astype(np.float32) - bg).reshape(-1, 3)
     proj = v @ d.T
     t = np.clip(proj / dd, 0.0, 1.0)
-    r2 = (v * v).sum(1)[:, None] - 2.0 * t * proj + (t * t) * dd
-    order = np.argsort(r2, axis=1)
-    k1 = order[:, 0]
-    k2 = order[:, 1] if r2.shape[1] > 1 else order[:, 0]
-    n = np.arange(len(v))
-    res1 = np.sqrt(np.maximum(r2[n, k1], 0.0))
-    res2 = np.sqrt(np.maximum(r2[n, k2], 0.0))
+    r2 = np.maximum((v * v).sum(1)[:, None] - 2.0 * t * proj + (t * t) * dd, 0.0)
+    res = np.sqrt(r2)
+    w = np.exp(-res / softmax_t)
+    wsum = w.sum(1)
+    t_blend = (w * t).sum(1) / wsum
+    rgb_blend = (w[:, :, None] * fam[None, :, :]).sum(1) / wsum[:, None]
     shape = rgb.shape[:2]
-    return (k1.reshape(shape), t[n, k1].reshape(shape), res1.reshape(shape),
-            k2.reshape(shape), t[n, k2].reshape(shape), res2.reshape(shape))
+    return t_blend.reshape(shape), rgb_blend.reshape(shape[0], shape[1], 3)
 
 
 def fading_seam_mask(rgb, palette, fading_idx, tolerance):
@@ -5729,7 +5746,10 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
         # PREVENTION, paired with the prediction in analyze()/recommend() -- the same
         # three-place split SS35 and SS36 both turned on. A run that never called
         # --recommend must still be stopped, and stopped by the SAME function, so the two
-        # cannot drift apart.
+        # cannot drift apart. Ladder check runs on the DETECTED anchors only, before
+        # absorption below -- absorption legitimately adds near-collinear paler stages
+        # of a single anchor, and testing the post-absorption list would misfire on
+        # every genuinely-recovered fade (it would look identical to a painted ladder).
         _ladder = detect_fade_ladder(bg_rgb, parents)
         if _ladder:
             raise SystemExit(
@@ -5747,6 +5767,34 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
                 f"(references/lessons.md SS34.2). Drop the flag and run normal background "
                 f"removal, or name the genuinely translucent colour with --fade-color, "
                 f"which bypasses detection entirely.")
+        _auto_anchors = list(parents)
+        # ⚠️ SAME COLLINEAR-FAMILY ABSORPTION AS THE NAMED --fade-color BRANCH ABOVE,
+        # extended to auto-detected fades 2026-08-24 (previously this loop only ran
+        # behind an explicit --fade-color, leaving auto-detect exposed to the exact
+        # ghost-boundary bug e9f8520 fixed for the named case). detect_fading_colors
+        # flags a colour only when it appears as a large region at flat PARTIAL alpha
+        # (the partial_fraction test); a genuine paler stage of the SAME fading
+        # element can fail that test on its own -- too small, or itself mostly solid
+        # in most frames -- and survive build_art_palette's provisional pass as an
+        # independent "solid" entry, which then becomes a flood-fill barrier and
+        # freezes that stage fully opaque instead of fading with the rest of its
+        # family. Anchored on each auto-detected colour's own ray from the
+        # background, same 0.95 cosine floor Defect B widened the named case to.
+        for w in list(parents):
+            dw = w - np.asarray(bg_rgb, dtype=np.float32)
+            dwn = float(np.linalg.norm(dw))
+            if dwn <= 0:
+                continue
+            for cand in provisional:
+                if any(float(np.linalg.norm(cand - p)) < 1e-6 for p in parents):
+                    continue
+                dc = cand - np.asarray(bg_rgb, dtype=np.float32)
+                dcn = float(np.linalg.norm(dc))
+                if dcn <= 0 or dcn >= dwn:
+                    continue  # only paler (closer to bg) than its anchor
+                cos = float(dw @ dc) / (dwn * dcn)
+                if cos >= 0.95:
+                    parents.append(cand)
     palette = build_art_palette(rgb_frames, bg_rgb, protect_parents=parents,
                                 force_include=parents if fade_hexes else None)
     if len(palette) == 0:
@@ -5826,37 +5874,38 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
     # anchor than to a different one). Auto-detected fading (no --fade-color)
     # never runs the absorption loop, so each member is already its own
     # singleton family.
-    if fade_hexes:
-        # Nearest-EUCLIDEAN-DISTANCE anchor was measured WRONG: a very pale
-        # colour sits numerically close to background regardless of its hue,
-        # so two genuine pale members of the NAVY family (#9078a7, #ceb7c3)
-        # were nearest in raw RGB distance to the unrelated PINK fill anchor
-        # (#db4b86) and got merged into it -- a 273,222px blob spanning
-        # nearly the whole 640x640 canvas, whose own true silhouette edge
-        # (legitimately t~0) then dragged the summary alpha of that entire
-        # merged mass to 0. Match the SAME test the absorption loop above
-        # used to build these families in the first place: which named
-        # anchor's own ray from the background is this colour most
-        # COLLINEAR with (highest cosine), not which anchor is numerically
-        # closest.
-        bg_arr = np.asarray(bg_rgb, dtype=np.float32)
-        anchor_dirs = [w - bg_arr for w in want]
-        family_of = {}
-        for i in fading_idx:
-            d = palette[i] - bg_arr
-            dn = float(np.linalg.norm(d))
-            best_j, best_cos = 0, -2.0
-            for j, ad in enumerate(anchor_dirs):
-                adn = float(np.linalg.norm(ad))
-                if dn <= 0 or adn <= 0:
-                    cos = 1.0 if dn <= 0 else -2.0
-                else:
-                    cos = float(d @ ad) / (dn * adn)
-                if cos > best_cos:
-                    best_cos, best_j = cos, j
-            family_of[i] = best_j
-    else:
-        family_of = {i: i for i in fading_idx}
+    # Nearest-EUCLIDEAN-DISTANCE anchor was measured WRONG: a very pale
+    # colour sits numerically close to background regardless of its hue,
+    # so two genuine pale members of the NAVY family (#9078a7, #ceb7c3)
+    # were nearest in raw RGB distance to the unrelated PINK fill anchor
+    # (#db4b86) and got merged into it -- a 273,222px blob spanning
+    # nearly the whole 640x640 canvas, whose own true silhouette edge
+    # (legitimately t~0) then dragged the summary alpha of that entire
+    # merged mass to 0. Match the SAME test the absorption loop(s) above
+    # used to build these families in the first place: which anchor's own
+    # ray from the background is this colour most COLLINEAR with (highest
+    # cosine), not which anchor is numerically closest. Anchors are the
+    # NAMED --fade-color hexes when given, or (2026-08-24) each
+    # auto-detected fading colour's own pre-absorption colour otherwise --
+    # both are the same kind of thing: the ORIGINAL member of each family,
+    # before its paler collinear stages were folded in.
+    _family_anchors = want if fade_hexes else _auto_anchors
+    bg_arr = np.asarray(bg_rgb, dtype=np.float32)
+    anchor_dirs = [w - bg_arr for w in _family_anchors]
+    family_of = {}
+    for i in fading_idx:
+        d = palette[i] - bg_arr
+        dn = float(np.linalg.norm(d))
+        best_j, best_cos = 0, -2.0
+        for j, ad in enumerate(anchor_dirs):
+            adn = float(np.linalg.norm(ad))
+            if dn <= 0 or adn <= 0:
+                cos = 1.0 if dn <= 0 else -2.0
+            else:
+                cos = float(d @ ad) / (dn * adn)
+            if cos > best_cos:
+                best_cos, best_j = cos, j
+        family_of[i] = best_j
     protect_mask = None
     protect_k = None
     if protect_region_spec:
@@ -5917,7 +5966,7 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
 
     for rgb in rgb_frames:
         rgbf = rgb.astype(np.float32)
-        k, t, res, k2, t2, res2 = unmix_top2_against_palette(rgb, bg_rgb, palette)
+        k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
         coverage_total += res.size
         coverage_ok += int((res <= FADE_RESIDUAL_TOLERANCE).sum())
 
@@ -5980,37 +6029,38 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, pro
         alpha[exact] = t[exact] * 255.0
         rgb_out[exact] = palette[k[exact]]
 
-        # BORDER BANDING FIX: among `exact` pixels where BOTH the best and
-        # second-best match are named/detected FADING colours, ALWAYS blend
-        # them by softmax(-residual/T) weight -- never a hard on/off gate.
-        # Restricted to fading_idx on both sides deliberately -- an
-        # unrestricted version (any k vs k2) was measured to corrupt
-        # crystal/gift/love/heart broadly (461/461 frames differed,
-        # max_rgb_delta up to 255): a background-adjacent pixel can have a
-        # near-tied residual against two UNRELATED solid art colours that
-        # happen to sit close in colour space, and blending those is
+        # BORDER BANDING FIX: among `exact` pixels whose best match is a
+        # FADING colour, ALWAYS blend over the WHOLE fading family by
+        # softmax(-residual/T) weight -- never a hard on/off gate, and never
+        # just the best two. Restricted to fading_idx deliberately -- an
+        # unrestricted version (blending against solid art too) was measured
+        # to corrupt crystal/gift/love/heart broadly (461/461 frames
+        # differed, max_rgb_delta up to 255): a background-adjacent pixel can
+        # have a near-tied residual against two UNRELATED solid art colours
+        # that happen to sit close in colour space, and blending those is
         # nonsense -- the banding this fix targets only happens BETWEEN
-        # members of the same fading family. A first version of the softmax
-        # ALSO hard-gated on `(res2 - res) <= margin`, which was measured on
-        # hurricane.gif to barely move the outcome: the border still visibly
-        # split into two flat bands, just with the cliff between them
-        # softened by a couple of intermediate pixels, because the switch
-        # from "unblended" to "blended" was itself a discontinuity. Removing
-        # the gate makes the blend weight a continuous function of position
-        # everywhere both candidates are fading colours -- it still decays to
-        # the old pure-k1 result once res2 pulls far enough ahead of res1
-        # (see FADE_BLEND_SOFTMAX_T), it just gets there smoothly. This only
-        # overwrites a SUBSET of `exact` -- it never touches which pixels are
-        # barrier, solid, definite, seam or bgside/outside, all of which were
-        # already decided above from the untouched single-winner k/t/res.
-        blend = exact & np.isin(k, fading_idx) & np.isin(k2, fading_idx) & (k2 != k)
-        if blend.any():
-            w1 = np.exp(-res[blend] / FADE_BLEND_SOFTMAX_T)
-            w2 = np.exp(-res2[blend] / FADE_BLEND_SOFTMAX_T)
-            wsum = w1 + w2
-            alpha[blend] = ((w1 * t[blend] + w2 * t2[blend]) / wsum) * 255.0
-            rgb_out[blend] = ((w1[:, None] * palette[k[blend]]
-                                + w2[:, None] * palette[k2[blend]]) / wsum[:, None])
+        # members of the same fading family. A first version blended only the
+        # best TWO matches (top-2) and was measured to barely move hurricane's
+        # octagon border: two real ADJACENT source pixels still stepped
+        # 22->122, because each pixel's own top-2 blend was individually
+        # correct but WHICH two members ranked "top-2" was itself a discrete
+        # choice that flipped between them -- the family this asset absorbs
+        # has 5-9 close members, not 2, so limiting the blend to the winning
+        # pair just moved the cliff to the pair's own boundary instead of
+        # removing it (unmix_family_blend's docstring has the full trace).
+        # Summing every family member, softmax-weighted, removes that second
+        # discreteness: a ray that stops ranking in the top two fades its
+        # contribution out continuously instead of dropping to zero. This
+        # only overwrites a SUBSET of `exact` -- it never touches which
+        # pixels are barrier, solid, definite, seam or bgside/outside, all of
+        # which were already decided above from the untouched single-winner
+        # k/t/res.
+        blend = exact & np.isin(k, fading_idx)
+        if blend.any() and len(fading_idx) >= 1:
+            t_fam, rgb_fam = unmix_family_blend(rgb, bg_rgb, palette, fading_idx,
+                                                FADE_BLEND_SOFTMAX_T)
+            alpha[blend] = t_fam[blend] * 255.0
+            rgb_out[blend] = rgb_fam[blend]
 
         # Corners where two art colours meet the background are not a clean
         # two-colour blend. Unmix them generically; the alpha floor keeps the
@@ -7240,6 +7290,52 @@ def measure_outer_ring_background_fraction(rgb, alpha, bg_rgb, palette,
     return float((d_bg < d_art).mean())
 
 
+def measure_outer_ring_blend_fraction(rgb, alpha, bg_rgb, palette, opaque_min=250,
+                                       ring_width=2, lo=0.08, hi=0.92):
+    """
+    Fraction of the outermost NEAR-OPAQUE ring that unmixes as a genuine
+    background/art BLEND (neither purely one nor the other) rather than a clean
+    flat colour. High = leftover antialiasing the edge cleanup should have eaten.
+
+    `measure_outer_ring_background_fraction` above asks a narrower question --
+    is a ring pixel closer to background than to art -- which is blind to a
+    halo pixel that is MORE than half art (`d_bg >= d_art`, so it never counts)
+    but still visibly an unresolved antialiasing mix rather than a clean edge.
+    That is exactly the gap on galaxy/secure/broadcast, confirmed by measuring
+    both signals against the real `--auto --edge-cleanup-erosion N` output at
+    N=0,1,2 (2026-08-24): `measure_outer_ring_background_fraction` reads 0.0000
+    at EVERY level on galaxy.gif -- the fringe metric this asset's own
+    calibration relies on cannot see the problem at all -- while this measure
+    reads 0.5989 -> 0.1359 -> 0.0003, a clean monotone signal matching the
+    visible haloing. On secure.gif both agree an erosion-1 halo remains
+    (0.0967 here vs the background-fraction reading of 0.0, which had already
+    reached its own floor and so gave calibration nothing left to act on).
+
+    Reuses `unmix_against_palette`'s own blend test (`res` within tolerance,
+    `t` strictly between `lo` and `hi`) rather than a fresh colour-distance
+    rule, because that is the same definition `detect_fading_colors` already
+    uses for "this pixel is a partial blend, not a flat colour" -- one
+    vocabulary for the same underlying question, not two independently-tuned
+    ones. `ring_width=2` (vs `measure_outer_ring_background_fraction`'s 1) is
+    deliberately wider: a leftover antialiasing rim is not always a single
+    pixel deep, and the whole point of this measure is to see the ring
+    `measure_outer_ring_background_fraction`'s narrower reach can miss.
+
+    Returns None when the frame has no such ring, so callers can tell
+    "measured zero" apart from "nothing to measure".
+    """
+    solid = alpha >= opaque_min
+    ring = ndimage.binary_dilation(~solid, iterations=ring_width) & solid
+    if not ring.any():
+        return None
+    pal = np.asarray(palette, np.float32).reshape(-1, 3)
+    if len(pal) == 0:
+        return None
+    k, t, res = unmix_against_palette(rgb, bg_rgb, pal)
+    is_blend = ring & (res <= FADE_RESIDUAL_TOLERANCE) & (t > lo) & (t < hi)
+    return float(is_blend[ring].mean())
+
+
 #: The most erosion any AUTOMATIC decision may reach. Read by BOTH consumers -- the
 #: calibrator's selectable set and `--auto`'s post-render escalation -- because a cap one of
 #: them respects and the other walks straight past is the two-consumer split SS35, SS36 and
@@ -7377,8 +7473,31 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
             # produces is measuring a counterfactual.
             cand_alpha = erode_alpha_edge_protecting_damaged_components(
                 alpha_frames, e, tiny_masks, enabled=protect_components)
-        vals = [v for rgb, al in zip(rgb_frames, cand_alpha)
-                if (v := measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)) is not None]
+        # TWO SIGNALS, combined by per-frame MAX, not one.
+        # `measure_outer_ring_background_fraction` asks whether a ring pixel is
+        # closer to background than to art; `measure_outer_ring_blend_fraction`
+        # asks whether it unmixes as a genuine partial blend at all. Measured
+        # 2026-08-24 against real `--auto --edge-cleanup-erosion N` output:
+        # galaxy.gif reads 0.0000 on the background-fraction signal at EVERY
+        # candidate level -- its own calibration floor is unreachable-by-design
+        # blind to this asset's real halo -- while the blend-fraction signal
+        # reads 0.5989 -> 0.1359 -> 0.0003, the real haloing a human sees, and
+        # the only one of the two that can select erosion=1 here. Taking the
+        # max lets either signal veto a floor the other already reached;
+        # neither replaces the other, since background-fraction still catches
+        # a pale fringe that IS closer to background than to any art colour,
+        # which blend-fraction's narrower t-range test does not directly test
+        # for. rocket.gif and secure.gif, both already correctly calibrated to
+        # erosion=1 under the old single-signal rule, land on the identical
+        # erosion=1 under the combined rule too -- confirmed on real measured
+        # values (references/lessons.md SS45), not assumed.
+        vals = []
+        for rgb, al in zip(rgb_frames, cand_alpha):
+            bgv = measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)
+            blv = measure_outer_ring_blend_fraction(rgb, al, bg_rgb, palette)
+            if bgv is None and blv is None:
+                continue
+            vals.append(max(v for v in (bgv, blv) if v is not None))
         table[e] = round(float(np.mean(vals)), 4) if vals else None
     measured = {e: v for e, v in table.items() if v is not None}
     if not measured:
