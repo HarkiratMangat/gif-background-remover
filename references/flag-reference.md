@@ -29,3 +29,16 @@ SKILL.md's "Output format" section states the rule and the tuned default; the me
 1. Full fidelity → WebP lossless (`-m 2`) — the only bit-exact option; AVIF has no true lossless mode.
 2. Full resolution, minor optimization → AVIF q85, smaller than WebP lossless on every asset tested, by anywhere from 28% to 72%.
 3. Hard byte cap (e.g. Discord's 256 KB emoji) → AVIF at 128×128, keeping every frame, trying q85 then q70. All five test assets fit that way — two at q85, three at q70.
+
+## Content-type detection and `--auto` refusals — measured evidence behind SKILL.md's rules
+Moved out during the same 2026-08-24 structural pass, per the same pattern: SKILL.md states the rule and the actionable threshold, this file carries the numbers that justified it.
+
+**Already-transparent sources.** Measured across 76 alpha-carrying assets, unrestricted colour removal (deleting every pixel matching the background colour, with no scoping to the region the source's own alpha already covers) left **28.7% of the artwork** on the worst one and averaged **79.6%** on the 25 assets where the padding colour also appears in the art.
+
+**Re-analysing this tool's own output.** Measured over 48 antialiased assets run through the real CLI at every compression tier and re-analysed: **8.3% flip to `appears_hard_edged: true` with NO compression flag at all**, 25.0% at `--compress optimize`, 20.8% at `medium`, 12.5% at `heavy` (so `heavy` is the *least* affected tier, not the trigger) — 14 of the 48 flip somewhere. The obvious veto (distrust a high `plateau_cliff_ratio` when the palette is large) was measured and costs five real detections while removing none of the corpus's actual false positives, because dithered pixel art legitimately carries hundreds of colours.
+
+**Coloured backgrounds.** Measured across 8 real pixel-art assets on coloured (non-white) backgrounds, **6 were reported as antialiased** by the two band-based measures — one scoring `ratio` 20.895. Their ranges overlap almost completely with genuinely antialiased art on this content; the two block-structure measures show no such penalty.
+
+**Erosion inflation of small removed regions.** Confirmed directly: a single original 1px removed pixel became a 49-70px hole after a normal 2px erosion pass — a 50-70x size inflation. The first fix tried (restoring nearby reclaimed pixels after the fact, rather than exempting the region from erosion's input) was measurably incomplete: a 1px notch still came out ~40-50px. The `--erosion-exempt-max-size` ceiling that fixed it was validated at 30px on the motivating case, where incidental noise measured 1-11px and the two genuinely large removed regions measured 69px and 137px — comfortably separated.
+
+**`--auto`'s coin-flip and nameable-fade refusals.** Measured refusal rate across 304 real assets: **12.8%** — enclosure-only 29, fade-only 8, both 2; broken out by content type, emoji 19.7%, small antialiased icons 7.0%.

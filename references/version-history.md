@@ -1,6 +1,6 @@
 # Skill version history
 
-**v6.2.0 is still PENDING as of 2026-08-24** — not yet minted, since it hasn't merged. Its full entry belongs here only once a real merge happens; until then the working detail lives in `SKILL.md`'s own version header (see the note there about why three fake version numbers briefly existed on the unmerged branch and were folded back into one pending entry).
+**v6.2.0 is still PENDING as of 2026-08-24** — not yet minted, since it hasn't merged. Its full entry belongs here only once a real merge happens; until then the working detail lives in `SKILL.md`'s own version header. **This branch (`fix/gate8-trial-findings`) accumulated three separate self-bumped version numbers (v6.2.0/v6.2.1/v6.2.2) across three commits before any merge happened** — a version is minted when a merge is approved, not per commit on a branch, and this was a real process mistake, corrected by folding all of it back into one pending v6.2.0.
 
 ## v6.1.1 — full entry
 
