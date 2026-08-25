@@ -211,6 +211,8 @@ Five modes replace "run it and hope":
 |:--|:--|
 | `--recover-fade-alpha` | Reconstructs partial alpha that a GIF export flattened into progressively paler background-coloured pixels. Needs a WebP/AVIF output. |
 | `--fade-color <hex[,hex…]>` | Name the fading element when it is too brief or too small to auto-detect. |
+| `--fade-protect-region circle:cx,cy,r \| rect:x,y,w,h` | Only with `--recover-fade-alpha`: force a manual region to stay fully opaque at its own source colour, regardless of what the fade classification computes. For a design element that shares a named `--fade-color` hue with something that genuinely fades but must never fade itself — there is no way to say "this hex fades here but not there" through colour alone. |
+| `--fade-protect-colors <hex[,hex…]>` | Restricts `--fade-protect-region` to only force-opaque pixels near-collinear with these named hexes — without it the region force-opaques every art pixel inside it, including a different fading element (e.g. a fill colour) that legitimately overlaps the same region and should keep fading. |
 | `--translucent-region circle:cx,cy,r \| rect:x,y,w,h` | Force a region to a fixed partial alpha — for art that should be see-through but was exported opaque. Needs a WebP/AVIF output. Coordinates are source-relative and applied before `--crop`/`--resize-max-dim`. |
 | `--translucent-alpha <0.0-1.0>` | The alpha that region gets (default 0.35). |
 | `--translucent-color <hex[,hex…]>` | Pick the region by colour instead of geometry. |

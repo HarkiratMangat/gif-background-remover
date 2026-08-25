@@ -2212,6 +2212,18 @@ def analyze(input_path, max_samples=40, tolerance=15):
 # result -- nothing downstream reads it and no verdict depends on it.
 _FORMAT_RANK_EMITTED = False
 
+# Printed to stderr whenever --analyze is used standalone. SKILL.md documented the
+# redundancy this names after the 2026-08-19 trial, and the 2026-08-23 trial found three
+# independent fresh sessions still calling --analyze then --recommend on the same file,
+# on all 10 assets, despite the rule already being written down. A paragraph that must be
+# read and retained before acting is a weaker guarantee than a note printed at the exact
+# moment the redundant call is made -- references/lessons.md SS46.
+_ANALYZE_RECOMMEND_NOTE = (
+    "NOTE: --recommend's JSON already embeds everything --analyze returns, under an "
+    "\"analysis\" key. If you also plan to call --recommend on this file, call it "
+    "alone next time -- you don't need both."
+)
+
 
 def _unprotect_hint(rid, bbox, ratio, checked):
     """The counter-option an ambiguous enclosure verdict was never offering.
@@ -2410,6 +2422,14 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             f"--protect-outline-color/--protect-region.")
 
     outline_colors = []
+    # Collected and joined ONCE after the loop, same reason outline_colors is: if two
+    # different regions each suggest a --protect-region (possible from both branches
+    # below), appending "--protect-region X" twice makes a SECOND flag occurrence that
+    # argparse silently lets win over the first -- confirmed empirically, not assumed
+    # (default=None, no action='append') -- dropping the first region's protection with
+    # no warning. The flag's own multi-region ';'-joined syntax already exists for
+    # exactly this.
+    protect_regions = []
     if not tumble_safe:
         for region in report['candidate_regions']:
             rid = region['id']
@@ -2500,6 +2520,23 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
             elif region.get('partial_outline'):
                 _po = region['partial_outline']
                 outline_colors.append(_po['color'])
+                _backstop = ""
+                # partial_outline is the exact case build_protected_mask/
+                # build_protected_masks_robust's union was built for (SS45): an outline
+                # that never fully encloses on any single frame. The per-frame
+                # substitution already recovers most of it, but only when
+                # circle_region_safe -- a poorly-fitting circle/rect would bleed past
+                # the true edge and make things worse, the same gate the
+                # not-outline-color-verified branch below already uses for the same
+                # reason. Suggesting both together, not instead of the substitution.
+                if region['circle_region_safe']:
+                    protect_regions.append(region['suggested_protect_region'])
+                    _backstop = (
+                        f" Shape is also circular enough (circularity "
+                        f"{region['circularity_ratio']}) to trust a geometric backstop -- "
+                        f"adding --protect-region {region['suggested_protect_region']} "
+                        f"alongside the outline colour, unioned rather than a replacement, "
+                        f"to cover whatever the per-frame substitution still misses.")
                 region_notes.append(
                     f"Region {rid}: no colour ENCLOSES this design region on a single "
                     f"frame, but outline {_po['color']} encloses part of it on "
@@ -2512,10 +2549,10 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
                     f"substitution propagates the closed frames' shape to the open ones, "
                     f"clamped to each frame's own silhouette. The alternative here is not a "
                     f"weaker protection but NONE -- measured on a real asset, that cost "
-                    f"976,800px of artwork (references/lessons.md SS26).")
+                    f"976,800px of artwork (references/lessons.md SS26)." + _backstop)
             elif not region['outline_color_verified']:
                 if region['circle_region_safe']:
-                    flags.append(f"--protect-region {region['suggested_protect_region']}")
+                    protect_regions.append(region['suggested_protect_region'])
                     region_notes.append(
                         f"Region {rid}: no verified outline color, but shape is circular "
                         f"(circularity {region['circularity_ratio']}) -- falling back to "
@@ -2533,6 +2570,8 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
 
     if outline_colors:
         flags.append(f"--protect-outline-color {','.join(dict.fromkeys(outline_colors))}")
+    if protect_regions:
+        flags.append(f"--protect-region {';'.join(dict.fromkeys(protect_regions))}")
 
     band_regions = report.get('band_interior_regions', [])
     _fade_ok = report.get('fade_colors_confirmed')
@@ -2914,6 +2953,24 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     if _fade_alternative is not None:
         _alt_command = (f"python3 {shlex.quote(_self)} {shlex.quote(input_path)} "
                         f"<output.webp> " + " ".join(_fade_alternative))
+        # ⚠️ recommended_format IS COMPUTED FROM THE SOURCE, INDEPENDENTLY OF WHICH
+        # COMMAND WON THE FADE-VS-PROTECT TRADEOFF ABOVE -- so it can say "webp-or-avif"
+        # (correct, given the source has a real fade) while `suggested_command`, having
+        # just dropped --recover-fade-alpha in favour of protection, renders to a GIF.
+        # Both fields are individually true; nothing said they could disagree. Confirmed
+        # 2026-08-23 gate-8 trial: one of three fresh sessions read `suggested_command`
+        # literally, shipped a GIF, and never noticed recommended_format still said
+        # webp-or-avif two lines above it -- the other two sessions caught the tension
+        # themselves and overrode it, which means it is real to miss, not hypothetical.
+        _fmt = (report.get('recommended_format') or '')
+        if 'webp' in _fmt or 'avif' in _fmt or 'apng' in _fmt:
+            evidence.insert(1, (
+                "FORMAT NOTE: recommended_format above still says " + repr(_fmt) + " because "
+                "the SOURCE genuinely has a fade -- but suggested_command, having just dropped "
+                "--recover-fade-alpha for protection, renders to a GIF and will NOT reconstruct "
+                "that fade. These two fields are not contradicting each other by mistake: pick "
+                "suggested_command for a GIF that protects the design, or alternative_command "
+                "for the container recommended_format is actually describing."))
 
     if _eh.get('source_background_already_transparent'):
         # Not a not_applicable_reason: unlike an alpha-only source, running the command here is
@@ -4191,8 +4248,8 @@ def compute_alpha_mask(rgb, protected, args, removal_scope=None, rgb_key=None):
 
 def build_protected_mask(rgb, args):
     H, W, _ = rgb.shape
+    union = np.zeros((H, W), dtype=bool)
     if args.protect_outline_color:
-        union = np.zeros((H, W), dtype=bool)
         for hex_color in args.protect_outline_color.split(','):
             hex_color = hex_color.strip()
             if not hex_color:
@@ -4205,11 +4262,14 @@ def build_protected_mask(rgb, args):
                       f"frame.", file=sys.stderr)
                 continue
             union |= ndimage.binary_fill_holes(omask, structure=STRUCTURE)
-        return union
-    elif args.protect_region:
-        return parse_protect_regions(args.protect_region, (H, W))
-    else:
-        return np.zeros((H, W), dtype=bool)
+    if args.protect_region:
+        # Combinable with --protect-outline-color, not exclusive -- a region whose
+        # outline never fully encloses on any frame gets a geometric backstop
+        # alongside whatever the outline colour does manage to enclose. See
+        # build_protected_masks_robust's docstring for the render-path case this
+        # was built for.
+        union |= parse_protect_regions(args.protect_region, (H, W))
+    return union
 
 
 def detect_anomalous_frame_sizes(sizes, window=5, local_ratio_threshold=0.8, gap_ratio_threshold=1.08):
@@ -4354,12 +4414,29 @@ def build_protected_masks_robust(rgb_frames, args):
     n = len(rgb_frames)
     H, W, _ = rgb_frames[0].shape
 
-    if args.protect_region:
-        return [parse_protect_regions(args.protect_region, (H, W)) for _ in range(n)]
+    # Independent copies, not `[mask] * n` -- that aliases one array n times, and this
+    # function already mutates same-shaped per-frame lists in place elsewhere
+    # (`frame_masks[bi] |= ...` below), which would silently apply one frame's change
+    # to every frame's region mask at once if ever written the same way here.
+    region_masks = ([parse_protect_regions(args.protect_region, (H, W)).copy()
+                      for _ in range(n)]
+                     if args.protect_region else None)
     if not args.protect_outline_color:
-        return [np.zeros((H, W), dtype=bool) for _ in range(n)]
+        return (region_masks if region_masks is not None
+                else [np.zeros((H, W), dtype=bool) for _ in range(n)])
 
     hex_colors = [c.strip() for c in args.protect_outline_color.split(',') if c.strip()]
+    # Each frame's own filled silhouette (color_mask + binary_fill_holes against the
+    # background) does not depend on which outline hex_color is being processed -- only
+    # on rgb_frames/bg_color/tolerance, all fixed for this call. Computed once here and
+    # reused by both the borrow branch and the union branch below, for every colour,
+    # instead of each hex_color in hex_colors recomputing all n frames' silhouettes from
+    # scratch (an n_frames * n_colors cost collapsed to n_frames total).
+    _bg_for_clamp = hex_to_rgb(args.bg_color)
+    own_silhouettes = [ndimage.binary_fill_holes(
+                           ~color_mask(rgb, _bg_for_clamp, args.tolerance),
+                           structure=STRUCTURE)
+                        for rgb in rgb_frames]
     per_color_masks = {}  # hex -> list of per-frame filled masks
     for hex_color in hex_colors:
         outline_rgb = hex_to_rgb(hex_color)
@@ -4408,14 +4485,33 @@ def build_protected_masks_robust(rgb_frames, args):
             # borrowed mask describes ANOTHER frame's geometry and would
             # otherwise protect background this frame does not cover (the white
             # wedge above the tall crystal's tip, ~1,600 px/frame).
-            bg_for_clamp = hex_to_rgb(args.bg_color)
             own_raw = list(frame_masks)
             for bi in bad_idxs:
                 nearest = min(good_idxs, key=lambda gi: abs(gi - bi))
-                silhouette = ndimage.binary_fill_holes(
-                    ~color_mask(rgb_frames[bi], bg_for_clamp, args.tolerance),
-                    structure=STRUCTURE)
-                frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & silhouette
+                frame_masks[bi] = (own_raw[nearest] | own_raw[bi]) & own_silhouettes[bi]
+
+        # ⚠️ A STRUCTURALLY weak enclosure -- never a full closed ring on ANY single
+        # frame, not an otherwise-good outline briefly interrupted -- is invisible to
+        # the anomaly detector above: if every frame is similarly (mediocrely) sized,
+        # none of them looks anomalous relative to the others, so bad_idxs stays empty
+        # and nothing gets corrected. Confirmed real case, 2026-08-23 gate-8 trial: a
+        # design element the same colour as the true background (a fin highlight, a
+        # body panel) whose enclosing outline pinches to a point at the shape's own
+        # tip can never form a closed ring around it on any frame by construction, not
+        # just occasionally -- best-frame enclosure measured at 45-70% across three
+        # affected assets, never higher. Different frames' partial framings of the
+        # SAME element rarely miss the identical pixels (the shape moves/rotates), so
+        # unioning every frame's filled mask -- clamped to each frame's own silhouette,
+        # same safety principle as the borrow above -- recovers what no single frame
+        # can. This runs unconditionally (not just when bad_idxs fired) because the
+        # structurally-weak case produces NO bad_idxs at all. It can only ADD protected
+        # area, never remove any, so it cannot make an already-good frame worse.
+        if any(mm.any() for mm in frame_masks):
+            union_all = np.zeros((H, W), dtype=bool)
+            for mm in frame_masks:
+                union_all |= mm
+            for i in range(n):
+                frame_masks[i] = frame_masks[i] | (union_all & own_silhouettes[i])
         per_color_masks[hex_color] = frame_masks
 
     result = []
@@ -4423,6 +4519,8 @@ def build_protected_masks_robust(rgb_frames, args):
         union = np.zeros((H, W), dtype=bool)
         for hex_color in hex_colors:
             union |= per_color_masks[hex_color][i]
+        if region_masks is not None:
+            union |= region_masks[i]
         result.append(union)
     return result
 
@@ -5233,6 +5331,33 @@ FADE_BARRIER_ALPHA = 0.5         # unmixed alpha at/above which a solid colour b
 FADE_EDGE_DILATE = 3             # px around true background that may carry partial alpha
 FADE_OPAQUE_BLOCK = 0.90         # a fading colour this opaque occludes what it covers
 FADE_ART_PRIOR = 0.30            # ...but only where art is present in >=30% of frames
+FADE_SEAL_BG_T = 0.05            # unmixed alpha below which a pixel counts as
+                                  # background-degenerate for the FADE_SEAL_BG_MAX check
+FADE_SEAL_BG_MAX = 0.5           # an enclosed pocket freed by loosening ambiguous-only
+                                  # seals must be <50% background-degenerate (t<FADE_SEAL_BG_T)
+                                  # to promote -- protected same-colour-as-background design
+                                  # (crystal.gif's white interior) measures 97%+; genuine
+                                  # fading art sealed by its own seams (hurricane.gif) measures <8%
+FADE_SEAL_MIN_SIZE = 50          # a candidate pocket smaller than this is a stray AA speck,
+                                  # not a sealed-off region of real content -- confirmed real
+                                  # case (crystal.gif): dozens of 1px pockets right on the
+                                  # sparkle's own edge individually pass FADE_SEAL_BG_MAX
+                                  # trivially and, promoted, leave a thin mis-coloured rim;
+                                  # hurricane.gif's real sealed pockets measure 75,000+ px
+FADE_BLEND_SOFTMAX_T = 4.0       # softmax temperature (residual units) for blending a bgside
+                                  # pixel's best and 2nd-best palette match when BOTH are named/
+                                  # detected fading colours. w_i = exp(-res_i / T), always applied
+                                  # (no hard on/off gate) so the blend weight ramps continuously as
+                                  # a function of position instead of switching on abruptly at some
+                                  # threshold -- a hard-gated version (blend only inside a fixed
+                                  # residual-gap margin) was tried first and measured to barely move
+                                  # the outcome: hurricane.gif's octagon border still visibly split
+                                  # into two flat bands, just with the hard edge between them
+                                  # softened by a couple of intermediate pixels. At T=4, w2/w1
+                                  # decays to <5% once res2 exceeds res1 by ~12 units, so it still
+                                  # converges to the old pure-k1 behaviour once a pixel is confidently
+                                  # NOT a near-tie -- it just gets there smoothly instead of via a
+                                  # cliff.
 
 
 def unmix_against_palette(rgb, bg_rgb, palette):
@@ -5256,6 +5381,100 @@ def unmix_against_palette(rgb, bg_rgb, palette):
     res = np.sqrt(np.maximum(r2[n, k], 0.0))
     shape = rgb.shape[:2]
     return k.reshape(shape), t[n, k].reshape(shape), res.reshape(shape)
+
+
+def unmix_family_blend(rgb, bg_rgb, palette, fading_idx, softmax_t):
+    """Softmax-weighted blend of a pixel's alpha/colour over EVERY fading-family
+    palette entry, not just the best two.
+
+    Generalises the top-2 blend above to close a discontinuity top-2 cannot
+    reach: which TWO entries rank best can itself flip between neighbouring
+    pixels once a family has 3+ members sitting close in colour space -- a
+    bevel-shaded ladder the absorption loop pulls in easily has 5-9 (confirmed
+    on hurricane.gif: `db4b86,fd6050,052a75,c7939e,2f377d,5a4f8c,816d8e,
+    9078a7,ceb7c3` are all one fading_idx). Two REAL adjacent source pixels at
+    (203,41)->(204,41), both legitimately blending, still stepped 22->122
+    under the top-2 mechanism because pixel 203 rediscovered its own genuinely
+    closest pair (`db4b86`,`c7939e`) and pixel 204 a DIFFERENT pair (`ceb7c3`,
+    `c7939e`) -- each pixel's own top-2 blend was individually correct, but
+    which two members WON that ranking was itself a discrete decision that
+    flipped between them. Summing every family member's contribution,
+    weighted by how well each explains the pixel, removes that second
+    discreteness: a ray losing the "top-2" contest fades its influence out
+    continuously via the same softmax decay instead of dropping to zero the
+    moment it stops ranking second.
+
+    A residual far past `FADE_RESIDUAL_TOLERANCE` earns essentially zero
+    softmax weight regardless of how many family members exist, so this is a
+    strict generalisation of the top-2 case, not a different rule: with a
+    single fading colour (crystal/gift/love/heart's usual case) it reduces to
+    plain single-ray unmixing, and with exactly two nearby members it reduces
+    to the top-2 blend, both confirmed by corpus diff (references/lessons.md
+    SS45).
+    """
+    bg = np.asarray(bg_rgb, dtype=np.float32)
+    fam = palette[fading_idx]
+    d = fam - bg
+    # Floored, not bare `(d*d).sum(1)`: a fading-family member injected via
+    # `force_include` (a named --fade-color, or an absorbed collinear stage)
+    # is NOT guaranteed to clear the >40-unit-from-background floor normal
+    # palette candidates must -- if one lands at or near the background, an
+    # unfloored `dd` divides by ~0 and NaNs that member's `t`/`res`, and
+    # because this function SUMS weights across the whole family (rather than
+    # `argmin`, which naturally skips a NaN candidate), one degenerate member
+    # would poison the blended result for every pixel, not just pixels near
+    # it. Flooring instead makes that member's `t` collapse to ~0 and its
+    # `res` blow up to `|v|`, so it correctly earns ~zero softmax weight
+    # instead of corrupting the sum.
+    dd = np.maximum((d * d).sum(1), 1e-6)
+    v = (rgb.astype(np.float32) - bg).reshape(-1, 3)
+    proj = v @ d.T
+    t = np.clip(proj / dd, 0.0, 1.0)
+    r2 = np.maximum((v * v).sum(1)[:, None] - 2.0 * t * proj + (t * t) * dd, 0.0)
+    res = np.sqrt(r2)
+    w = np.exp(-res / softmax_t)
+    # Floored for the same reason `dd` is: if every family member's residual is large
+    # enough that its softmax weight underflows to 0.0 in float32 simultaneously, an
+    # unfloored wsum divides by ~0 and NaNs t_blend/rgb_blend for that pixel.
+    wsum = np.maximum(w.sum(1), 1e-12)
+    t_blend = (w * t).sum(1) / wsum
+    rgb_blend = (w[:, :, None] * fam[None, :, :]).sum(1) / wsum[:, None]
+    shape = rgb.shape[:2]
+    return t_blend.reshape(shape), rgb_blend.reshape(shape[0], shape[1], 3)
+
+
+def fading_seam_mask(rgb, palette, fading_idx, tolerance):
+    """True where a pixel is well-explained as a blend of TWO fading-family
+    palette colours -- an internal seam between elements already known to
+    fade (e.g. an outline touching the field it outlines), not a background
+    or solid-art boundary. unmix_against_palette only tests ONE colour
+    blended with the BACKGROUND, so a two-art-colour seam always reads as
+    high-residual/"unexplained" there and becomes an impermeable flood
+    barrier -- confirmed on hurricane.gif, where such a seam ring (thicker
+    than the edge-dilate margin during the badge's fast shrink/regrow
+    frames) sealed off part of the badge's OWN fading interior, freezing it
+    fully opaque. No-op whenever fewer than two colours are flagged fading
+    (every asset with a single named/detected fade colour), which is every
+    asset this mechanism has a documented regression history on.
+    """
+    if len(fading_idx) < 2:
+        return np.zeros(rgb.shape[:2], dtype=bool)
+    flat = rgb.reshape(-1, 3).astype(np.float32)
+    best_res2 = np.full(len(flat), np.inf, dtype=np.float32)
+    for ii in range(len(fading_idx)):
+        a = palette[fading_idx[ii]]
+        for jj in range(ii + 1, len(fading_idx)):
+            b = palette[fading_idx[jj]]
+            d = b - a
+            dd = float(d @ d)
+            if dd < 1e-6:
+                continue
+            v = flat - a
+            tproj = np.clip((v @ d) / dd, 0.0, 1.0)
+            recon = a + tproj[:, None] * d
+            r2 = ((flat - recon) ** 2).sum(1)
+            best_res2 = np.minimum(best_res2, r2)
+    return (np.sqrt(best_res2) <= tolerance).reshape(rgb.shape[:2])
 
 
 def build_art_palette(rgb_frames, bg_rgb, sample_stride=8, protect_parents=None,
@@ -5493,7 +5712,58 @@ def detect_fade_ladder(bg_rgb, colors, min_members=3, min_cos=0.95):
             'distance_span_ratio': round(gd[0] / max(gd[-1], 1e-6), 2)}
 
 
-def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
+def _nearest_anchor_by_cosine(color, anchor_dirs, bg_arr):
+    """Which anchor's own background-ray `color` is most COLLINEAR with
+    (highest cosine), not which anchor it is numerically closest to.
+
+    Shared by `family_of` and `--fade-protect-colors` so both use the SAME
+    test the absorption loops build these families with in the first place.
+    Nearest-EUCLIDEAN-DISTANCE was measured WRONG here (see the comment above
+    `family_of`'s call site): a pale colour sits numerically close to any
+    anchor regardless of hue, so a Euclidean-nearest lookup can silently
+    assign a pale absorbed member to the wrong family.
+    """
+    d = np.asarray(color, dtype=np.float32) - bg_arr
+    dn = float(np.linalg.norm(d))
+    best_j, best_cos = 0, -2.0
+    for j, ad in enumerate(anchor_dirs):
+        adn = float(np.linalg.norm(ad))
+        if dn <= 0 or adn <= 0:
+            cos = 1.0 if dn <= 0 else -2.0
+        else:
+            cos = float(d @ ad) / (dn * adn)
+        if cos > best_cos:
+            best_cos, best_j = cos, j
+    return best_j
+
+
+def _absorb_collinear_paler_stages(anchor, provisional, parents, bg_arr, cos_floor=0.95):
+    """Fold every OTHER provisional candidate that is near-collinear with
+    `anchor`'s own ray from the background, and paler than it (closer to the
+    background), into `parents` -- shared by the named `--fade-color` branch
+    and the auto-detect branch of `recover_fade_alpha_frames`, which both
+    need to absorb a fading anchor's own paler stages the same way (see
+    `references/lessons.md` SS34.2/SS45.1 for the real bugs this closes).
+    Mutates and returns `parents`.
+    """
+    dw = anchor - bg_arr
+    dwn = float(np.linalg.norm(dw))
+    if dwn <= 0:
+        return parents
+    for cand in provisional:
+        if any(float(np.linalg.norm(cand - p)) < 1e-6 for p in parents):
+            continue
+        dc = cand - bg_arr
+        dcn = float(np.linalg.norm(dc))
+        if dcn <= 0 or dcn >= dwn:
+            continue  # only paler (closer to bg) than the anchor
+        cos = float(dw @ dc) / (dwn * dcn)
+        if cos >= cos_floor:
+            parents.append(cand)
+    return parents
+
+
+def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None, protect_region_spec=None, protect_colors_spec=None):
     """
     Full alpha for every frame by palette unmixing, recovering translucency that
     was flattened against the background at authoring time. Returns
@@ -5543,13 +5813,42 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
             else:
                 provisional = np.vstack([provisional, w[None, :]])
                 parents.append(w)
+        # ⚠️ ABSORB THE NAMED COLOUR'S OWN PALER STAGES. A named anchor's own fade
+        # has intermediate stops that survive build_art_palette's provisional pass
+        # as INDEPENDENT entries whenever they sit more than FADE_RESIDUAL_TOLERANCE
+        # off the exact bg->anchor line -- and a real hand-animated fade routinely
+        # does, since it is not required to be a mathematically exact blend, only a
+        # visually smooth one. Confirmed real case (hurricane.gif, 2026-08-23): naming
+        # one outline colour (052a75) left six of its own paler stages (down to
+        # cosine 0.978) stuck as separate "solid" palette entries, rendering as a
+        # visible ghost of the original boundary reappearing on frames where the
+        # design shrinks, instead of blending. Absorbing every OTHER candidate that
+        # is near-collinear with a named anchor AND closer to the background (a
+        # plausible paler stage of the same ray, never a more-saturated one) folds
+        # the whole family into one fading element. ⚠️ WIDENED 0.97 -> 0.95 the same
+        # day, on the same asset: the outer octagon border has its own bevel
+        # highlight at cosine 0.9607 with the named outline (042a75) -- confirmed
+        # by Harkirat pointing at exactly this ("part of the outline flashing
+        # white while the rest fades") -- and 0.97 excluded it, leaving that one
+        # side of the border frozen fully opaque while the rest faded normally.
+        # 0.95 is the loosest threshold that still excludes every genuinely-distinct
+        # solid colour checked by hand on this asset (0.762-0.93 for real other
+        # design colours); tightening it risks missing real stages, loosening it
+        # risks absorbing an unrelated colour that happens to point the same rough
+        # direction.
+        _absorb_bg = np.asarray(bg_rgb, dtype=np.float32)
+        for w in list(parents):
+            _absorb_collinear_paler_stages(w, provisional, parents, _absorb_bg)
     else:
         _auto_fi = sorted(detect_fading_colors(rgb_frames, bg_rgb, provisional))
         parents = [provisional[i] for i in _auto_fi]
         # PREVENTION, paired with the prediction in analyze()/recommend() -- the same
         # three-place split SS35 and SS36 both turned on. A run that never called
         # --recommend must still be stopped, and stopped by the SAME function, so the two
-        # cannot drift apart.
+        # cannot drift apart. Ladder check runs on the DETECTED anchors only, before
+        # absorption below -- absorption legitimately adds near-collinear paler stages
+        # of a single anchor, and testing the post-absorption list would misfire on
+        # every genuinely-recovered fade (it would look identical to a painted ladder).
         _ladder = detect_fade_ladder(bg_rgb, parents)
         if _ladder:
             raise SystemExit(
@@ -5567,6 +5866,22 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                 f"(references/lessons.md SS34.2). Drop the flag and run normal background "
                 f"removal, or name the genuinely translucent colour with --fade-color, "
                 f"which bypasses detection entirely.")
+        _auto_anchors = list(parents)
+        # ⚠️ SAME COLLINEAR-FAMILY ABSORPTION AS THE NAMED --fade-color BRANCH ABOVE,
+        # extended to auto-detected fades 2026-08-24 (previously this loop only ran
+        # behind an explicit --fade-color, leaving auto-detect exposed to the exact
+        # ghost-boundary bug e9f8520 fixed for the named case). detect_fading_colors
+        # flags a colour only when it appears as a large region at flat PARTIAL alpha
+        # (the partial_fraction test); a genuine paler stage of the SAME fading
+        # element can fail that test on its own -- too small, or itself mostly solid
+        # in most frames -- and survive build_art_palette's provisional pass as an
+        # independent "solid" entry, which then becomes a flood-fill barrier and
+        # freezes that stage fully opaque instead of fading with the rest of its
+        # family. Anchored on each auto-detected colour's own ray from the
+        # background, same 0.95 cosine floor Defect B widened the named case to.
+        _auto_absorb_bg = np.asarray(bg_rgb, dtype=np.float32)
+        for w in list(parents):
+            _absorb_collinear_paler_stages(w, provisional, parents, _auto_absorb_bg)
     palette = build_art_palette(rgb_frames, bg_rgb, protect_parents=parents,
                                 force_include=parents if fade_hexes else None)
     if len(palette) == 0:
@@ -5588,6 +5903,14 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
                     f"detected art colour. Detected: " +
                     ', '.join('#%02x%02x%02x' % tuple(int(v) for v in c) for c in palette))
             fading.add(i)
+        # The named colours' own absorbed family members (see the collinear-family
+        # loop above) must ALSO be marked fading here, not just the exact hexes the
+        # caller typed -- `parents` already carries the whole family, `want` does
+        # not. Missing this was a real bug: the family survived as separate palette
+        # entries (protected from being merged away) but rendered fully opaque
+        # anyway, because nothing told the unmix step they were fading too.
+        fading |= {i for i, c in enumerate(palette)
+                   if any(float(np.linalg.norm(c - q)) < 1e-6 for q in parents)}
         say("fading colours (from --fade-color): " +
             ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in sorted(fading)))
     else:
@@ -5622,6 +5945,76 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
 
     bg = np.asarray(bg_rgb, dtype=np.float32)
     solid_idx = [i for i in range(len(palette)) if i not in fading]
+    fading_idx = sorted(fading)
+    # Which NAMED anchor family each fading colour belongs to -- needed so the
+    # family-component-uniformity pass (below) never merges two UNRELATED
+    # fading elements (e.g. hurricane.gif's pink fill and navy outline) into
+    # one connected component just because they happen to touch. Confirmed
+    # real bug: an earlier version grouped ANY adjacent fading-family pixels
+    # regardless of anchor, so the pinwheel's navy outline merged with the
+    # badge's own pink/orange fill into one giant blob, and that blob's own
+    # true outer silhouette edge (which legitimately ramps to t~0) dragged
+    # the whole thing's summary alpha toward 0, rendering the pinwheel
+    # invisible. With --fade-color, each fading index is assigned to
+    # whichever NAMED hex it is nearest to in RGB space (the absorption loop
+    # above already guarantees every absorbed member is closer to its own
+    # anchor than to a different one). Auto-detected fading (no --fade-color)
+    # never runs the absorption loop, so each member is already its own
+    # singleton family.
+    # Nearest-EUCLIDEAN-DISTANCE anchor was measured WRONG: a very pale
+    # colour sits numerically close to background regardless of its hue,
+    # so two genuine pale members of the NAVY family (#9078a7, #ceb7c3)
+    # were nearest in raw RGB distance to the unrelated PINK fill anchor
+    # (#db4b86) and got merged into it -- a 273,222px blob spanning
+    # nearly the whole 640x640 canvas, whose own true silhouette edge
+    # (legitimately t~0) then dragged the summary alpha of that entire
+    # merged mass to 0. Match the SAME test the absorption loop(s) above
+    # used to build these families in the first place: which anchor's own
+    # ray from the background is this colour most COLLINEAR with (highest
+    # cosine), not which anchor is numerically closest. Anchors are the
+    # NAMED --fade-color hexes when given, or (2026-08-24) each
+    # auto-detected fading colour's own pre-absorption colour otherwise --
+    # both are the same kind of thing: the ORIGINAL member of each family,
+    # before its paler collinear stages were folded in.
+    _family_anchors = want if fade_hexes else _auto_anchors
+    bg_arr = np.asarray(bg_rgb, dtype=np.float32)
+    anchor_dirs = [w - bg_arr for w in _family_anchors]
+    family_of = {i: _nearest_anchor_by_cosine(palette[i], anchor_dirs, bg_arr)
+                 for i in fading_idx}
+    protect_mask = None
+    protect_k = None
+    if protect_region_spec:
+        try:
+            protect_mask = parse_protect_regions(protect_region_spec, rgb_frames[0].shape[:2])
+        except ValueError as e:
+            raise SystemExit(
+                f"--fade-protect-region '{protect_region_spec}' could not be parsed: {e}. "
+                f"Expected circle:cx,cy,r or rect:x,y,w,h, `;`-separated for several.")
+        if protect_colors_spec:
+            _pc = [(h.strip(), np.array(hex_to_rgb(h.strip()), dtype=np.float32))
+                   for h in protect_colors_spec.split(',') if h.strip()]
+            _pc_families = set()
+            for _hex, w in _pc:
+                dists = [float(np.linalg.norm(palette[i] - w)) for i in fading_idx]
+                nearest_j = int(np.argmin(dists))
+                if dists[nearest_j] > 30:
+                    raise SystemExit(
+                        f"--fade-protect-colors #{_hex} does not match any detected "
+                        f"fading colour (nearest is #{rgb_to_hex(tuple(int(v) for v in palette[fading_idx[nearest_j]]))}, "
+                        f"distance {dists[nearest_j]:.1f}). Detected fading colours: " +
+                        ', '.join('#%02x%02x%02x' % tuple(int(v) for v in palette[i]) for i in fading_idx))
+                # Family assignment uses the SAME cosine test family_of itself
+                # uses on the TYPED hex directly -- not the nearest palette
+                # entry's own family via a second Euclidean lookup, which
+                # reproduces the exact pale-colour-nearest-wrong-anchor bug
+                # family_of's own history already measured and fixed (a typed
+                # hex landing closer in raw RGB to the WRONG anchor than to
+                # the one it names would otherwise silently inherit the wrong
+                # palette entry's family). The distance check above still
+                # validates the hex matches a REAL detected colour; this only
+                # changes which family that match is credited to.
+                _pc_families.add(_nearest_anchor_by_cosine(w, anchor_dirs, bg_arr))
+            protect_k = [i for i in fading_idx if family_of[i] in _pc_families]
     struct8 = ndimage.generate_binary_structure(2, 2)
 
     # ART PRIOR -- how often each pixel position is SOLID art across the whole
@@ -5646,7 +6039,9 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
     for rgb in rgb_frames:
         k, t, res = unmix_against_palette(rgb, bg_rgb, palette)
         solid = np.isin(k, solid_idx)
-        art_prior += ((res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA)))
+        seam = fading_seam_mask(rgb, palette, fading_idx, FADE_RESIDUAL_TOLERANCE)
+        art_prior += (((res > FADE_RESIDUAL_TOLERANCE) & ~seam)
+                      | (solid & (t >= FADE_BARRIER_ALPHA)))
     art_prior /= max(len(rgb_frames), 1)
 
     out_rgb, out_alpha = [], []
@@ -5660,14 +6055,55 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         coverage_ok += int((res <= FADE_RESIDUAL_TOLERANCE).sum())
 
         solid = np.isin(k, solid_idx)
-        barrier = (res > FADE_RESIDUAL_TOLERANCE) | (solid & (t >= FADE_BARRIER_ALPHA))
+        seam = fading_seam_mask(rgb, palette, fading_idx, FADE_RESIDUAL_TOLERANCE)
+        ambiguous = (res > FADE_RESIDUAL_TOLERANCE) & ~seam
+        definite = solid & (t >= FADE_BARRIER_ALPHA)
         # A near-opaque translucent element occludes; block it, but only where
         # solid art usually lives (see art_prior above).
-        barrier |= (t >= FADE_OPAQUE_BLOCK) & (~solid) & (art_prior >= FADE_ART_PRIOR)
+        soft_block = (t >= FADE_OPAQUE_BLOCK) & (~solid) & (art_prior >= FADE_ART_PRIOR)
+        barrier = ambiguous | definite | soft_block
         lab, _ = ndimage.label(~barrier)
         border = set(np.unique(np.concatenate(
             [lab[0], lab[-1], lab[:, 0], lab[:, -1]]))) - {0}
         outside = np.isin(lab, list(border)) if border else np.zeros_like(barrier)
+
+        # A pocket sealed ONLY by ambiguous pixels (never DEFINITE solid art or
+        # a genuine near-opaque occluder) is not necessarily protected design --
+        # it can be the fading art's OWN interior, cut off from the border only
+        # because two of its colours meet at an angle unmix_against_palette
+        # can't explain as a single background blend (confirmed real case:
+        # hurricane.gif frame 78, where a spinning icon's edge sealed off part
+        # of the badge's own translucent field). Re-test such a pocket with
+        # ambiguous pixels excluded from the barrier entirely; if THAT reaches
+        # the border, nothing solid was actually sealing it. Still refuse a
+        # pocket that is itself mostly background-coloured -- that is the
+        # signature of protected same-colour-as-background interior design
+        # (confirmed real case: crystal.gif's white interior, indistinguishable
+        # from true background by colour alone and protected ONLY by staying
+        # enclosed), which this same loosening would otherwise also expose.
+        enclosed = (~barrier) & (~outside)
+        if enclosed.any() and ambiguous.any():
+            loose_barrier = definite | soft_block
+            lab_loose, _ = ndimage.label(~loose_barrier)
+            border_loose = set(np.unique(np.concatenate(
+                [lab_loose[0], lab_loose[-1], lab_loose[:, 0], lab_loose[:, -1]]))) - {0}
+            loose_reachable = (np.isin(lab_loose, list(border_loose))
+                               if border_loose else np.zeros_like(barrier))
+            promote = np.zeros_like(barrier)
+            for cid in np.unique(lab[enclosed]):
+                if cid == 0:
+                    continue
+                comp = lab == cid
+                if comp.sum() < FADE_SEAL_MIN_SIZE:
+                    continue
+                if not loose_reachable[comp].any():
+                    continue
+                if (t[comp] < FADE_SEAL_BG_T).mean() >= FADE_SEAL_BG_MAX:
+                    continue
+                promote |= comp
+            if promote.any():
+                outside = outside | promote
+
         bgside = ndimage.binary_dilation(outside, struct8, iterations=FADE_EDGE_DILATE)
 
         alpha = np.full(rgb.shape[:2], 255.0, dtype=np.float32)
@@ -5676,6 +6112,45 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         exact = bgside & (res <= FADE_RESIDUAL_TOLERANCE)
         alpha[exact] = t[exact] * 255.0
         rgb_out[exact] = palette[k[exact]]
+
+        # BORDER BANDING FIX: among `exact` pixels whose best match is a
+        # FADING colour, ALWAYS blend over the WHOLE fading family by
+        # softmax(-residual/T) weight -- never a hard on/off gate, and never
+        # just the best two. Restricted to fading_idx deliberately -- an
+        # unrestricted version (blending against solid art too) was measured
+        # to corrupt crystal/gift/love/heart broadly (461/461 frames
+        # differed, max_rgb_delta up to 255): a background-adjacent pixel can
+        # have a near-tied residual against two UNRELATED solid art colours
+        # that happen to sit close in colour space, and blending those is
+        # nonsense -- the banding this fix targets only happens BETWEEN
+        # members of the same fading family. A first version blended only the
+        # best TWO matches (top-2) and was measured to barely move hurricane's
+        # octagon border: two real ADJACENT source pixels still stepped
+        # 22->122, because each pixel's own top-2 blend was individually
+        # correct but WHICH two members ranked "top-2" was itself a discrete
+        # choice that flipped between them -- the family this asset absorbs
+        # has 5-9 close members, not 2, so limiting the blend to the winning
+        # pair just moved the cliff to the pair's own boundary instead of
+        # removing it (unmix_family_blend's docstring has the full trace).
+        # Summing every family member, softmax-weighted, removes that second
+        # discreteness: a ray that stops ranking in the top two fades its
+        # contribution out continuously instead of dropping to zero. This
+        # only overwrites a SUBSET of `exact` -- it never touches which
+        # pixels are barrier, solid, definite, seam or bgside/outside, all of
+        # which were already decided above from the untouched single-winner
+        # k/t/res.
+        blend = exact & np.isin(k, fading_idx)
+        if blend.any() and len(fading_idx) >= 1:
+            # Restricted to the BLEND-eligible subset (typically a small
+            # border fraction of the frame) rather than the whole image --
+            # unmix_family_blend otherwise redoes, for every pixel, the same
+            # per-family projection/residual work unmix_against_palette
+            # already did above for the frame as a whole.
+            _sel = rgb[blend][None, :, :]
+            t_sel, rgb_sel = unmix_family_blend(_sel, bg_rgb, palette, fading_idx,
+                                                FADE_BLEND_SOFTMAX_T)
+            alpha[blend] = t_sel[0] * 255.0
+            rgb_out[blend] = rgb_sel[0]
 
         # Corners where two art colours meet the background are not a clean
         # two-colour blend. Unmix them generically; the alpha floor keeps the
@@ -5694,6 +6169,22 @@ def recover_fade_alpha_frames(rgb_frames, bg_rgb, fade_hexes=None, log=None):
         clear = alpha < 1.0
         alpha[clear] = 0.0
         rgb_out[clear] = bg
+
+        if protect_mask is not None:
+            # The region is a full disc/rect -- it also covers true BACKGROUND
+            # showing through concave gaps in the protected shape (e.g. the
+            # notches between a pinwheel's blades) and any other design inside
+            # the same radius. Forcing THOSE pixels opaque too paints a solid
+            # block of the region's own source colour (confirmed real case:
+            # a literal white disc appeared over hurricane.gif's pinwheel,
+            # because the region circle also covered the background peeking
+            # through between its arms). Only force pixels that are actually
+            # ART within the region -- confidently not a clean background
+            # match -- never the whole disc/rect indiscriminately.
+            colour_ok = np.isin(k, protect_k) if protect_k is not None else True
+            protect_here = protect_mask & (res <= FADE_RESIDUAL_TOLERANCE) & (t > 0.02) & colour_ok
+            alpha[protect_here] = 255.0
+            rgb_out[protect_here] = rgbf[protect_here]
 
         interior = (~barrier) & (~outside)
         interior_total += int(interior.sum())
@@ -6889,6 +7380,68 @@ def measure_outer_ring_background_fraction(rgb, alpha, bg_rgb, palette,
     return float((d_bg < d_art).mean())
 
 
+def measure_outer_ring_blend_fraction(rgb, alpha, bg_rgb, palette, opaque_min=250,
+                                       ring_width=2, lo=0.08, hi=0.92, _unmix_cache=None,
+                                       _cache_key=None):
+    """
+    Fraction of the outermost NEAR-OPAQUE ring that unmixes as a genuine
+    background/art BLEND (neither purely one nor the other) rather than a clean
+    flat colour. High = leftover antialiasing the edge cleanup should have eaten.
+
+    `measure_outer_ring_background_fraction` above asks a narrower question --
+    is a ring pixel closer to background than to art -- which is blind to a
+    halo pixel that is MORE than half art (`d_bg >= d_art`, so it never counts)
+    but still visibly an unresolved antialiasing mix rather than a clean edge.
+    That is exactly the gap on galaxy/secure/broadcast, confirmed by measuring
+    both signals against the real `--auto --edge-cleanup-erosion N` output at
+    N=0,1,2 (2026-08-24): `measure_outer_ring_background_fraction` reads 0.0000
+    at EVERY level on galaxy.gif -- the fringe metric this asset's own
+    calibration relies on cannot see the problem at all -- while this measure
+    reads 0.5989 -> 0.1359 -> 0.0003, a clean monotone signal matching the
+    visible haloing. On secure.gif both agree an erosion-1 halo remains
+    (0.0967 here vs the background-fraction reading of 0.0, which had already
+    reached its own floor and so gave calibration nothing left to act on).
+
+    Reuses `unmix_against_palette`'s own blend test (`res` within tolerance,
+    `t` strictly between `lo` and `hi`) rather than a fresh colour-distance
+    rule, because that is the same definition `detect_fading_colors` already
+    uses for "this pixel is a partial blend, not a flat colour" -- one
+    vocabulary for the same underlying question, not two independently-tuned
+    ones. `ring_width=2` (vs `measure_outer_ring_background_fraction`'s 1) is
+    deliberately wider: a leftover antialiasing rim is not always a single
+    pixel deep, and the whole point of this measure is to see the ring
+    `measure_outer_ring_background_fraction`'s narrower reach can miss.
+
+    Returns None when the frame has no such ring, so callers can tell
+    "measured zero" apart from "nothing to measure".
+    """
+    solid = alpha >= opaque_min
+    ring = ndimage.binary_dilation(~solid, iterations=ring_width) & solid
+    if not ring.any():
+        return None
+    pal = np.asarray(palette, np.float32).reshape(-1, 3)
+    if len(pal) == 0:
+        return None
+    # `_unmix_cache`/`_cache_key`, when the caller supplies them: unmix_
+    # against_palette's result depends only on `rgb`/`bg_rgb`/`palette`, none
+    # of which change across erosion candidates in calibrate_edge_cleanup_
+    # erosion's loop -- only `alpha` (and hence `ring`) does. LAZY (computed
+    # only on the first candidate whose ring is actually non-empty for this
+    # frame, cached for the rest) rather than precomputed up front, because
+    # eagerly unmixing every frame before any candidate is even checked would
+    # do the work even for a frame no candidate ever produces a ring for --
+    # and would run on whatever `rgb` shape the caller passes before this
+    # function's own ring check has had a chance to short-circuit.
+    if _unmix_cache is not None and _cache_key in _unmix_cache:
+        t, res = _unmix_cache[_cache_key]
+    else:
+        _, t, res = unmix_against_palette(rgb, bg_rgb, pal)
+        if _unmix_cache is not None:
+            _unmix_cache[_cache_key] = (t, res)
+    is_blend = ring & (res <= FADE_RESIDUAL_TOLERANCE) & (t > lo) & (t < hi)
+    return float(is_blend[ring].mean())
+
+
 #: The most erosion any AUTOMATIC decision may reach. Read by BOTH consumers -- the
 #: calibrator's selectable set and `--auto`'s post-render escalation -- because a cap one of
 #: them respects and the other walks straight past is the two-consumer split SS35, SS36 and
@@ -7017,6 +7570,13 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
     """
     log = log if log is not None else []
     table = {}
+    # LAZY per-frame cache, shared across every candidate in this call: unmix_
+    # against_palette's result is invariant across erosion candidates for a
+    # given frame (only `alpha`/`ring` changes per candidate), so measure_
+    # outer_ring_blend_fraction computes it at most once per frame -- on
+    # whichever candidate first has a non-empty ring for that frame -- instead
+    # of once per (candidate, frame) pair.
+    _unmix_cache = {}
     for e in candidates:
         if e == 0:
             cand_alpha = alpha_frames
@@ -7026,8 +7586,32 @@ def calibrate_edge_cleanup_erosion(rgb_frames, alpha_frames, bg_rgb, palette,
             # produces is measuring a counterfactual.
             cand_alpha = erode_alpha_edge_protecting_damaged_components(
                 alpha_frames, e, tiny_masks, enabled=protect_components)
-        vals = [v for rgb, al in zip(rgb_frames, cand_alpha)
-                if (v := measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)) is not None]
+        # TWO SIGNALS, combined by per-frame MAX, not one.
+        # `measure_outer_ring_background_fraction` asks whether a ring pixel is
+        # closer to background than to art; `measure_outer_ring_blend_fraction`
+        # asks whether it unmixes as a genuine partial blend at all. Measured
+        # 2026-08-24 against real `--auto --edge-cleanup-erosion N` output:
+        # galaxy.gif reads 0.0000 on the background-fraction signal at EVERY
+        # candidate level -- its own calibration floor is unreachable-by-design
+        # blind to this asset's real halo -- while the blend-fraction signal
+        # reads 0.5989 -> 0.1359 -> 0.0003, the real haloing a human sees, and
+        # the only one of the two that can select erosion=1 here. Taking the
+        # max lets either signal veto a floor the other already reached;
+        # neither replaces the other, since background-fraction still catches
+        # a pale fringe that IS closer to background than to any art colour,
+        # which blend-fraction's narrower t-range test does not directly test
+        # for. rocket.gif and secure.gif, both already correctly calibrated to
+        # erosion=1 under the old single-signal rule, land on the identical
+        # erosion=1 under the combined rule too -- confirmed on real measured
+        # values (references/lessons.md SS45), not assumed.
+        vals = []
+        for fi, (rgb, al) in enumerate(zip(rgb_frames, cand_alpha)):
+            bgv = measure_outer_ring_background_fraction(rgb, al, bg_rgb, palette)
+            blv = measure_outer_ring_blend_fraction(rgb, al, bg_rgb, palette,
+                                                     _unmix_cache=_unmix_cache, _cache_key=fi)
+            if bgv is None and blv is None:
+                continue
+            vals.append(max(v for v in (bgv, blv) if v is not None))
         table[e] = round(float(np.mean(vals)), 4) if vals else None
     measured = {e: v for e, v in table.items() if v is not None}
     if not measured:
@@ -7689,13 +8273,36 @@ def process(input_path, output_path, args, diagnostics=None):
                   + " being IGNORED for this run -- not weakened, ignored. Pick one: fade "
                     "recovery, or region protection. (references/lessons.md SS34.4)",
                   file=sys.stderr)
+        # --fade-protect-colors only means anything as a restriction WITHIN a
+        # --fade-protect-region -- recover_fade_alpha_frames only inspects it inside
+        # `if protect_region_spec:`. Named alone it is silently never read at all,
+        # unlike every other exclusive/dependent flag pair in this file, which all warn.
+        if (getattr(args, 'fade_protect_colors', None)
+                and not getattr(args, 'fade_protect_region', None)):
+            print("WARNING: --fade-protect-colors only restricts a --fade-protect-region "
+                  "-- without a region it is being IGNORED for this run, not applied more "
+                  "broadly. Add --fade-protect-region circle:cx,cy,r|rect:x,y,w,h, or drop "
+                  "--fade-protect-colors.", file=sys.stderr)
         fade_log = []
         recovered_rgb, recovered_alpha = recover_fade_alpha_frames(
             rgb_frames_raw, hex_to_rgb(args.bg_color),
             fade_hexes=[h.strip() for h in args.fade_color.split(',')] if getattr(args, 'fade_color', None) else None,
-            log=fade_log)
+            log=fade_log, protect_region_spec=getattr(args, 'fade_protect_region', None),
+            protect_colors_spec=getattr(args, 'fade_protect_colors', None))
         for line in fade_log:
             print(line, file=sys.stderr)
+    elif getattr(args, 'fade_protect_region', None) or getattr(args, 'fade_protect_colors', None):
+        _fp_named = [f for f, v in (
+            ('--fade-protect-region', getattr(args, 'fade_protect_region', None)),
+            ('--fade-protect-colors', getattr(args, 'fade_protect_colors', None)),
+        ) if v]
+        print("WARNING: " + " and ".join(_fp_named) + " only " +
+              ("apply" if len(_fp_named) > 1 else "applies") +
+              " alongside --recover-fade-alpha -- without it " +
+              ("they are" if len(_fp_named) > 1 else "it is") +
+              " being IGNORED for this run, not weakened. Add --recover-fade-alpha "
+              "--fade-color <hex> and a .webp/.avif/.apng output to use them.",
+              file=sys.stderr)
 
     rgb_frames = []
     alpha_frames = []
@@ -8607,10 +9214,6 @@ def _run_one_job(job_input, job_output, base_args, arg_parser, overrides=None,
         setattr(job_args, key, value)
     apply_pixel_art_preset(job_args)
 
-    if job_args.protect_outline_color and job_args.protect_region:
-        raise ValueError("job sets both protect_outline_color and protect_region "
-                         "-- use only one")
-
     job_label = os.path.basename(job_input)
     with _prefixed_stderr(f"  [{job_label}] "):
         if not job_args.bg_color:
@@ -8859,6 +9462,43 @@ def apply_pixel_art_preset(args, argv=None):
                   f"mean it.", file=sys.stderr)
 
 
+#: Every one of these is a plain argparse value (default=None, no action='append')
+#: whose spec syntax already supports MULTIPLE values joined within ONE occurrence --
+#: ';' for a region list, ',' for a colour list. A second occurrence of the same flag
+#: is never a valid way to add a second value: argparse silently keeps only the LAST
+#: occurrence, discarding the first with no warning. Found auditing the exact same
+#: pattern in recommend()'s own suggestion logic (references/lessons.md SS46) --
+#: recommend() could no longer produce it, but a human (or an agent reasoning about
+#: flags directly rather than pasting recommend()'s output) typing the flag twice
+#: instead of joining hits the identical silent-overwrite landmine on the raw CLI.
+_SINGLE_OCCURRENCE_REGION_FLAGS = {
+    '--protect-outline-color': ',', '--fade-protect-colors': ',',
+    '--protect-region': ';', '--fade-protect-region': ';',
+    '--remove-region': ';', '--unprotect-region': ';', '--translucent-region': ';',
+}
+
+
+def refuse_repeated_region_flags(argv, error_fn):
+    """Refuse loudly rather than silently keep only the last occurrence.
+
+    Counts occurrences directly from argv (both `--flag value` and `--flag=value`
+    forms) since argparse itself records no provenance past the final parsed value.
+    """
+    counts = {}
+    for tok in argv:
+        name = tok.split('=', 1)[0]
+        if name in _SINGLE_OCCURRENCE_REGION_FLAGS:
+            counts[name] = counts.get(name, 0) + 1
+    dupes = [f for f, n in counts.items() if n > 1]
+    if dupes:
+        _examples = '; '.join(
+            f"{f} was passed {counts[f]} times -- join the values with "
+            f"'{_SINGLE_OCCURRENCE_REGION_FLAGS[f]}' inside ONE occurrence instead"
+            for f in dupes)
+        error_fn(f"a flag was repeated instead of joined, which silently drops every "
+                 f"value but the last: {_examples}.")
+
+
 def typed_option_names(argv=None):
     """
     The long-option names the user ACTUALLY typed, as attribute names.
@@ -8896,8 +9536,18 @@ def post_render_fringe_check(input_path, output_path, tolerance=15):
         return None
     bg = detect_bg_color(in_rgb[0])
     pal = build_art_palette(in_rgb[::max(1, len(in_rgb) // 8)], bg)
-    vals = [v for rgb, al in zip(out_rgb, out_alpha)
-            if (v := measure_outer_ring_background_fraction(rgb, al, bg, pal)) is not None]
+    # Same two-signal max() combination calibrate_edge_cleanup_erosion uses (SS45.2):
+    # background_fraction alone reads 0.0000 on a halo that is more art than
+    # background (galaxy/secure/broadcast), which would let this exact class of
+    # regression pass --verify clean. blend_fraction is the signal that actually
+    # sees it.
+    vals = []
+    for rgb, al in zip(out_rgb, out_alpha):
+        bgv = measure_outer_ring_background_fraction(rgb, al, bg, pal)
+        blv = measure_outer_ring_blend_fraction(rgb, al, bg, pal)
+        if bgv is None and blv is None:
+            continue
+        vals.append(max(v for v in (bgv, blv) if v is not None))
     return round(float(np.mean(vals)), 4) if vals else None
 
 
@@ -9258,6 +9908,23 @@ def auto_run(input_path, output_path, args, parser):
 
 
 
+def _warn_if_overwriting_explicit_output(output_path):
+    """
+    `_default_output_path`/`derive_output_path` already refuse to silently overwrite a
+    DERIVED name (they escalate to `_v2`, `_v3`, ...). An EXPLICITLY given output path
+    skips that entirely and writes straight through -- confirmed 2026-08-23 while
+    investigating a real accidental overwrite: an agent re-running this tool on a path
+    it named itself (the normal shape of an iterative session) would silently destroy
+    its own prior output with no warning printed. Not a refusal -- an explicit path may
+    genuinely be an intentional re-render of the same delivery -- but it must not be
+    silent.
+    """
+    if output_path and os.path.exists(output_path):
+        print(f"WARNING: {output_path!r} already exists and will be overwritten. "
+              f"This path was given explicitly, not derived, so it is not "
+              f"auto-versioned the way a default output name would be.", file=sys.stderr)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -9333,6 +10000,31 @@ def main():
                          '-- `;` rather than `,` between regions since `,` '
                          'already separates each region\'s own numeric '
                          'fields. Each region\'s mask is unioned.')
+    p.add_argument('--fade-protect-region', default=None,
+                    help='Only with --recover-fade-alpha: force a manual region to stay '
+                         'FULLY OPAQUE at its original source colour, regardless of what '
+                         'the fade-colour classification computes -- circle:cx,cy,r or '
+                         'rect:x,y,w,h, same multi-region `;`-joined syntax as '
+                         '--protect-region. For a design element that shares a named '
+                         '--fade-color hue with something that genuinely fades (e.g. an '
+                         'inner icon painted the same navy as an outline that DOES fade) '
+                         'but must never fade itself. Confirmed real case (hurricane.gif): '
+                         'a spinning pinwheel icon reuses the outline\'s exact colour '
+                         'family, so naming that colour for the outline\'s own fade also '
+                         'made the icon translucent -- there is no way to say "this hex '
+                         'fades here but not there" through colour alone, since it is the '
+                         'literal same palette entry in both places.')
+    p.add_argument('--fade-protect-colors', default=None,
+                    help='Restricts --fade-protect-region to only force-opaque pixels '
+                         'whose matched colour is near-collinear with one of these named '
+                         'hexes (comma-separated) -- without it, the region force-opaques '
+                         'EVERY art pixel inside it, including a different fading element '
+                         '(e.g. a fill colour) that legitimately overlaps the same region '
+                         'and should keep fading. Confirmed real case (hurricane.gif): a '
+                         'region sized to cover the pinwheel also covered part of the '
+                         'badge\'s own translucent fill, and forcing that opaque too '
+                         'painted a visible pale disc from the fill\'s already-faded '
+                         'source colour.')
     p.add_argument('--remove-region', default=None,
                     help='Manual FORCE-REMOVE region (inverse of '
                          '--protect-region): circle:cx,cy,r or rect:x,y,w,h, '
@@ -9849,6 +10541,7 @@ def main():
                         'the fringe without eating thin strokes. In-memory: costs one erosion '
                         'pass per candidate, not one render.')
     args = p.parse_args()
+    refuse_repeated_region_flags(sys.argv[1:], p.error)
 
     # Which positional is an INPUT and which is THE OUTPUT depends on the mode, so it
     # cannot be expressed in argparse itself. Everything downstream keeps reading
@@ -9881,9 +10574,11 @@ def main():
             print(json.dumps(run_read_only(
                 args.input_paths, 'analysis',
                 lambda pth: analyze(pth, tolerance=args.tolerance)), indent=2))
+            print(_ANALYZE_RECOMMEND_NOTE, file=sys.stderr)
             return
         report = analyze(args.input_gif, tolerance=args.tolerance)
         print(json.dumps(report, indent=2))
+        print(_ANALYZE_RECOMMEND_NOTE, file=sys.stderr)
         return
 
     if args.recommend:
@@ -9942,6 +10637,7 @@ def main():
         if not args.bg_color:
             _im = Image.open(args.input_gif)
             args.bg_color = rgb_to_hex(detect_bg_color(np.array(_im.convert('RGB'))))
+        _warn_if_overwriting_explicit_output(args.output_gif)
         auto_run(args.input_gif, args.output_gif, args, p)
         return
 
@@ -9963,8 +10659,6 @@ def main():
         args.bg_color = rgb_to_hex(detect_bg_color(rgb0))
         print(f'Auto-detected background color: #{args.bg_color}', file=sys.stderr)
 
-    if args.protect_outline_color and args.protect_region:
-        p.error('Use only one of --protect-outline-color or --protect-region')
     if args.tumble_safe and (args.protect_outline_color or args.protect_region):
         p.error('--tumble-safe replaces --protect-outline-color/--protect-region '
                  '(their single-frame enclosure geometry does not generalize '
@@ -9974,6 +10668,7 @@ def main():
         p.error('--keep-bg-blob-if-near only applies with --tumble-safe')
 
     apply_pixel_art_preset(args)
+    _warn_if_overwriting_explicit_output(args.output_gif)
     process(args.input_gif, args.output_gif, args)
 
 

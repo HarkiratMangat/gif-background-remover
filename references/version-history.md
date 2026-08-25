@@ -1,5 +1,13 @@
 # Skill version history
 
+**v6.2.0 is still PENDING as of 2026-08-24** — not yet minted, since it hasn't merged. Its full entry belongs here only once a real merge happens; until then the working detail lives in `SKILL.md`'s own version header. **A version is minted when a merge is approved, not per commit on a branch.**
+
+## v6.1.1 — full entry
+
+**v6.1.1** was a *correction* bump: two packaged files pointed at things the sandbox cannot open, and the gate meant to catch that could not see either of them.
+- **A pointer a live session cannot follow is a broken instruction, and two shipped in the v6.1.0 package.** One was a function docstring citing an investigation document that exists only in the development repo; the other named two corpus files from a gitignored asset folder. Both were found by gating the BUILT ARTIFACT rather than the working tree, which is the only place "tracked but not packaged" is visible. The provenance prose stays — a reader still learns where a number came from; only the unreachable paths are gone.
+- **The gate was blind in two ways, and both are now closed.** It scanned only **backticked** tokens — so a PYTHON DOCSTRING, which uses no backticks, was invisible to it, in the one file a live session reads most closely. And it tested `os.path.exists()`, so a path that does not resolve from the repo root fell through every branch: a pointer is unreachable whether or not this machine happens to resolve it. Both defects are proven red-green — reintroducing either makes the repo's documentation gate exit 1 — and the strengthened gate immediately found a third pointer on a line that had just been hand-edited.
+
 ## v6.1.0 — full entry
 
 **v6.1.0** was a *minor* bump: two new capabilities, eight defects of one shape, and two new `--auto` refusals.
