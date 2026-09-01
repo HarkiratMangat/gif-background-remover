@@ -59,6 +59,38 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ⚠️ **Process note worth keeping.** Every claim in the first draft of this item came from whole-canvas pixel counts and was plausible. Harkirat looked at two contact strips and overturned two of them in one sentence. **Compare a metric against what a WORKING case scores before calling a delta a fix** — the working number was in the same table.
 
+### `[P0 · M · Opus5-High]` `--recommend` cannot reach the flags that solve "same colour, opposite treatment" — measured on grenade.gif *(filed 2026-09-01, from the four-asset review that produced `references/lessons.md` §48)*
+**This is the sharpest autonomy gap the review found, and it is a REACHABILITY gap, not a missing capability.** `grenade.gif`'s fuse-box highlight bar runs from pale lavender to **pure `#ffffff`, bit-identical to the background** — design separable from background only by topology. `--recommend` suggests `--protect-band-only 4`, which by construction protects a band around the removable core and cannot keep a core that IS the background colour.
+
+Measured 2026-09-01, white-bar pixels lost on the worst frame (the bar is present on 42 of 62 frames):
+
+| run | bar px lost | ring-hole residual |
+|---|---|---|
+| `--recommend`'s `suggested_command` + the user's erosion request | **2,724** | 0 |
+| `--auto` | **2,724**, and its own post-render verify printed `leftover background (worst frame): 0` and declared success | 0 |
+| `--tumble-safe --keep-bg-blob-if-near ff00ff --hole-size-range 690,740 --hole-max-aspect 1.3 --protect-band-only 4 --feather-band-multiplier 3.3` | **0** | 0 |
+
+**Why the recommender cannot get there:** `--tumble-safe` is appended only when `tumble_risk.likely_tumble_risk` is true — a foreground/background size-MARGIN test, measuring 542.07x on this asset, nowhere near its 3x trigger. That gate is about a tumbling silhouette; §14's use of the same flag is about HOLE DISAMBIGUATION, an unrelated question wearing the same flag. And `--keep-bg-blob-if-near`, `--hole-size-range` and `--hole-max-aspect` appear in **no `flags.append` anywhere in `recommend()`** — enumerated, the only four flags it can append are `--erosion-exempt-transient`, `--pixel-art`, `--recover-fade-alpha` and `--tumble-safe`.
+
+**Concrete next action:** find a discriminator for "an enclosed interior whose core is EXACTLY the background colour while a same-colour region elsewhere must be removed", then let `recommend()` emit the §14 combination with a measured size/aspect gate. ⚠️ **Do not close this by widening `is_intentional_design`'s narrow-miss band** — grenade's region 4 sits at 0.725 enclosure / 2.0% canvas against bars of 0.9 and 0.5@2.5%, and moving either to fit one asset is exactly the failure `feedback_do_not_relabel_when_a_measure_objects` names. Any change here alters the `--auto` refusal rate (12.8% across 304 assets today) and needs that re-measured, which is why it was NOT done in the session that found it.
+
+⚠️ **Second, related defect in the same asset: `verify()` has no term for design deleted by a protection flag that never covered it.** `--auto` reported `leftover background (worst frame): 0` over a render missing 2,724 px of white artwork on 42 frames. Same shape as §37's "the fringe metric has no term for what erosion costs". A candidate check: for every region `analyze()` saw as background-coloured-but-enclosed on SOME frames, report how many of its pixels went transparent — and say so, rather than only reporting the regions it labelled design.
+
+### `[P1 · M · Opus5-High]` Candidate regions are grouped by canvas proximity, not per-frame connectivity — one region id held a hole to punch AND decoration to keep *(filed 2026-09-01, `references/lessons.md` §48.7)*
+On `marketing-automation.gif`, the gear pinhole (1,641-3,727 px, must be removed) and the megaphone's white highlight stripe (~5,500-5,730 px, must be kept) are **two separate connected components in every one of 171 frames**, and `--recommend` returned them as a single "region 4", bbox `(287,200)-(468,484)`, because candidate regions are grouped by canvas-position proximity across the whole animation.
+
+Every downstream failure follows from that one merge, all measured 2026-09-01:
+- the `--unprotect-region rect:287,200,181,284` box the hint offers covers **both**, so following it verbatim deletes the stripe;
+- `--auto --assume-remove 002864` answers the merged region and destroys the stripe — **5,777 px transparent on the worst frame**;
+- a `--remove-region-track` seed taken from the region bbox would seed on the union rather than on the hole.
+
+**Interim mitigation shipped in v6.3.0:** the hint now says to seed the COMPONENT rather than the region box, and names the grouping as the reason. **The root fix is to split a candidate region by real per-frame connectivity**, which changes `analyze()` output for every asset and therefore needs a corpus re-measure — deliberately not attempted in the session that found it, per Harkirat's instruction to keep that session scoped to the four assets.
+
+⚠️ **The correct answer for this asset today is one command, and it works** — `--recover-fade-alpha --fade-color 6964f8 --remove-region-track "rect:437,301,32,67"` gives 0 residual opaque px in the hole and 0 gaps in the stripe across all 171 frames with the fade intact. The gap is that nothing derives that seed for you.
+
+### `[P2 · S · Sonnet5-High]` `--recommend` says nothing about size, on a tool whose second half is size fitting *(filed 2026-09-01)*
+`--recommend` returns a format ranking and a flag command and never mentions `--target-kb`, `--min-width` or `--min-quality`, even though a stated byte cap is one of the three cases SKILL.md's own size gate enumerates. A real session with "192px wide, under 256 KB, q65-85" in the brief hand-rolled a quality loop, timed out a tool call, and shipped two of four assets at 128 px wide when one fit call reached **192x215 at q85 / 236.2 KB** and full resolution at **498x558 / 196.9 KB**. Cheap candidate: when `--recommend` is given `--target-kb`, have it emit the fit flags alongside the render flags; failing that, have it name the fit call in evidence the way it names the format ranking.
+
 ### `[P1 · M · Opus5-Med]` Task 14c — derive the unprotect region from the ANIMATION, not one frame *(filed 2026-08-23, split out when the rest of its parent P0 shipped)*
 
 📄 `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md` Task 14c · `references/lessons.md` §43 · 📁 `local/2026-08-22-fade-edge-cases/`

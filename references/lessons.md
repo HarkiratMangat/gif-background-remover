@@ -81,6 +81,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 45. [Auto-detected fades never absorbed their own family; galaxy's erosion metric read zero at every level; and blending only the top two family members just relocates the border's cliff](#45-auto-detected-fades-never-absorbed-their-own-family-galaxys-erosion-metric-read-zero-at-every-level-and-blending-only-the-top-two-family-members-just-relocates-the-borders-cliff)
 46. [A doc fix for the --analyze/--recommend redundancy did not stop it recurring — the guarantee moved into the tool](#46-a-doc-fix-for-the---analyze---recommend-redundancy-did-not-stop-it-recurring--the-guarantee-moved-into-the-tool)
 47. [Six region/colour-list flags silently kept only the LAST occurrence when typed twice instead of joined](#47-six-regioncolour-list-flags-silently-kept-only-the-last-occurrence-when-typed-twice-instead-of-joined)
+48. [Four real assets, three rounds, and every answer already in the tool: the reachability gap](#48-four-real-assets-three-rounds-and-every-answer-already-in-the-tool-the-reachability-gap)
 
 **Symptom → section**, for scanning without reading the full ToC titles:
 
@@ -146,6 +147,13 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Flat 2-3 colour vector art called pixel art | §32.3 (the 16-colour floor's first real negatives) |
 | Native-resolution (1:1) pixel art read as antialiased | §32.7 (plateau_cliff_ratio needs a scale factor) |
 | A hole to punch MOVES, and matching decoration must be kept | §33 (`--remove-region-track`) |
+| A pinhole/cutout that must be REMOVED sits inside artwork and every flag protects it | §43, §48 (answer the coin flip; `--unprotect-region` static, `--remove-region-track` if it moves) |
+| `--recommend`'s `suggested_command` protected a region the user asked to REMOVE | §48 (`suggested_command` embeds a guess `--auto` refuses -- read `ambiguous_protection` first) |
+| `--auto` refuses on one file and renders a defect on the next | §48 (the refusal covers a coin-flip ENCLOSURE only; band-only protection deletes a pure-background-coloured design core silently) |
+| `--assume-remove` renders correctly and then warns the region got NO protection | §48 (fixed -- the check now skips a colour the caller answered) |
+| A white design element bit-identical to the background is deleted and `--verify` says clean | §48 (`--protect-band-only` cannot keep a pure-background-coloured core; use `--tumble-safe` + `--keep-bg-blob-if-near`) |
+| A hand-rolled `--avif-quality` loop cannot fit a byte cap and a stated width | §48, §42 (one `--target-kb` call with `--min-width`/`--min-quality`; shrinking flat art makes it BIGGER) |
+| One candidate region id covers two same-coloured blobs that need opposite treatment | §48 (regions are grouped by canvas proximity, not per-frame connectivity) |
 | A GIF this tool wrote plays only part way through | §34.1 (a fully transparent frame truncates it) |
 | `gifsicle: unknown block type` on our own output | §34.1 |
 | A fade comes out as a sudden pop instead of a smooth ramp | §34.2 (`--recover-fade-alpha` saturates) |
@@ -192,7 +200,7 @@ If you are about to re-diagnose something that smells like a past case — a fri
 | Downscaling an icon made the WebP LARGER, not smaller | §42 (LANCZOS invents intermediate colours; the art stops being flat and lossless entropy jumps) |
 | `NOTE: downscaling made this file LARGER than full resolution` in the fit log | §42 (the ladder is telling you frame-stride is the only lever paying on this content) |
 | A white area inside the artwork stays opaque and no protection flag removes it | §43 (`--unprotect-region` — every protection mechanism classifies an enclosed background-coloured region as design) |
-| I can fade the glow OR remove the interior white, never both | §43 (`--recover-fade-alpha` ignores protection flags; `--unprotect-region` is the one region flag that composes with it) |
+| I can fade the glow OR remove the interior white, never both | §43, §48 (`--recover-fade-alpha` ignores PROTECTION flags but honours all three region flags -- `--unprotect-region` static, `--remove-region-track` if the interior moves) |
 | `--remove-region` deleted the artwork along with the background | §43 (it force-deletes its whole box — measured −73% of the artwork; use `--unprotect-region`) |
 | A `--target-kb` run takes minutes and prints dozens of `tried ...` lines | §42 (it walks a real 120-rung grid, now concurrently at a probed worker count) |
 | The output silhouette is clean but a detail is missing | §37 (the fringe metric has no term for what erosion costs) |
@@ -2717,7 +2725,7 @@ Under LANCZOS the same asset blows up **seventeen-fold** at 0.75; under NEAREST 
 | `--remove-region` | 0 | **6,297** | 47,988 | 4.22% |
 | **`--unprotect-region`** | **0** | **23,631** | 65,865 | **4.48%** |
 
-**It is the one region flag that composes with `--recover-fade-alpha`**, because it is applied downstream of the fade render path — so "recover the flattened fade AND remove the interior white" is one command, not a choice between two.
+**It composes with `--recover-fade-alpha`**, because it is applied downstream of the fade render path — so "recover the flattened fade AND remove the interior white" is one command, not a choice between two. ⚠️ **This sentence used to say it was the ONLY region flag that composes. That is false**, and the wrong half is the load-bearing half: `--remove-region` and `--remove-region-track` are applied downstream too (`FADE_EXCLUSIVE_FLAGS` names only protection flags), and a session that believed this reached for a static box on a MOVING interior and spent three rounds on it. §48.3
 
 **Implementation note worth keeping.** No new removal code was needed: the per-frame mask is `region ∩ color_mask(frame, bg, tolerance)`, handed to the existing per-frame branch of `apply_remove_regions`, which already carries the de-fringe and taper handling a removal boundary needs. The feature that looked like a new subsystem was a new *mask*.
 
@@ -2897,3 +2905,77 @@ The 2026-08-19 three-agent trial measured 50-74 tool calls on a five-asset job a
 
 **Verified:** five falsifiers in this repo's own harness test suite for this fix — two flags typed twice each refuse with the correct separator named, the `=`-joined form is also caught (not just the space-separated form), a single occurrence is NOT flagged (the real falsifier: a guard that fires on everything would pass the positive tests trivially), and the documented `;`-joined multi-region syntax still works and is correctly left alone. The `--batch` manifest path is unaffected by construction — it never puts per-job region flags into `sys.argv` at all, since manifest entries are JSON keys, not repeated CLI tokens.
 
+## 48. Four real assets, three rounds, and every answer already in the tool: the reachability gap
+**Also searched as:** already solved and not found · the docs did not route me · flag exists but nobody reaches it · guessed instead of asked · suggested command was wrong · why did it take three rounds · discoverability · the answer was one flag away · reinvented per-frame geometry · hand-rolled the search
+
+Filed 2026-09-01 from a review of one real claude.ai job: four 640x640 Discord-style icons (`plates`, `grenade`, `ak47`, `marketing-automation`, 62-171 frames), asked for as AVIF at 192px wide under 256 KB. Two of the four took **three rounds of user-reported defects**, and the session ended up writing bespoke `scipy.ndimage` per-frame tracking and a two-pass render composite. **Every one of those problems already had a purpose-built flag.** Not one of the fixes below adds a capability; each closes the distance between a capability and an agent's chance of reaching it.
+
+The unifying shape is this project's own rule, applied to itself: *a warning in `--recommend`'s evidence does not count as a fix, because an autonomous run takes the suggested flags verbatim.* Six defects, all that shape.
+
+### 48.1 `suggested_command` can carry a guess `--auto` refuses to make
+The two entry points disagree, and the manual path in SKILL.md sends you to the weaker one. `--auto` STOPS on a coin-flip enclosure and names `--assume-protect` / `--assume-remove`. `--recommend`, on the same asset, returns one complete runnable `suggested_command` with `--protect-outline-color` inside it and puts the doubt in `evidence` only.
+
+Measured on `plates.gif`, whose two chain-loop pinholes are BACKGROUND the user explicitly asked to remove:
+
+| run | opaque px left inside the pinholes (worst frame) |
+|---|---|
+| `--recommend`'s `suggested_command`, verbatim | **374** |
+| the plain default pipeline | **0** |
+| `--auto` | refused, named both regions and both answers |
+| `--auto --assume-remove 002864` | **0** — correct, autonomously |
+
+So the correct fully-autonomous answer existed and was one flag away. **When `ambiguous_protection` is non-empty, answer it before rendering.** SKILL.md's manual path now says so at the point where it tells you the outline gate is safe to use directly.
+
+### 48.2 `--assume-remove` was then reported as a defect by the tool's own verifier
+`--auto --assume-remove 002864` on `marketing-automation.gif` rendered correctly and printed:
+
+> WARNING: region 4 was identified as intentional design but came out 0.0% opaque -- it received NO protection... Expected protection: --protect-outline-color 002864.
+
+That is the §26 zero-coverage check, which is right in general and had no knowledge of the assumption. It prescribes re-adding the exact flag the assumption dropped; **an autonomous run that acts on its advice loops straight back into the defect.** Fixed: `protected_region_coverage` now carries an `expected_outline_color` VALUE and the check skips a colour named in `--assume-remove` — keyed on the value, not on parsing its own sentence, so a doc-pass reword cannot disarm it. The un-answered case still fires, asserted as the negative half of the falsifier pair.
+
+### 48.3 The tracker composes with the fade path, and the docs said it could not
+SKILL.md and `_unprotect_hint`'s own evidence string both said `--unprotect-region` is *"the one region flag that composes with `--recover-fade-alpha`"*. **False.** `FADE_EXCLUSIVE_FLAGS` lists only protection flags (`--tumble-safe`, `--protect-outline-color`, `--protect-region`, `--protect-band-only`, `--keep-bg-blob-if-near`); all three REGION flags run after the fade path and are honoured.
+
+`marketing-automation.gif` needs both a reconstructed `#6964f8` wave fade and a gear pinhole punched out while a same-coloured white highlight stripe survives — the hole moves and is periodically occluded by the megaphone horn. The session read that sentence, reached for a static `--unprotect-region` box, mis-sized it twice, and finally hand-built a two-pass render plus a programmatic region swap.
+
+One command does it:
+
+```
+--recover-fade-alpha --fade-color 6964f8 --remove-region-track "rect:437,301,32,67"
+```
+
+Brute-force, full-mask, all 171 frames, masks derived from the ORIGINAL GIF: **0 residual opaque px in the gear hole, 0 gaps in the stripe, 1,385,013 partial-alpha px** (the fade intact), and the tracker logged `followed the seeded region across all 171 frame(s)`.
+
+### 48.4 `--remove-region-track` was the ONE flag of 62 absent from every lean packaged doc
+Enumerated: of 62 argparse flags, exactly one appears in neither `SKILL.md` nor `references/flag-reference.md` nor `references/compression.md` — `--remove-region-track`, the flag purpose-built for §48.3's problem. It lived only in §33 and the version-history changelog. **A changelog reads like documentation and is not.** The development repo's doc-audit gate already proved the SKILL→script direction (every flag the docs name exists); it did not prove script→SKILL, so a flag could ship undocumented and the gate stayed green.
+
+Worse, SKILL.md still read *"For a moving target with no external per-frame tracking available..."* — a sentence written before the tracker existed, which actively routes a reader past it. Both fixed.
+
+### 48.5 A pure-background-coloured design core is deleted, and every check says clean
+`grenade.gif`'s fuse-box highlight bar is a gradient from pale lavender (~58 from the background) to **pure `#ffffff`, bit-identical to the background**, distinguishable only by topology. `--recommend` suggests `--protect-band-only 4`, which by construction protects a band around the removable core and cannot keep a core that IS the background colour.
+
+| run | white-bar px lost (worst frame, bar present on 42 of 62 frames) | ring-hole residual |
+|---|---|---|
+| `--recommend`'s `suggested_command` + the user's erosion request | **2,724** | 0 |
+| `--auto` | **2,724** — and its own post-render verify printed `leftover background (worst frame): 0` and declared success | 0 |
+| `--tumble-safe --keep-bg-blob-if-near ff00ff --hole-size-range 690,740 --hole-max-aspect 1.3` | **0** | 0 |
+
+⚠️ **`--auto` shipped a visible defect and reported clean.** Nothing in `verify()` has a term for design deleted by a protection flag that never covered it — the same shape as §37's "the fringe metric has no term for what erosion costs". The working answer is §14's geometry gate, and `--recommend` **cannot reach it**: `--tumble-safe` is emitted only when `tumble_risk.likely_tumble_risk` is true (a foreground/background size-margin test — 542x here, nowhere near), and `--keep-bg-blob-if-near`, `--hole-size-range` and `--hole-max-aspect` appear in no `flags.append` anywhere in `recommend()`. **Open, filed in the autonomy backlog with these numbers**; closing it needs a discriminator and a refusal-rate re-measure, not a threshold nudged to fit one asset.
+
+### 48.6 A hand-rolled quality loop cannot satisfy a byte cap plus a stated width, and fails in the wrong direction
+The job stated three constraints at once: 192px wide, under 256 KB, q65-85. The session stepped `--avif-quality` 85 -> 65 by hand, one render per tool call, and never invoked `--target-kb`. Consequences, all measured:
+
+- A single driver script looping five quality levels across four assets **timed out with zero output flushed**. `--target-kb`'s own cost estimate — *"If you are running under a tool timeout, render one file and one format per call"* — prints only inside the path that was never entered.
+- The hand loop read `192px wide at q65 = 353 KB` as "still too big, go smaller", and shipped **128×143**. But full resolution at q65 is **264.8 KB** — downscaling flat vector art makes the file BIGGER (§42), so the loop was walking the wrong way down the wrong axis. `--target-kb 250 --min-width 192` returned **498×558 / 124 frames / 196.9 KB**: a *smaller* file at **15× the pixel area**.
+- Same story on the 171-frame asset: delivered **127×131 / 212.8 KB**, against **513×526 / 226.6 KB** from one fit call — **16×** the pixel area.
+- The fit walked past the stated q65 floor to q55 and q45 with nothing to stop it, because **there was no quality floor at all**. `--min-quality` now exists as the mirror of `--min-width`; a lossless rung is never excluded, APNG is unaffected, an unreachable floor still delivers the format's best rung rather than crashing, and the rung ORDER is preserved because rank is taken from the full ladder before filtering.
+
+### 48.7 One candidate region id can hold two blobs that need opposite treatment
+`--recommend` returned `marketing-automation`'s gear pinhole (1,641-3,727 px, remove) and its white highlight stripe (~5,500-5,730 px, keep) as a single "region 4" with bbox `(287,200)-(468,484)`, because candidate regions are grouped by **canvas-position proximity across the whole animation, not by per-frame connectivity**. Every consequence follows from that one merge: the offered `--unprotect-region` box covers both, so following it verbatim deletes the stripe; `--assume-remove 002864` answers the merged region and destroys the stripe (**5,777 px transparent, worst frame**, measured); and a `--remove-region-track` seed taken from the region bbox would seed on the union rather than the hole. The hint now says to seed the COMPONENT, not the region box. **Splitting candidate regions by real per-frame connectivity is the root fix and is filed, not done** — it changes `analyze()` output and needs a corpus re-measure.
+
+### 48.8 What generalises
+- **A flag nobody can reach is not a feature.** Four of the six defects are pure reachability: the capability existed, was correct, and was documented somewhere the reader was never sent.
+- **Check both directions of a doc gate.** The doc gate proved every flag SKILL.md names exists; nothing proved every flag that exists is named.
+- **When two entry points can disagree about the same question, say which one is authoritative in the doc that sends you to them.** `--auto` refusing while `--recommend` guesses is defensible; not saying so is not.
+- **A grep-trigger list is a checklist and can omit the primary case** — the same failure as release gate 6. This file's own "spend one grep before re-diagnosing" line named a fringe, a flicker, erosion, a resize and a duration, and named none of the five symptoms this job actually had. A session read it, correctly concluded none applied, and hand-rolled the geometry.
+- **An efficiency instruction can be the cause.** The user asked for aggressive batching and no wasted turns; the session complied by reading `SKILL.md` and stopping. That is the correct response to that instruction given how the docs were arranged — which is why every fix above moves the guidance toward the tool's own output and toward SKILL.md, and none of them ask an agent to read more.
