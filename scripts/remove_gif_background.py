@@ -2275,9 +2275,20 @@ def _unprotect_hint(rid, bbox, ratio, checked):
             f"SAMPLED frame, and an interior that grows across the animation will leave "
             f"residue outside it -- widen it and re-check. Widen deliberately: measured on "
             f"one asset, a 15% pad cleared the residue but reached the artwork's outer "
-            f"silhouette and trimmed 1,287 px of it. It is also the only "
-            f"region flag that composes with --recover-fade-alpha, which ignores every "
-            f"protection flag (references/lessons.md SS43). NOT applied automatically: "
+            f"silhouette and trimmed 1,287 px of it. A STATIC BOX IS THE "
+            f"WRONG SHAPE IF THE INTERIOR MOVES: --remove-region-track takes this same spec "
+            f"as a frame-0 SEED and follows the region by continuity instead "
+            f"(--remove-region-track rect:{x0},{y0},{x1 - x0},{y1 - y0}), which is the "
+            f"answer when the hole drifts, rotates or is periodically occluded -- measured "
+            f"on a real asset, a static box hit the target on 1 of 24 frames and the tracker "
+            f"on 24 of 24 (references/lessons.md SS33). ⚠️ Seed the COMPONENT, not this "
+            f"box, if the box covers more than one same-coloured blob: a candidate region is "
+            f"grouped by canvas proximity, not by per-frame connectivity, so one region id "
+            f"can hold a hole to punch AND decoration to keep. --recover-fade-alpha ignores "
+            f"every PROTECTION flag, but composes with all three region flags here "
+            f"(--unprotect-region, --remove-region, --remove-region-track), so \"fade the "
+            f"glow AND remove the white inside\" is one command either way "
+            f"(references/lessons.md SS43, SS48). NOT applied automatically: "
             f"whether an interior is design or background is the user's call, not "
             f"something the pixels answer -- this region encloses on {ratio * 100:.0f}% "
             f"of {checked} frames, which is why it is being asked about at all.")
@@ -4671,7 +4682,47 @@ def align_input_to_output_frames(in_durations, out_durations):
     return mapping
 
 
-def verify(input_path, output_path, tolerance=15):
+#: A protected region below this mean opacity did not get "less" protection -- it got none.
+#: 0.05 is not a fine margin: every real failure measured reads exactly 0.000 (Cut loop,
+#: Starters!, pandapanda, 2d4a092f before the SS26 fix) and the weakest genuine SUCCESS reads
+#: 0.331, so it sits in a 0.33-wide gap rather than between two neighbouring assets.
+DEAD_PROTECTION_OPACITY = 0.05
+
+
+def unprotected_design_regions(protected_coverage, assume_remove_colors=()):
+    """The regions `analyze()` called design that came back with NO protection at all.
+
+    ⚠️ EXTRACTED SO THE FALSIFIER CAN CALL THE REAL PREDICATE. The first version of this
+    lived inline in `verify()` and its test re-implemented it, which meant deleting the
+    `--assume-remove` clause below left the suite reporting "all falsifiers pass" -- a test
+    certifying a reconstruction rather than the shipped code (the failure this project
+    records as feedback_validate_through_the_product_entry_point).
+
+    ⚠️ A region the caller ANSWERED as background is not a defect. `--assume-remove <hex>`
+    is the documented way to pre-answer a coin-flip enclosure for an unattended run, and it
+    works by dropping that outline colour -- so the regions it names come out 0.0% opaque BY
+    REQUEST. Measured 2026-09-01 on marketing-automation.gif: `--auto --assume-remove 002864`
+    rendered correctly and then printed the warning below over regions 4 and 5, prescribing
+    `--protect-outline-color 002864` -- the exact flag the assumption had just removed. An
+    autonomous run that acts on that advice loops straight back into the defect the
+    assumption existed to avoid. The check itself is right and stays; it simply may not fire
+    on a question the caller already answered.
+
+    Matching is on the `expected_outline_color` VALUE, never on parsing the warning's own
+    sentence -- a guard keyed on prose is disarmed by a doc-pass reword.
+    """
+    # A bare string would iterate CHARACTERS and match nothing, silently -- the failure
+    # would look like the filter simply not working. Normalise instead.
+    if isinstance(assume_remove_colors, str):
+        assume_remove_colors = [assume_remove_colors]
+    answered = {c.lower().lstrip('#') for c in (assume_remove_colors or ())}
+    return [c for c in protected_coverage
+            if c['frames_with_data']
+            and c['mean_opacity_fraction'] < DEAD_PROTECTION_OPACITY
+            and c.get('expected_outline_color') not in answered]
+
+
+def verify(input_path, output_path, tolerance=15, assume_remove_colors=()):
     """
     Mechanical half of SKILL.md's "Verification" checklist: leftover
     background, protected-region coverage, edge fringe, small removed-
@@ -5036,6 +5087,9 @@ def verify(input_path, output_path, tolerance=15):
             'looks_unprotected': looks_unprotected,
             'expected_protection': (f'--protect-outline-color {_expected}' if _expected
                                     else 'none was recommended'),
+            # The colour on its own, so a consumer can MATCH on it instead of parsing the
+            # sentence above -- a guard keyed on prose is disarmed by a doc-pass reword.
+            'expected_outline_color': (_expected or '').lower().lstrip('#') or None,
             'residual_nonopaque': residual,
         })
     report['protected_region_coverage'] = protected_coverage
@@ -5047,13 +5101,10 @@ def verify(input_path, output_path, tolerance=15):
     # reported `worst protected-region coverage: 0.0` and then declared success,
     # while 976,800 px of design were destroyed. Saying it loudly is the general
     # detector for that whole class, independent of which flag was at fault.
-    #
-    # 0.05 is not a fine margin: every real failure measured reads exactly 0.000
-    # (Cut loop, Starters!, pandapanda, 2d4a092f before the SS26 fix) and the
-    # weakest genuine SUCCESS reads 0.331, so the threshold sits in a 0.33-wide
-    # gap rather than between two neighbouring assets.
-    _dead = [c for c in protected_coverage
-             if c['frames_with_data'] and c['mean_opacity_fraction'] < 0.05]
+    # The predicate itself, the DEAD_PROTECTION_OPACITY margin behind it, and the
+    # --assume-remove carve-out live on `unprotected_design_regions` so the falsifier
+    # suite can exercise the real thing rather than a copy of it.
+    _dead = unprotected_design_regions(protected_coverage, assume_remove_colors)
     report['unprotected_design_regions'] = _dead
     for c in _dead:
         print(f"WARNING: region {c['region_id']} was identified as intentional design "
@@ -6591,7 +6642,8 @@ def _rung_cost(stride, scale, quality, lossless, quality_rank, scale_cost, strid
             + (0 if lossless else quality_rank))
 
 
-def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4), pixel_art=False):
+def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4), pixel_art=False,
+                       min_quality=None):
     """Every (stride, scale, quality, lossless) rung, ordered least-destructive first.
 
     Returned as a total order, so "the first rung that fits" IS "the least destructive rung
@@ -6615,7 +6667,20 @@ def build_target_rungs(fmt, scales, strides=(1, 2, 3, 4), pixel_art=False):
                 ladder = [(100, True)]
             else:
                 ladder = [(100, True)] + [(q, False) for q in (95, 90, 80, 70, 60)]
-            for rank, (quality, lossless) in enumerate(ladder):
+            # ⚠️ RANK COMES FROM THE FULL LADDER, then rungs are filtered. A quality floor
+            # must not RE-RANK the survivors: the rung order is a total order and the whole
+            # concurrency argument ("the first rung that fits IS the least destructive rung
+            # that fits") rests on it being the same order a serial first-fit would walk.
+            # Removing members changes which rungs exist, never their relative cost.
+            _kept = [(r, q, l) for r, (q, l) in enumerate(ladder)
+                     if l or min_quality is None or q >= min_quality]
+            # A floor above every lossy rung would leave a lossless-only ladder, or for AVIF
+            # (which has none) an EMPTY one -- and delivering no rungs turns a stated
+            # requirement into a crash instead of a report, the same rule scales_for_fit
+            # already applies to the resolution axis. Keep the best rung the format has.
+            if not _kept:
+                _kept = [(0, ladder[0][0], ladder[0][1])]
+            for rank, quality, lossless in _kept:
                 rungs.append((_rung_cost(stride, scale, quality, lossless, rank,
                                          scale_cost, stride_cost),
                               stride, -scale, rank, quality, lossless))
@@ -6769,8 +6834,25 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
         say(f"resolution floor: {len(_FIT_SCALE_LADDER) - len(_scales)} of "
             f"{len(_FIT_SCALE_LADDER)} scale rungs are excluded by "
             f"{_describe_size_floor(args)} -- quality and frames are traded instead.")
-    rungs = build_target_rungs(fmt, _scales,
-                               pixel_art=bool(getattr(args, 'pixel_art', False)))
+    _minq = getattr(args, 'min_quality', None)
+    # ⚠️ ONE kwargs source for both calls. They were spelled out twice, and the second call
+    # exists ONLY to count what the floor removed -- so a future argument added to one and
+    # not the other would not fail, it would silently report the wrong number of excluded
+    # rungs while the fit itself walked a different ladder.
+    _rung_kw = dict(pixel_art=bool(getattr(args, 'pixel_art', False)))
+    rungs = build_target_rungs(fmt, _scales, min_quality=_minq, **_rung_kw)
+    _q_floored = False
+    if _minq is not None:
+        _all = build_target_rungs(fmt, _scales, **_rung_kw)
+        # Guarded the same way the resolution floor above is: a floor that removes NOTHING
+        # (--min-quality 45 on AVIF, whose lowest rung is already 45) must not announce a
+        # trade-off that never happened. An autonomous run reads these lines as fact.
+        _q_floored = len(rungs) < len(_all)
+        if _q_floored:
+            say(f"quality floor: {len(_all) - len(rungs)} of {len(_all)} rungs are excluded "
+                f"by --min-quality {_minq} -- resolution and frames are traded instead. If "
+                f"the target cannot be met above the floor the failure names it rather than "
+                f"quietly delivering a lower quality.")
 
     # Per-worker memory measured from the ACTUAL frames, not a constant: an encode holds a
     # resized copy of what it was handed, so a 64px sticker and a 640px 177-frame animation
@@ -6899,7 +6981,15 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
            "reduced to get there -- drop --resize-max-dim to allow it." if _pinned else "")
         + (f" Resolution was floored by {_describe_size_floor(args)}, so it was NOT reduced "
            f"below that to get there -- relax the floor to allow it, or accept the size."
-           if _floored else ""))
+           if _floored else "")
+        # ⚠️ The floor notice printed at the START of the fit promises that a failure names
+        # the floor. It only named the RESOLUTION one, so a run stopped by --min-quality was
+        # told its asset was too big when the user's own floor is what excluded every fitting
+        # rung -- a printed claim the numbers do not support (references/lessons.md SS38).
+        + (f" Quality was floored by --min-quality {getattr(args, 'min_quality', None)}, so "
+           f"lower-quality rungs were NOT tried -- relax the floor to allow them, or accept "
+           f"the size."
+           if _q_floored else ""))
     return os.path.getsize(output_path), False
 
 
@@ -8049,6 +8139,61 @@ def process(input_path, output_path, args, diagnostics=None):
             "store (1-bit alpha). Write a .webp, .avif or .apng output instead.")
     if not 0.0 <= getattr(args, 'translucent_alpha', 0.35) <= 1.0:
         raise SystemExit("--translucent-alpha must be between 0.0 and 1.0.")
+    _minq = getattr(args, 'min_quality', None)
+    if _minq is not None and not 0 <= _minq <= 100:
+        # ⚠️ AN OUT-OF-RANGE FLOOR PRODUCED ADVICE NOBODY CAN TAKE. Before this check,
+        # `--min-quality 150` reached the refusal below and printed "Raise --avif-quality to
+        # 150 or above" -- a value no encoder accepts and this tool would itself reject, so
+        # the user was handed an impossible instruction in a confident voice. A negative or
+        # zero floor was the mirror failure: a silent no-op that looks like a floor was
+        # applied. Validated HERE, at the CLI boundary, and deliberately NOT inside
+        # build_target_rungs, which stays tolerant so its falsifier can still exercise the
+        # unreachable-floor fallback directly.
+        raise SystemExit(
+            f"--min-quality {_minq} is out of range. Quality runs 0-100, and a floor "
+            f"outside that cannot be met by any encoder rung -- 0 means no floor at all. "
+            f"Pass a value between 0 and 100 (the bottom of your stated quality range).")
+    if _minq is not None:
+        # ⚠️ A FLAG THE TOOL ACCEPTS AND DISCARDS is this project's most-repeated defect
+        # shape (references/lessons.md SS44, eight instances of it). --min-quality is read
+        # ONLY inside fit_to_target_bytes, which runs only for an 8-bit-alpha container that
+        # came out OVER target. Every other way of passing it is a no-op, so say so at the
+        # moment it is passed rather than leaving the user to infer it from an output that
+        # looks plausible.
+        if not getattr(args, 'target_kb', None):
+            print("WARNING: --min-quality only constrains a --target-kb fit, and no "
+                  "--target-kb was given -- it is being IGNORED for this run. Pass "
+                  "--target-kb <n>, or set the quality directly with --avif-quality / "
+                  "--webp-quality.", file=sys.stderr)
+        elif out_format not in EIGHT_BIT_ALPHA_FORMATS:
+            print(f"WARNING: --min-quality has no effect on {out_format.upper()} output -- "
+                  f"a GIF --target-kb run walks the --compress tier cascade, which has no "
+                  f"quality rung to floor. It is being IGNORED for this run. Write a "
+                  f".webp/.avif output if the quality floor matters.", file=sys.stderr)
+        elif out_format == 'apng':
+            print("WARNING: --min-quality has no effect on APNG output -- APNG is lossless "
+                  "and has no quality knob. It is being IGNORED for this run.",
+                  file=sys.stderr)
+        else:
+            # The fit is a CEILING: if the first render already fits, no rung is ever
+            # evaluated and the file ships at whatever --avif-quality/--webp-quality it was
+            # rendered with. Passing a starting quality BELOW the floor therefore delivers a
+            # file the floor was meant to forbid, silently -- and SKILL.md now tells readers
+            # to pass a starting quality and the floor together, so this pair is likely, not
+            # exotic. Refuse rather than warn: this one has a correct answer the user can
+            # type, which is the bar references/lessons.md SS47 sets for refusing.
+            _start = (getattr(args, 'avif_quality', None) if out_format == 'avif'
+                      else getattr(args, 'webp_quality', None)
+                      if getattr(args, 'webp_lossy', False) else None)
+            if _start is not None and _start < _minq:
+                _qflag = '--avif-quality' if out_format == 'avif' else '--webp-quality'
+                raise SystemExit(
+                    f"{_qflag} {_start} is below --min-quality {_minq}. --target-kb only "
+                    f"ever walks DOWN from the quality it starts at, and it does not run at "
+                    f"all when the first render already fits -- so this pair would deliver a "
+                    f"q{_start} file against a q{_minq} floor. Raise {_qflag} to {_minq} or "
+                    f"above (the top of your stated range is usually right), or drop "
+                    f"--min-quality.")
     if getattr(args, 'fade_color', None) and not getattr(args, 'recover_fade_alpha', False):
         # ⚠️ --fade-color is READ ONLY inside the --recover-fade-alpha branch, so on its own it
         # is parsed and thrown away -- the same silent-no-op class as --webp-quality. It is a
@@ -9878,7 +10023,8 @@ def auto_run(input_path, output_path, args, parser):
     # weakest self-check of any output this tool writes, including the
     # zero-coverage warning that exists to catch a wholly unprotected region.
     try:
-        _v = verify(input_path, output_path, tolerance=args.tolerance)
+        _v = verify(input_path, output_path, tolerance=args.tolerance,
+                    assume_remove_colors=_assumed_colors(args, 'assume_remove'))
         _lb = _v.get('leftover_background_opaque_px', {})
         _tm = _v.get('timing', {}) or {}
         print(f"  full verify -- leftover background (worst frame): "
@@ -10070,7 +10216,9 @@ def main():
                          'its whole box (measured: -73%% of the artwork), this '
                          'removes only background-coloured pixels. It is '
                          'applied downstream of --recover-fade-alpha, so it is '
-                         'the one region flag that composes with fade recovery.')
+                         'a region flag that composes with fade recovery -- as do '
+                         '--remove-region and --remove-region-track, which is the one to '
+                         'reach for when the interior MOVES.')
     p.add_argument('--remove-region-feather', type=float, default=1.5,
                     help='Feather width in px for --remove-region\'s edge '
                          'taper (default 1.5).')
@@ -10130,6 +10278,16 @@ def main():
                          'big", and the stricter one (a 600x100 asset passes --min-width 128 '
                          'and fails --min-dimension 128). Combine freely with --min-width / '
                          '--min-height; the tightest constraint wins.')
+    p.add_argument('--min-quality', type=int, default=None, metavar='N',
+                    help='Never let --target-kb fit deliver an output below quality N '
+                         '(0-100; outside that is refused). The '
+                         'quality-axis mirror of --min-width: a byte cap is a constraint, '
+                         'and a stated quality range ("q65-85") is a REQUIREMENT -- '
+                         'resolution and frames are traded instead. Applies to the '
+                         'WebP/AVIF grid search; APNG has no quality knob, and a lossless '
+                         'rung is never excluded. If nothing fits above the floor the '
+                         'failure names the floor rather than quietly handing back a '
+                         'lower-quality file.')
     p.add_argument('--resize-max-dim', type=int, default=None,
                     help='Resize to fit N pixels on the longer side '
                          '(preserving aspect ratio, only ever downscaling). '
@@ -10617,7 +10775,8 @@ def main():
             p.error(f'--verify inspects an output that already exists, and '
                     f'{args.output_gif!r} does not. Run the processing first '
                     f'(same command WITHOUT --verify), then re-run with --verify.')
-        report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance)
+        report = verify(args.input_gif, args.output_gif, tolerance=args.tolerance,
+                        assume_remove_colors=_assumed_colors(args, 'assume_remove'))
         # A session that reads only the console must not have to notice the absence of
         # fields to learn that nothing was checked.
         for _skip in report.get('checks_skipped') or []:

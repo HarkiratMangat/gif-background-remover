@@ -59,6 +59,124 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ⚠️ **Process note worth keeping.** Every claim in the first draft of this item came from whole-canvas pixel counts and was plausible. Harkirat looked at two contact strips and overturned two of them in one sentence. **Compare a metric against what a WORKING case scores before calling a delta a fix** — the working number was in the same table.
 
+### `[P0 · M · Opus5-High]` `--recommend` cannot reach the flags that solve "same colour, opposite treatment" — measured on grenade.gif *(filed 2026-09-01, from the four-asset review that produced `references/lessons.md` §48)*
+**This is the sharpest autonomy gap the review found, and it is a REACHABILITY gap, not a missing capability.** `grenade.gif`'s fuse-box highlight bar runs from pale lavender to **pure `#ffffff`, bit-identical to the background** — design separable from background only by topology. `--recommend` suggests `--protect-band-only 4`, which by construction protects a band around the removable core and cannot keep a core that IS the background colour.
+
+Measured 2026-09-01, white-bar pixels lost on the worst frame (the bar is present on 42 of 62 frames):
+
+| run | bar px lost | ring-hole residual |
+|---|---|---|
+| `--recommend`'s `suggested_command` + the user's erosion request | **2,724** | 0 |
+| `--auto` | **2,724**, and its own post-render verify printed `leftover background (worst frame): 0` and declared success | 0 |
+| `--tumble-safe --keep-bg-blob-if-near ff00ff --hole-size-range 690,740 --hole-max-aspect 1.3 --protect-band-only 4 --feather-band-multiplier 3.3` | **0** | 0 |
+
+**Why the recommender cannot get there:** `--tumble-safe` is appended only when `tumble_risk.likely_tumble_risk` is true — a foreground/background size-MARGIN test, measuring 542.07x on this asset, nowhere near its 3x trigger. That gate is about a tumbling silhouette; §14's use of the same flag is about HOLE DISAMBIGUATION, an unrelated question wearing the same flag. And `--keep-bg-blob-if-near`, `--hole-size-range` and `--hole-max-aspect` appear in **no `flags.append` anywhere in `recommend()`** — enumerated, the only four flags it can append are `--erosion-exempt-transient`, `--pixel-art`, `--recover-fade-alpha` and `--tumble-safe`.
+
+**Concrete next action:** find a discriminator for "an enclosed interior whose core is EXACTLY the background colour while a same-colour region elsewhere must be removed", then let `recommend()` emit the §14 combination with a measured size/aspect gate. ⚠️ **Do not close this by widening `is_intentional_design`'s narrow-miss band** — grenade's region 4 sits at 0.725 enclosure / 2.0% canvas against bars of 0.9 and 0.5@2.5%, and moving either to fit one asset is exactly the failure `feedback_do_not_relabel_when_a_measure_objects` names. Any change here alters the `--auto` refusal rate (12.8% across 304 assets today) and needs that re-measured, which is why it was NOT done in the session that found it.
+
+⚠️ **Second, related defect in the same asset: `verify()` has no term for design deleted by a protection flag that never covered it.** `--auto` reported `leftover background (worst frame): 0` over a render missing 2,724 px of white artwork on 42 frames. Same shape as §37's "the fringe metric has no term for what erosion costs". A candidate check: for every region `analyze()` saw as background-coloured-but-enclosed on SOME frames, report how many of its pixels went transparent — and say so, rather than only reporting the regions it labelled design.
+
+### `[P1 · M · Opus5-High]` Candidate regions are grouped by canvas proximity, not per-frame connectivity — one region id held a hole to punch AND decoration to keep *(filed 2026-09-01, `references/lessons.md` §48.7)*
+On `marketing-automation.gif`, the gear pinhole (1,641-3,727 px, must be removed) and the megaphone's white highlight stripe (~5,500-5,730 px, must be kept) are **two separate connected components in every one of 171 frames**, and `--recommend` returned them as a single "region 4", bbox `(287,200)-(468,484)`, because candidate regions are grouped by canvas-position proximity across the whole animation.
+
+Every downstream failure follows from that one merge, all measured 2026-09-01:
+- the `--unprotect-region rect:287,200,181,284` box the hint offers covers **both**, so following it verbatim deletes the stripe;
+- `--auto --assume-remove 002864` answers the merged region and destroys the stripe — **5,777 px transparent on the worst frame**;
+- a `--remove-region-track` seed taken from the region bbox would seed on the union rather than on the hole.
+
+**Interim mitigation shipped in v6.3.0:** the hint now says to seed the COMPONENT rather than the region box, and names the grouping as the reason. **The root fix is to split a candidate region by real per-frame connectivity**, which changes `analyze()` output for every asset and therefore needs a corpus re-measure — deliberately not attempted in the session that found it, per Harkirat's instruction to keep that session scoped to the four assets.
+
+⚠️ **The correct answer for this asset today is one command, and it works** — `--recover-fade-alpha --fade-color 6964f8 --remove-region-track "rect:437,301,32,67"` gives 0 residual opaque px in the hole and 0 gaps in the stripe across all 171 frames with the fade intact. The gap is that nothing derives that seed for you.
+
+### `[P1 · S · Opus5-High]` `--auto` recomputes pass 1's analysis in pass 3 — 20-24%, but only on same-canvas runs *(filed 2026-09-01, REWRITTEN after three adversarial audits falsified the first version)*
+⚠️ **The first filing of this item claimed 32% of EVERY `--auto` run and a 61% analysis share. Both were wrong.** Corrected numbers below; the full audit trail is in `docs/investigations/2026-09-01-analysis-cost-and-the-missing-instrument.md` §0.
+
+`recommend()` analyses at `:2353` (AUTO pass 1) and `verify()` analyses the same file again at `:4817` (pass 3) — same path, same tolerance, byte-identical result.
+
+| run | `analyze()` calls |
+|---|---|
+| `--auto`, output keeps the source canvas | 2 |
+| `--auto --crop` / `--resize-max-dim` / a `--target-kb` fit that resizes | **1** |
+
+`verify()` returns at `:4783` when dimensions differ, before it would analyse. So the saving is **0% on cropped, resized or size-fitted output** — most delivered work, and 31 of the render gate's 62 records. Where it applies: analysis is 39-47% of a run and the second call alone is **20-24%** (`in-love.gif` 48f, `satellite.gif` 120f).
+
+**The fix is a parameter, not a cache.** `auto_run` already holds `rec['analysis']` at `:9760`; passing it to `verify()` is ~3 lines. A module-level memo was designed, then rejected: global state, ~1.1 GB retention in `run_populations`, a fingerprint-closure hazard, a `--batch` interaction. Ready-to-build steps: `docs/plans/2026-09-01-analysis-cost-and-observability.md` Task 1.
+
+⚠️ **`verify()` mutates the analysis ZERO times** — an earlier claim of 24 counted a different variable of the same name. A shared object gives byte-identical output; the `deepcopy` is 0.046 ms insurance against `recommend()`'s 6 real mutations, not a measured necessity.
+
+### `[P1 · M · Opus5-High]` The test suite has a render cache that 29 of 30 files never use *(filed 2026-09-01)*
+`rendered()` at `scripts/harness/test_score_outputs.py:51` renders once and reuses — and **only `test_score_outputs.py` calls it.** Every one of the 15 slowest tests (~773s total) shells out raw via `subprocess.run`.
+
+Worse, its key is the **whole-script SHA**, so every product edit busts it — i.e. every development session runs cold. On disk: **400 MB across 46 SHA directories**, never pruned.
+
+**Concrete next actions, in order:** (1) count how many (asset, flags) pairs actually repeat across test files — the saving is unmeasured and could be small; (2) extend `rendered()` to the files that would benefit; (3) consider keying it on the reachable-code fingerprint the way `analysis_cache` does; (4) prune the 400 MB.
+
+⚠️ **An earlier filing proposed content-hash keying the ANALYSIS cache to speed the suite. That was wrong** — the slow tests never import `analysis_cache` at all. The cache that matters here is `rendered()`.
+
+### `[P1 · L (first slice: S) · Opus5-High]` The render gate spends 81% of itself on three PURE functions, and re-renders `main` from scratch every run *(filed 2026-09-01, profiled during the v6.3.0 merge)*
+⚠️ **This item was first filed blaming the analysis cache, and the profile falsified that.** Recording the correction because the wrong premise is the interesting part: the analysis share is real but it is not the biggest slice, and `--verify` — which the gate does not even consume — is.
+
+⚠️ **AND THE TABLE BELOW WAS THEN FALSIFIED TOO, on its own population.** It is a single asset, and the gate's population has at least three regimes: `marketing-automation.gif` (171f) runs `--auto` in **22.8s** against grenade's 45.2s *because it REFUSES at pass 1* and pays analysis only; `Pixel Saber.gif` (213f) takes 6.1s for the same reason. Frame count is not the driver — whether the asset renders at all is. Kept as measured, labelled as ONE POINT, because the corrected conclusion below depends on knowing that.
+
+**Measured 2026-09-01 on `grenade.gif` (62 frames), timing the exact command the gate runs (`--auto`, 44.5s) — ONE ASSET, not the population:**
+
+| slice | cost | share | pure function of |
+|---|---|---|---|
+| `--verify` (`--auto` pass 3) | 14.3s | **32%** | (input bytes, output bytes, verify closure) |
+| analysis (`--recommend`) | 12.0s | **27%** | (input bytes, analyze closure) — already cached IN THE HARNESS |
+| erosion calibration | 9.9s | **22%** | (frames, bg colour, calibration closure) |
+| the render being measured | 5.4s | 12% | irreducible |
+| startup / IO | ~3s | ~7% | — |
+
+Isolated by pinning `--edge-cleanup-erosion 1` to remove the calibration, and by timing `--recommend`, a plain render and `--verify` separately. **The thing the gate exists to compare is 12% of what the gate costs.**
+
+**What the population actually says, and it moves the ranking back toward analysis:**
+- **62 records = 31 assets x 2 passes, and the resize pass re-runs the IDENTICAL analysis.** `analyze()` is a pure function of the source and `--resize-max-dim` is applied after it, so **~50% of all analysis work in the gate is a literal duplicate inside a single run.** No cross-run cache is needed to remove it — one in-process memo, or one CLI invocation doing both passes (the multi-file `--out-dir` mode already exists), takes it to zero at no staleness risk whatever. This is the cheapest real win on the list and it was invisible from the single-asset profile.
+- **10 of 62 records (16%) render nothing at all** and pay analysis only: 4 are the GIF-entirely-transparent-frame refusal (`growth.gif`, `paper-plane.gif`), the rest are `--auto` coin-flip / changing-background refusals. ⚠️ Two DIFFERENT causes — the first read of this attributed all ten to one after checking a single asset. The gate does compare `returncode`/`no_output`, so a refusal flipping IS caught; it is not a vacuous pass. But for these records an analysis cache is a 100% win.
+- **Analysis is the only cost every record pays.** `--verify` and the erosion calibration are paid only by the 52 that render.
+
+**Falsified and NOT worth building — measured, not reasoned:**
+- *Amortising Python startup across assets (a persistent worker pool, or batching via the multi-file CLI purely for startup).* Interpreter start plus `numpy`+`scipy.ndimage`+`PIL` imports measure **0.24s**, so 62 records pay ~15s of 626s = **2.4%**. Not a lever.
+- *Capping BLAS threads.* numpy here is Apple **Accelerate**, which multithreads, and nothing sets a thread cap while 6 worker processes run on 6 performance cores. Real but modest: measured interleaved A/B/A/B at 3 workers, **67.1s -> 59.2s, 1.13x**, reproducible across both reps. Worth taking, not worth calling a fix.
+
+**Tier 1 — free, no new machinery, no correctness risk. Do these first:**
+1. **Commit a PRE baseline keyed on `main`'s script SHA.** The gate re-renders `main` from scratch on every invocation — a flat **50%** of total wall time recomputing something unchanged since the last merge. The artefact is a few KB of hashes. Measured this merge: PRE 626s + POST 296s.
+2. **Longest-processing-time-first scheduling.** A run ends when its LAST unit ends, and the ordering is arbitrary today — the log shows the longest asset finishing last at 626s. LPT is a 4/3-approximation, free, and per-asset durations are already observable.
+3. **Gate the resize pass on a fingerprint rather than on a flag nobody remembers.** `--no-resize-pass` already halves the work and is only needed when a change can reach the pixel-art/resize closure.
+
+**Tier 2 — the real win, and it is ONE mechanism, not three.** An opt-in memo layer inside the PRODUCT (`--cache-dir`, off by default so the shipped `.skill` carries no cache behaviour into an ephemeral sandbox), keyed per-function by a closure fingerprint, covering `analyze()`, the erosion calibration and `verify()`. `scripts/harness/analysis_cache.py` already has most of the machinery. On a typical merge — where the render closure changes but those three do not — that is up to **81% off the POST run as well**. ⚠️ **An earlier version of this entry claimed "60-90s"; that was extrapolated from the falsified single-asset profile and is withdrawn.** A defensible estimate from what is actually measured is Tier 1 (-50%) plus the duplicate-analysis removal plus the thread cap, landing a 922s gate somewhere near **200-260s** with no new staleness risk at all; a cross-run cache buys more on repeat runs only. ⚠️ **Measure back to back before quoting any of it** — this repo has already recorded the same render set at 976s and 488s on consecutive runs, and this merge saw 626s and 296s for identical work at different contention.
+
+**Tier 3 — considered and REJECTED. Recorded so nobody re-derives them:**
+- *A whole-render content cache keyed on a render fingerprint.* Checked against a real change before believing it: the v6.3.0 branch edited `process()`, the render root, so the key would have moved and the cache would have bought **zero**. The render closure is most of the file. Low payoff, and its failure mode is the gate silently lying about the only thing it exists to detect.
+- *Swapping Pillow for `avifenc`/`cwebp`.* Changing the encoder changes the output bytes, which is the quantity being compared.
+- *Truncating assets to fewer frames.* This repo's own grenade defect lived only on frames 46-51.
+
+⚠️ **The risk that governs all of Tier 2: a cache that lies turns a gate into a rubber stamp, and it fails SILENTLY — strictly worse than a slow gate.** Three mitigations, all already used elsewhere here: every uncertain case falls back to a whole-file SHA; a fingerprint that fell back is marked, so a run can report that it did; and a **RELEASE** (as opposed to a merge) runs `--no-cache` end to end. That keeps the fast path for the common case without ever letting a published artefact rest on it.
+
+### `[P1 · M · Opus5-High]` The render gate has been recording ART LOSS on two assets and nobody has ever read it *(filed 2026-09-01, found by reading the gate's own baseline instead of only its verdict)*
+`render_baseline.py` captures a `signal_lines` field per record and compares it PRE/POST, so a CHANGE in these lines would be caught. What nothing surfaces is the standing content. Two records in the `alphas` population carry this, today, on `main`:
+
+| asset | source opaque px (the artwork) | survived | lost |
+|---|---|---|---|
+| `alphas/cinnamonexcited.gif` | 44,565 | 32,169 | **27.8%** |
+| `alphas/PixelSaber-ezgif.com-gif-maker (2).gif` | 1,643,209 | 1,444,385 | **12.1%** |
+
+`--verify` states it plainly — *"The SOURCE already had transparency, so its N opaque pixels were the artwork ... Colour-based removal has eaten real art"* — and the gate faithfully writes it into the baseline, where it has sat unread. A gate that records a defect and reports "0 changed" is working exactly as designed and is still telling nobody.
+
+⚠️ **This is NOT the already-filed "two assets where the keyer removes solid artwork" item above.** That one is two DARK-corpus GIFs on flat coloured backgrounds (`ff6666`, `921219`) whose loss was diagnosed and closed. These two are **already-transparent sources**, i.e. the `--source-alpha-band` / `--ignore-source-alpha` machinery from §28.14 — a different mechanism entirely. Checked before claiming it, because the titles are close enough to merge them by mistake.
+
+**Concrete next action:** two parts, and the second matters more than the first. (a) Diagnose the two assets — are they a real regression in the source-alpha scoping, or assets whose own alpha is wrong and which legitimately need `--ignore-source-alpha`? (b) **Make the gate report standing signals, not just changed ones.** A one-line summary of ERROR / ART LOSS / refusal counts printed after `--compare` would have surfaced this the first time it appeared instead of on the day someone happened to read the JSON.
+
+### `[P3 · S · Opus5-High]` A module-level constant the closure cannot read still cold-invalidates the whole analysis cache *(filed 2026-09-01, hit while merging v6.3.0)*
+`analysis_fingerprint` hashes **every** module-level statement unconditionally — its own docstring says a constant is "reachable from anywhere and cheap to include, so it is never analysed for reach." Measured 2026-09-01: adding `DEAD_PROTECTION_OPACITY = 0.05`, read only by `unprotected_design_regions` (a `verify()` helper `analyze()` cannot reach), moved the fingerprint `a99c2880ae5d6975` -> `a27d82c48415731b` and discarded all **29 entries / 42 MB** of warm cache. The closure itself was proven identical: 34 functions, zero changed.
+
+This is the design's deliberate safe direction and must stay that way — a MISSED invalidation serves a pre-change answer to the gate meant to catch the change, which is far worse. But the docstring's word for the other direction is "cheap", and that was assumed rather than measured; here it cost a full cold pass on a merge that changed nothing `analyze()` can see.
+
+**Concrete next action:** consider hashing ambient statements that are actually REFERENCED from inside the closure, plus all imports and class definitions unconditionally, with any doubt (a star-import, a name resolved dynamically, an unparseable node) falling back to hashing all ambient statements. ⚠️ **Re-run the 28-commit historical measurement before believing any improvement** — that is the evidence base the current key was chosen on, and the claim to beat is 9 of 28 (32.1%) staying warm. A refinement that cannot show a gain on that same population is not worth the extra failure mode.
+
+### `[P2 · S · Sonnet5-High]` `--recommend` says nothing about size, on a tool whose second half is size fitting *(filed 2026-09-01)*
+`--recommend` returns a format ranking and a flag command and never mentions `--target-kb`, `--min-width` or `--min-quality`, even though a stated byte cap is one of the three cases SKILL.md's own size gate enumerates. A real session with "192px wide, under 256 KB, q65-85" in the brief hand-rolled a quality loop, timed out a tool call, and shipped two of four assets at 128 px wide when one fit call reached **192x215 at q85 / 236.2 KB** and full resolution at **498x558 / 196.9 KB**. Cheap candidate: when `--recommend` is given `--target-kb`, have it emit the fit flags alongside the render flags; failing that, have it name the fit call in evidence the way it names the format ranking.
+
 ### `[P1 · M · Opus5-Med]` Task 14c — derive the unprotect region from the ANIMATION, not one frame *(filed 2026-08-23, split out when the rest of its parent P0 shipped)*
 
 📄 `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md` Task 14c · `references/lessons.md` §43 · 📁 `local/2026-08-22-fade-edge-cases/`
