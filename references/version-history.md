@@ -1,6 +1,6 @@
 # Skill version history
 
-**v6.3.0 is PENDING as of 2026-09-01** — not yet minted, since it hasn't merged. Its full entry belongs here only once a real merge happens; until then the working detail lives in `SKILL.md`'s own version header. **A version is minted when a merge is approved, not per commit on a branch.**
+**v6.4.0 will be the next version.** A version is minted when a merge is approved, not per commit on a branch; the working detail for a pending version lives in `SKILL.md`'s own version header until then.
 
 ## v6.2.0 — full entry
 

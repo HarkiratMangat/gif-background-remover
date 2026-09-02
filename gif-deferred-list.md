@@ -88,48 +88,30 @@ Every downstream failure follows from that one merge, all measured 2026-09-01:
 
 ⚠️ **The correct answer for this asset today is one command, and it works** — `--recover-fade-alpha --fade-color 6964f8 --remove-region-track "rect:437,301,32,67"` gives 0 residual opaque px in the hole and 0 gaps in the stripe across all 171 frames with the fade intact. The gap is that nothing derives that seed for you.
 
-### `[P0 · M · Opus5-High]` `--auto` analyses the SAME FILE TWICE — 32% of every run of the flagship path, in the shipped skill *(filed 2026-09-01, measured in-process on the real `main()`)*
-**This is a CORE-SKILL cost, not a harness one, and it was invisible because the whole investigation had been framed as "speed up the gate".**
+### `[P1 · S · Opus5-High]` `--auto` recomputes pass 1's analysis in pass 3 — 20-24%, but only on same-canvas runs *(filed 2026-09-01, REWRITTEN after three adversarial audits falsified the first version)*
+⚠️ **The first filing of this item claimed 32% of EVERY `--auto` run and a 61% analysis share. Both were wrong.** Corrected numbers below; the full audit trail is in `docs/investigations/2026-09-01-analysis-cost-and-the-missing-instrument.md` §0.
 
-Instrumented in-process on `grenade.gif`, one `--auto` invocation = **40.0s**:
+`recommend()` analyses at `:2353` (AUTO pass 1) and `verify()` analyses the same file again at `:4817` (pass 3) — same path, same tolerance, byte-identical result.
 
-| `analyze()` call | caller | cost | share |
-|---|---|---|---|
-| 1 | `recommend()` (pass 1) | 11.5s | 29% |
-| 2 | `verify()` (pass 3) | 12.7s | **32%** |
-| | | **24.4s** | **61% of the run** |
+| run | `analyze()` calls |
+|---|---|
+| `--auto`, output keeps the source canvas | 2 |
+| `--auto --crop` / `--resize-max-dim` / a `--target-kb` fit that resizes | **1** |
 
-**Proven redundant, not assumed:** both calls take `path=grenade.gif, max_samples=40, tolerance=15` and return a **byte-identical result hash** (`c1036647208c8ecf`). Verified by hashing both returns, not by reading the code.
+`verify()` returns at `:4783` when dimensions differ, before it would analyse. So the saving is **0% on cropped, resized or size-fitted output** — most delivered work, and 31 of the render gate's 62 records. Where it applies: analysis is 39-47% of a run and the second call alone is **20-24%** (`in-love.gif` 48f, `satellite.gif` 120f).
 
-`analyze()` is not a cost centre in this program — it IS the cost: **100%** of `--recommend`, **87%** of `--verify`, **61%** of `--auto`, and **0%** of a plain render, which runs in 10.1s against `--auto`'s 39.6s.
+**The fix is a parameter, not a cache.** `auto_run` already holds `rec['analysis']` at `:9760`; passing it to `verify()` is ~3 lines. A module-level memo was designed, then rejected: global state, ~1.1 GB retention in `run_populations`, a fingerprint-closure hazard, a `--batch` interaction. Ready-to-build steps: `docs/plans/2026-09-01-analysis-cost-and-observability.md` Task 1.
 
-⚠️ **Where this matters is not this Mac.** The deployment target is a claude.ai sandbox with ONE core (§24), and this repo has already recorded a fit that "could not complete at all on a 1-core sandbox" and a real session losing a tool call to a timeout. A 32% cut on the autonomous path is worth more there than anywhere.
+⚠️ **`verify()` mutates the analysis ZERO times** — an earlier claim of 24 counted a different variable of the same name. A shared object gives byte-identical output; the `deepcopy` is 0.046 ms insurance against `recommend()`'s 6 real mutations, not a measured necessity.
 
-⛔ **A NAIVE MEMO WOULD BE A BUG, NOT A SPEEDUP — check this before implementing.** AST scan of the consumers: **`verify()` mutates the analyze dict 24 times** (`report['dimensions_match']`, `report['checks_skipped']`, `report['leftover_background_opaque_px']`, … — it builds its entire report ON TOP of the analyze result) and **`recommend()` mutates it 6 times** (`report['recommended_format']`). Handing the same object to both changes output, and in a multi-file run the second file's verify would inherit the first's mutations. **The memo must return a deep copy.** Falsifier: assert `verify()`'s report has no `recommended_format` key after a memoized `--auto`.
+### `[P1 · M · Opus5-High]` The test suite has a render cache that 29 of 30 files never use *(filed 2026-09-01)*
+`rendered()` at `scripts/harness/test_score_outputs.py:51` renders once and reuses — and **only `test_score_outputs.py` calls it.** Every one of the 15 slowest tests (~773s total) shells out raw via `subprocess.run`.
 
-**Scope it as an in-process memo first, not the disk cache** — a memo over one invocation of a pure function cannot go stale by construction, needs no fingerprint, and is safe to ship in the package where a disk cache would be dead weight in an ephemeral sandbox.
+Worse, its key is the **whole-script SHA**, so every product edit busts it — i.e. every development session runs cold. On disk: **400 MB across 46 SHA directories**, never pruned.
 
-**Not yet known, do not assume:** whether `--auto`'s pass-2 corrective re-render adds a THIRD `analyze()` on assets where it fires — only assets where it did not fire have been measured.
+**Concrete next actions, in order:** (1) count how many (asset, flags) pairs actually repeat across test files — the saving is unmeasured and could be small; (2) extend `rendered()` to the files that would benefit; (3) consider keying it on the reachable-code fingerprint the way `analysis_cache` does; (4) prune the 400 MB.
 
-### `[P1 · M · Opus5-High]` The analysis cache keys on mtime, so it misses 100% of its highest-reuse consumer — invisibly *(filed 2026-09-01)*
-`analysis_cache` keys on `analysis_fingerprint(script)` plus **each asset's mtime and size**. The test suite is the heaviest repeat-analyser in the repo — its 15 slowest tests total **~773s** and every one is an `--auto`/`--verify`/`--target-kb` invocation — but its assets are **synthetic fixtures regenerated into a fresh tmpdir on every run**, so each gets a new path and a new mtime. **The cache would miss on every single one, and a cache that never hits looks exactly like a warm one from outside** — the same indistinguishable-failure shape this repo already recorded when an empty index read as "never indexed".
-
-**Concrete next action:** key on a CONTENT HASH of the asset bytes rather than mtime+size. It costs one hash of bytes already being read, it makes the identical cache serve the product, both gates and the suite, and it is the difference between the suite paying ~773s of analysis every run and paying it once. ⚠️ Re-run the 28-commit historical measurement that justified the current key before changing it — the claim to beat is 9 of 28 commits staying warm.
-
-### `[P1 · M · Opus5-High]` Nothing in this product can report where its time goes, and it has now produced three wrong profiles *(filed 2026-09-01 — the class, of which the two items above are instances)*
-Evidence that this is a missing instrument rather than three separate mistakes:
-- A comment at `remove_gif_background.py:881` records a previous investigator claiming a **"tripled analyze()"** and then RETRACTING it — the retraction says the claim came from comparing a slow 25-asset prefix against a whole-corpus mean on a contended machine.
-- 2026-09-01, attempt one: a 32%/27%/22%/12% split for `--auto`, from stopwatching whole subprocesses on **one asset**. Falsified on its own population — `marketing-automation.gif` (171f) runs in 22.8s against grenade's 45.2s because it REFUSES at pass 1.
-- 2026-09-01, attempt two: an estimate of "60-90s" for the render gate built on that same falsified profile. Withdrawn.
-
-Three attempts, three wrong answers, one missing instrument. Getting the true number required monkey-patching the module from a scratch script — **which a user cannot do, and a live claude.ai session hitting a tool timeout certainly cannot.**
-
-**Concrete next action:** an opt-in `--profile` that prints per-phase wall time and repeat-call counts for the handful of expensive pure functions. It would have surfaced the double-`analyze()` on day one, and it surfaces the next instance without anyone hunting for it — the repo's own rule that a discipline is not a control, applied to measurement instead of correctness.
-
-**Levers that are NOT caching, listed because the caching framing hid them:**
-- **Profile INSIDE `analyze()`.** It is 11.5s for a 62-frame 640x640 asset and nobody has looked since §29.8 replaced `np.unique` with a boolean sieve. A different lever entirely, with a precedent for winning.
-- **Parallelise `analyze()` across frames.** Real on a 6-core Mac, worth **ZERO** on the 1-core deployment sandbox. Named explicitly so nobody builds it for the wrong reason.
-- **Do not call it at all.** A plain render is **4x faster** than `--auto` (10.1s vs 39.6s) purely by skipping analysis. That is routing, not code: a session that already knows its flags should not pay for `--auto`. Free.
+⚠️ **An earlier filing proposed content-hash keying the ANALYSIS cache to speed the suite. That was wrong** — the slow tests never import `analysis_cache` at all. The cache that matters here is `rendered()`.
 
 ### `[P1 · L (first slice: S) · Opus5-High]` The render gate spends 81% of itself on three PURE functions, and re-renders `main` from scratch every run *(filed 2026-09-01, profiled during the v6.3.0 merge)*
 ⚠️ **This item was first filed blaming the analysis cache, and the profile falsified that.** Recording the correction because the wrong premise is the interesting part: the analysis share is real but it is not the biggest slice, and `--verify` — which the gate does not even consume — is.
