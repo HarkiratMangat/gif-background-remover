@@ -9,6 +9,7 @@ would still pass if the warning had been deleted outright.
 Run: python3 scripts/harness/test_four_asset_findings.py
 """
 import importlib.util
+import inspect
 import pathlib
 import sys
 
@@ -64,10 +65,14 @@ def test_min_quality():
           floored == [r for r in unfloored if r[2] >= 65])
 
     # An unreachable floor must still deliver a rung rather than crash the run.
+    # The stride count is READ from the function's own default rather than written as a
+    # literal, so adding a stride rung cannot fail this assertion and point the next reader
+    # at the quality floor for a change on an unrelated axis.
+    n_strides = len(inspect.signature(rgb.build_target_rungs).parameters['strides'].default)
     top = rgb.build_target_rungs('avif', scales, min_quality=999)
     check('avif: an unreachable floor still yields rungs, not zero',
-          len(top) > 0 and len(top) == len(scales) * 4,
-          f'got {len(top)}')
+          len(top) > 0 and len(top) == len(scales) * n_strides,
+          f'got {len(top)}, expected {len(scales) * n_strides}')
 
     # APNG has no quality knob; a floor there must be inert in both directions.
     check('apng: a quality floor is inert',
@@ -95,12 +100,11 @@ def _coverage(colour):
     }]
 
 
-def _dead(coverage, answered):
-    """The same predicate verify() applies, exercised without a render."""
-    ans = {c.lower().lstrip('#') for c in (answered or ())}
-    return [c for c in coverage
-            if c['frames_with_data'] and c['mean_opacity_fraction'] < 0.05
-            and c.get('expected_outline_color') not in ans]
+# ⚠️ THE PRODUCT'S OWN PREDICATE, not a copy of it. The first version of this file
+# re-implemented the filter, which meant deleting the --assume-remove clause from the
+# shipped code left this suite still reporting "all falsifiers pass" -- a test certifying a
+# reconstruction rather than the thing that runs. `verify()` calls this same function.
+_dead = rgb.unprotected_design_regions
 
 
 def test_assume_remove():
@@ -123,6 +127,12 @@ def test_assume_remove():
                      expected_outline_color=None)]
     check('no expected outline colour: still reported under any assumption',
           len(_dead(none_cov, {'002864'})) == 1)
+    # A bare string must be read as ONE colour, not as five characters. Paired: the
+    # matching string suppresses, a non-matching one does not.
+    check('a bare string colour is read as one colour, not characters',
+          len(_dead(cov, '002864')) == 0)
+    check('a bare non-matching string still reports',
+          len(_dead(cov, 'ff00ff')) == 1)
 
 
 # --------------------------------------------------------------------------------------

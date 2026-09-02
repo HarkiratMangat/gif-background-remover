@@ -278,7 +278,7 @@ python scripts/remove_gif_background.py <input.gif> <output.gif> \
     [--protect-region circle:cx,cy,r | rect:x,y,w,h [;more-regions]] \
     [--unprotect-region circle:cx,cy,r | rect:x,y,w,h [;more-regions]] \
     [--remove-region circle:cx,cy,r | rect:x,y,w,h [;more-regions]] \
-    [--remove-region-track circle:cx,cy,r | rect:x,y,w,h]   # frame-0 SEED, followed per frame \
+    [--remove-region-track circle:cx,cy,r | rect:x,y,w,h] \
     [--remove-region-feather 1.5] \
     [--tolerance 15] [--outline-tolerance 40] \
     [--feather-band-multiplier 4.0] [--no-feather] \
@@ -289,6 +289,8 @@ python scripts/remove_gif_background.py <input.gif> <output.gif> \
     [--target-kb <n>] [--min-width <px>] [--min-height <px>] [--min-dimension <px>] [--min-quality <n>] \
     [--preview <path.png>]
 ```
+`--remove-region-track` takes the SAME spec as `--remove-region` but reads it as a **frame-0 seed** and follows the region by continuity, which is what a hole that drifts, rotates or is periodically occluded needs. `references/flag-reference.md`, `references/lessons.md` §33.
+
 For several GIFs in one invocation, see "Batch processing" below — a JSON manifest, not more CLI flags.
 
 *(`--no-gifsicle-optimize` also exists in `--help` output but isn't listed above — it's a confirmed no-op, kept only for backward compatibility with old invocations now that gifsicle only ever runs as part of a `--compress` tier. Don't spend time trying to use it for anything.)*
@@ -341,7 +343,7 @@ It does NOT replace the visual checks (soft-vs-jagged edges, a `--protect-region
 
    ⛔ **A byte cap ALONGSIDE a stated width or quality range is ONE `--target-kb` call with the matching floor — never a hand-rolled loop over `--avif-quality`.** `--min-width` / `--min-height` / `--min-dimension` fence the resolution axis and `--min-quality` fences the quality axis; the ordered rung table then trades whatever is left, and the first rung that fits IS the least destructive one that fits. **Stepping quality by hand cannot find the answer, and on flat vector art it reliably finds the wrong one**, because downscaling flat art makes the file BIGGER (§42) — so a hand loop reads "too big at 192px" and shrinks further, in the exact wrong direction. Measured 2026-09-01 on two real 640×640 icons delivered against "192px wide, under 256KB, q65–85": a hand-rolled quality loop shipped them at **128×143** and **127×131**, while one `--target-kb 250 --min-width 192` call found **498×558 / 196.9 KB** and **513×526 / 226.6 KB** — full resolution, a *smaller* file, 15× and 16× the pixel area. It also prints a cost estimate before it starts, which is the warning that would have prevented that session's lost tool call. §42, §48
 
-   ⚠️ **`--target-kb` is a CEILING, not a target — it never spends unused headroom on quality.** If the first render already fits, no fitting runs at all and the output keeps whatever `--avif-quality`/`--webp-quality` default it was given (AVIF's is **70**). So on a stated range, **pass the TOP of that range explicitly**: `--avif-quality 85 --target-kb 250 --min-quality 65`, not `--target-kb` alone. Measured 2026-09-01: `--target-kb 250` alone delivered a 192px grenade at **99.8 KB / q70** with 150 KB of the cap unused, while the same asset at q85 fits comfortably. The ladder only ever walks DOWN from where you start it.
+   ⚠️ **`--target-kb` is a CEILING, not a target — it never spends unused headroom on quality.** If the first render already fits, no fitting runs at all and the output keeps whatever `--avif-quality`/`--webp-quality` default it was given (AVIF's is **70**). So on a stated range, **pass the TOP of that range explicitly**: `--avif-quality 85 --target-kb 250 --min-quality 65`, not `--target-kb` alone. Measured 2026-09-01: `--target-kb 250` alone delivered a 192px grenade at **99.8 KB / q70** with 150 KB of the cap unused, while the same asset at q85 fits comfortably. The ladder only ever walks DOWN from where you start it — so starting it *below* the floor is now refused outright (`--avif-quality 60 --min-quality 65` errors and names the fix) rather than silently delivering a q60 file.
 
 3. **Anything that would require GUESSING a target → ask the user one short question, before rendering.** An implied-but-unstated size limit, an ambiguous format preference, "make it work for chat" without naming the app. Ask; do not pick a plausible-sounding default and render it.
 
