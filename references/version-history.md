@@ -1,6 +1,12 @@
 # Skill version history
 
-**v6.4.0 will be the next version.** A version is minted when a merge is approved, not per commit on a branch; the working detail for a pending version lives in `SKILL.md`'s own version header until then.
+**A version is minted when a merge is approved, not per commit on a branch**; the working detail for a pending version lives in `SKILL.md`'s own version header until then.
+
+## v6.3.0 — full entry
+
+**v6.3.0** was a *moderate* bump: a review of one real four-asset job that took three rounds of user-reported defects, reproduced end to end in the development repo. Nothing in it was a new capability — every fix closed a gap between a capability the tool already had and the chance of an agent reaching it. It added `--min-quality` (the quality-axis mirror of `--min-width`, with 0-100 validation and a refusal when the starting quality sits below the floor), stopped `--assume-remove` tripping the "region received NO protection" warning on the regions it was told to remove, and rewrote `recommend()`'s enclosure hint to offer a `--remove-region-track` seed and drop a false claim that `--unprotect-region` was the only region flag composing with `--recover-fade-alpha`. Seven documentation defects were corrected, each of which had routed a reader away from an answer that already existed. `references/lessons.md` §48.
+
+It also carried a performance investigation, written up in the development repo, whose first draft was falsified on six headline claims by three adversarial reviewers — including its central correctness argument, which rested on a code scan that had counted the wrong variable. The audit trail was kept rather than tidied away, because the pattern is the finding: with no way to measure where the program's time goes, four separate attempts to characterise it produced four wrong answers.
 
 ## v6.2.0 — full entry
 
@@ -179,10 +185,18 @@ Moved here from SKILL.md at v5.4.0. The convention is that SKILL.md carries only
 
 ## Versioning convention (canonical)
 
-Versioning convention (three-part, `v{major}.{minor}.{correction}` — Harkirat's explicit spec, applies both to this internal version log AND to whatever gets said in the file handed back to him after an edit, so the two never drift):
-- **Major** (v2 -> v3): a reviewed, end-to-end-verified round with multiple serious fixes and/or new features/major functionality changes.
-- **Minor** (v2 -> v2.1): a single confirmed bug fix in the script itself that doesn't rise to major.
-- **Correction / very-minor / note** (v2.2 -> v2.2.1): very, very minor — mainly documentation, but NOT required to be documentation-only (corrected 2026-07-16); a genuinely tiny code tweak, too small to be its own minor bump, fits here too. "Mainly docs" describes the common case, not a hard rule.
+Versioning convention (three-part, **`v{major}.{moderate}.{minor}`** — Harkirat's explicit spec, applies both to this internal version log AND to whatever gets said in the file handed back to him after an edit, so the two never drift).
+
+⚠️ **REVISED 2026-09-01 by Harkirat, and the bars below were DERIVED FROM ALL 17 SHIPPED TAGS rather than restated.** Two things about the previous wording were wrong against its own history, which is why it is worth reading this block rather than assuming you remember it. It called the third digit "correction / very-minor / note" — a correction is a *kind of minor*, not a parallel tier. And it defined the middle digit as *"a single confirmed bug fix in the script itself"*, when in practice the middle digit routinely bundles many (v6.1.0 shipped an erosion fringe fix, four silent no-ops and two new refusals) and the third digit routinely touches no script at all (v2.2.2, v5.1.1, v5.2.1).
+
+- **Major** (v5 -> v6): **a new capability class.** The skill can do something it structurally could not before, and users get new vocabulary for it. Shipped examples: **v4.0.0** added `--analyze`/`--recommend`/`--verify`, an advisory subsystem that did not exist; **v5.0.0** added WebP/AVIF 8-bit alpha output and `--auto`; **v6.0.0** added alpha correctness, autonomy and the agent-overhead work. Each was a planned multi-part round, not a bundle of fixes that happened to be large.
+- **Moderate** (v6.2 -> v6.3): **the product behaves differently, inside capabilities it already had.** New flags, fixed defects, changed defaults, new refusals. **This is the default tier for any merge that touches script behaviour.** Every one of v5.1.0, v5.2.0, v5.3.0, v5.4.0, v5.5.0, v6.1.0, v6.2.0 and v6.3.0 sits here.
+- **Minor** (v6.3 -> v6.3.1): **nothing about the product's behaviour changes — something that was wrong is now correct.** Documentation, packaging, metadata, repo-side files, or a one-line fix restoring an intended state. **A correction is the usual shape of this tier, not a separate tier.** Shipped examples: **v2.2.2** (docs/restructure), **v5.1.1** (an unreachable pointer in the built package), **v5.2.1** (the description exceeded claude.ai's 1024-character limit), **v6.1.1** (package leaks plus a convention correction).
+
+**Three tie-breaks the history forces, each of which contradicts an intuition:**
+1. **Bundling does not promote.** Many fixes in one merge is still moderate. v6.1.0 is the worked example.
+2. **Diff size does not decide.** Moderate has run from **15 to 917** changed script lines (v5.2.0 against v5.5.0); minor has run from **0 to 1** (v5.2.1 against v6.1.1). The axis is what changed FOR A USER, never how large the diff was.
+3. **Minor is defined by the ABSENCE of a behaviour change**, not by "mainly docs". v6.1.1 touched the script and is minor; v5.2.0 touched 15 script lines and is moderate.
 
 All three tiers require the same bar before shipping: confirmed root cause (for a fix) or confirmed-true (for a documentation note), and a real fix/finding, not a guess — the SIZE of the change determines which tier, not the rigor applied. **When deciding which tier a change fits, reason it through explicitly against each tier's actual bar for THIS specific change** — don't pattern-match to whichever tier a similar-sounding past change landed in.
 
