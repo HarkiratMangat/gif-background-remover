@@ -88,6 +88,110 @@ Every downstream failure follows from that one merge, all measured 2026-09-01:
 
 ⚠️ **The correct answer for this asset today is one command, and it works** — `--recover-fade-alpha --fade-color 6964f8 --remove-region-track "rect:437,301,32,67"` gives 0 residual opaque px in the hole and 0 gaps in the stripe across all 171 frames with the fade intact. The gap is that nothing derives that seed for you.
 
+### `[P0 · M · Opus5-High]` `--auto` analyses the SAME FILE TWICE — 32% of every run of the flagship path, in the shipped skill *(filed 2026-09-01, measured in-process on the real `main()`)*
+**This is a CORE-SKILL cost, not a harness one, and it was invisible because the whole investigation had been framed as "speed up the gate".**
+
+Instrumented in-process on `grenade.gif`, one `--auto` invocation = **40.0s**:
+
+| `analyze()` call | caller | cost | share |
+|---|---|---|---|
+| 1 | `recommend()` (pass 1) | 11.5s | 29% |
+| 2 | `verify()` (pass 3) | 12.7s | **32%** |
+| | | **24.4s** | **61% of the run** |
+
+**Proven redundant, not assumed:** both calls take `path=grenade.gif, max_samples=40, tolerance=15` and return a **byte-identical result hash** (`c1036647208c8ecf`). Verified by hashing both returns, not by reading the code.
+
+`analyze()` is not a cost centre in this program — it IS the cost: **100%** of `--recommend`, **87%** of `--verify`, **61%** of `--auto`, and **0%** of a plain render, which runs in 10.1s against `--auto`'s 39.6s.
+
+⚠️ **Where this matters is not this Mac.** The deployment target is a claude.ai sandbox with ONE core (§24), and this repo has already recorded a fit that "could not complete at all on a 1-core sandbox" and a real session losing a tool call to a timeout. A 32% cut on the autonomous path is worth more there than anywhere.
+
+⛔ **A NAIVE MEMO WOULD BE A BUG, NOT A SPEEDUP — check this before implementing.** AST scan of the consumers: **`verify()` mutates the analyze dict 24 times** (`report['dimensions_match']`, `report['checks_skipped']`, `report['leftover_background_opaque_px']`, … — it builds its entire report ON TOP of the analyze result) and **`recommend()` mutates it 6 times** (`report['recommended_format']`). Handing the same object to both changes output, and in a multi-file run the second file's verify would inherit the first's mutations. **The memo must return a deep copy.** Falsifier: assert `verify()`'s report has no `recommended_format` key after a memoized `--auto`.
+
+**Scope it as an in-process memo first, not the disk cache** — a memo over one invocation of a pure function cannot go stale by construction, needs no fingerprint, and is safe to ship in the package where a disk cache would be dead weight in an ephemeral sandbox.
+
+**Not yet known, do not assume:** whether `--auto`'s pass-2 corrective re-render adds a THIRD `analyze()` on assets where it fires — only assets where it did not fire have been measured.
+
+### `[P1 · M · Opus5-High]` The analysis cache keys on mtime, so it misses 100% of its highest-reuse consumer — invisibly *(filed 2026-09-01)*
+`analysis_cache` keys on `analysis_fingerprint(script)` plus **each asset's mtime and size**. The test suite is the heaviest repeat-analyser in the repo — its 15 slowest tests total **~773s** and every one is an `--auto`/`--verify`/`--target-kb` invocation — but its assets are **synthetic fixtures regenerated into a fresh tmpdir on every run**, so each gets a new path and a new mtime. **The cache would miss on every single one, and a cache that never hits looks exactly like a warm one from outside** — the same indistinguishable-failure shape this repo already recorded when an empty index read as "never indexed".
+
+**Concrete next action:** key on a CONTENT HASH of the asset bytes rather than mtime+size. It costs one hash of bytes already being read, it makes the identical cache serve the product, both gates and the suite, and it is the difference between the suite paying ~773s of analysis every run and paying it once. ⚠️ Re-run the 28-commit historical measurement that justified the current key before changing it — the claim to beat is 9 of 28 commits staying warm.
+
+### `[P1 · M · Opus5-High]` Nothing in this product can report where its time goes, and it has now produced three wrong profiles *(filed 2026-09-01 — the class, of which the two items above are instances)*
+Evidence that this is a missing instrument rather than three separate mistakes:
+- A comment at `remove_gif_background.py:881` records a previous investigator claiming a **"tripled analyze()"** and then RETRACTING it — the retraction says the claim came from comparing a slow 25-asset prefix against a whole-corpus mean on a contended machine.
+- 2026-09-01, attempt one: a 32%/27%/22%/12% split for `--auto`, from stopwatching whole subprocesses on **one asset**. Falsified on its own population — `marketing-automation.gif` (171f) runs in 22.8s against grenade's 45.2s because it REFUSES at pass 1.
+- 2026-09-01, attempt two: an estimate of "60-90s" for the render gate built on that same falsified profile. Withdrawn.
+
+Three attempts, three wrong answers, one missing instrument. Getting the true number required monkey-patching the module from a scratch script — **which a user cannot do, and a live claude.ai session hitting a tool timeout certainly cannot.**
+
+**Concrete next action:** an opt-in `--profile` that prints per-phase wall time and repeat-call counts for the handful of expensive pure functions. It would have surfaced the double-`analyze()` on day one, and it surfaces the next instance without anyone hunting for it — the repo's own rule that a discipline is not a control, applied to measurement instead of correctness.
+
+**Levers that are NOT caching, listed because the caching framing hid them:**
+- **Profile INSIDE `analyze()`.** It is 11.5s for a 62-frame 640x640 asset and nobody has looked since §29.8 replaced `np.unique` with a boolean sieve. A different lever entirely, with a precedent for winning.
+- **Parallelise `analyze()` across frames.** Real on a 6-core Mac, worth **ZERO** on the 1-core deployment sandbox. Named explicitly so nobody builds it for the wrong reason.
+- **Do not call it at all.** A plain render is **4x faster** than `--auto` (10.1s vs 39.6s) purely by skipping analysis. That is routing, not code: a session that already knows its flags should not pay for `--auto`. Free.
+
+### `[P1 · L (first slice: S) · Opus5-High]` The render gate spends 81% of itself on three PURE functions, and re-renders `main` from scratch every run *(filed 2026-09-01, profiled during the v6.3.0 merge)*
+⚠️ **This item was first filed blaming the analysis cache, and the profile falsified that.** Recording the correction because the wrong premise is the interesting part: the analysis share is real but it is not the biggest slice, and `--verify` — which the gate does not even consume — is.
+
+⚠️ **AND THE TABLE BELOW WAS THEN FALSIFIED TOO, on its own population.** It is a single asset, and the gate's population has at least three regimes: `marketing-automation.gif` (171f) runs `--auto` in **22.8s** against grenade's 45.2s *because it REFUSES at pass 1* and pays analysis only; `Pixel Saber.gif` (213f) takes 6.1s for the same reason. Frame count is not the driver — whether the asset renders at all is. Kept as measured, labelled as ONE POINT, because the corrected conclusion below depends on knowing that.
+
+**Measured 2026-09-01 on `grenade.gif` (62 frames), timing the exact command the gate runs (`--auto`, 44.5s) — ONE ASSET, not the population:**
+
+| slice | cost | share | pure function of |
+|---|---|---|---|
+| `--verify` (`--auto` pass 3) | 14.3s | **32%** | (input bytes, output bytes, verify closure) |
+| analysis (`--recommend`) | 12.0s | **27%** | (input bytes, analyze closure) — already cached IN THE HARNESS |
+| erosion calibration | 9.9s | **22%** | (frames, bg colour, calibration closure) |
+| the render being measured | 5.4s | 12% | irreducible |
+| startup / IO | ~3s | ~7% | — |
+
+Isolated by pinning `--edge-cleanup-erosion 1` to remove the calibration, and by timing `--recommend`, a plain render and `--verify` separately. **The thing the gate exists to compare is 12% of what the gate costs.**
+
+**What the population actually says, and it moves the ranking back toward analysis:**
+- **62 records = 31 assets x 2 passes, and the resize pass re-runs the IDENTICAL analysis.** `analyze()` is a pure function of the source and `--resize-max-dim` is applied after it, so **~50% of all analysis work in the gate is a literal duplicate inside a single run.** No cross-run cache is needed to remove it — one in-process memo, or one CLI invocation doing both passes (the multi-file `--out-dir` mode already exists), takes it to zero at no staleness risk whatever. This is the cheapest real win on the list and it was invisible from the single-asset profile.
+- **10 of 62 records (16%) render nothing at all** and pay analysis only: 4 are the GIF-entirely-transparent-frame refusal (`growth.gif`, `paper-plane.gif`), the rest are `--auto` coin-flip / changing-background refusals. ⚠️ Two DIFFERENT causes — the first read of this attributed all ten to one after checking a single asset. The gate does compare `returncode`/`no_output`, so a refusal flipping IS caught; it is not a vacuous pass. But for these records an analysis cache is a 100% win.
+- **Analysis is the only cost every record pays.** `--verify` and the erosion calibration are paid only by the 52 that render.
+
+**Falsified and NOT worth building — measured, not reasoned:**
+- *Amortising Python startup across assets (a persistent worker pool, or batching via the multi-file CLI purely for startup).* Interpreter start plus `numpy`+`scipy.ndimage`+`PIL` imports measure **0.24s**, so 62 records pay ~15s of 626s = **2.4%**. Not a lever.
+- *Capping BLAS threads.* numpy here is Apple **Accelerate**, which multithreads, and nothing sets a thread cap while 6 worker processes run on 6 performance cores. Real but modest: measured interleaved A/B/A/B at 3 workers, **67.1s -> 59.2s, 1.13x**, reproducible across both reps. Worth taking, not worth calling a fix.
+
+**Tier 1 — free, no new machinery, no correctness risk. Do these first:**
+1. **Commit a PRE baseline keyed on `main`'s script SHA.** The gate re-renders `main` from scratch on every invocation — a flat **50%** of total wall time recomputing something unchanged since the last merge. The artefact is a few KB of hashes. Measured this merge: PRE 626s + POST 296s.
+2. **Longest-processing-time-first scheduling.** A run ends when its LAST unit ends, and the ordering is arbitrary today — the log shows the longest asset finishing last at 626s. LPT is a 4/3-approximation, free, and per-asset durations are already observable.
+3. **Gate the resize pass on a fingerprint rather than on a flag nobody remembers.** `--no-resize-pass` already halves the work and is only needed when a change can reach the pixel-art/resize closure.
+
+**Tier 2 — the real win, and it is ONE mechanism, not three.** An opt-in memo layer inside the PRODUCT (`--cache-dir`, off by default so the shipped `.skill` carries no cache behaviour into an ephemeral sandbox), keyed per-function by a closure fingerprint, covering `analyze()`, the erosion calibration and `verify()`. `scripts/harness/analysis_cache.py` already has most of the machinery. On a typical merge — where the render closure changes but those three do not — that is up to **81% off the POST run as well**. ⚠️ **An earlier version of this entry claimed "60-90s"; that was extrapolated from the falsified single-asset profile and is withdrawn.** A defensible estimate from what is actually measured is Tier 1 (-50%) plus the duplicate-analysis removal plus the thread cap, landing a 922s gate somewhere near **200-260s** with no new staleness risk at all; a cross-run cache buys more on repeat runs only. ⚠️ **Measure back to back before quoting any of it** — this repo has already recorded the same render set at 976s and 488s on consecutive runs, and this merge saw 626s and 296s for identical work at different contention.
+
+**Tier 3 — considered and REJECTED. Recorded so nobody re-derives them:**
+- *A whole-render content cache keyed on a render fingerprint.* Checked against a real change before believing it: the v6.3.0 branch edited `process()`, the render root, so the key would have moved and the cache would have bought **zero**. The render closure is most of the file. Low payoff, and its failure mode is the gate silently lying about the only thing it exists to detect.
+- *Swapping Pillow for `avifenc`/`cwebp`.* Changing the encoder changes the output bytes, which is the quantity being compared.
+- *Truncating assets to fewer frames.* This repo's own grenade defect lived only on frames 46-51.
+
+⚠️ **The risk that governs all of Tier 2: a cache that lies turns a gate into a rubber stamp, and it fails SILENTLY — strictly worse than a slow gate.** Three mitigations, all already used elsewhere here: every uncertain case falls back to a whole-file SHA; a fingerprint that fell back is marked, so a run can report that it did; and a **RELEASE** (as opposed to a merge) runs `--no-cache` end to end. That keeps the fast path for the common case without ever letting a published artefact rest on it.
+
+### `[P1 · M · Opus5-High]` The render gate has been recording ART LOSS on two assets and nobody has ever read it *(filed 2026-09-01, found by reading the gate's own baseline instead of only its verdict)*
+`render_baseline.py` captures a `signal_lines` field per record and compares it PRE/POST, so a CHANGE in these lines would be caught. What nothing surfaces is the standing content. Two records in the `alphas` population carry this, today, on `main`:
+
+| asset | source opaque px (the artwork) | survived | lost |
+|---|---|---|---|
+| `alphas/cinnamonexcited.gif` | 44,565 | 32,169 | **27.8%** |
+| `alphas/PixelSaber-ezgif.com-gif-maker (2).gif` | 1,643,209 | 1,444,385 | **12.1%** |
+
+`--verify` states it plainly — *"The SOURCE already had transparency, so its N opaque pixels were the artwork ... Colour-based removal has eaten real art"* — and the gate faithfully writes it into the baseline, where it has sat unread. A gate that records a defect and reports "0 changed" is working exactly as designed and is still telling nobody.
+
+⚠️ **This is NOT the already-filed "two assets where the keyer removes solid artwork" item above.** That one is two DARK-corpus GIFs on flat coloured backgrounds (`ff6666`, `921219`) whose loss was diagnosed and closed. These two are **already-transparent sources**, i.e. the `--source-alpha-band` / `--ignore-source-alpha` machinery from §28.14 — a different mechanism entirely. Checked before claiming it, because the titles are close enough to merge them by mistake.
+
+**Concrete next action:** two parts, and the second matters more than the first. (a) Diagnose the two assets — are they a real regression in the source-alpha scoping, or assets whose own alpha is wrong and which legitimately need `--ignore-source-alpha`? (b) **Make the gate report standing signals, not just changed ones.** A one-line summary of ERROR / ART LOSS / refusal counts printed after `--compare` would have surfaced this the first time it appeared instead of on the day someone happened to read the JSON.
+
+### `[P3 · S · Opus5-High]` A module-level constant the closure cannot read still cold-invalidates the whole analysis cache *(filed 2026-09-01, hit while merging v6.3.0)*
+`analysis_fingerprint` hashes **every** module-level statement unconditionally — its own docstring says a constant is "reachable from anywhere and cheap to include, so it is never analysed for reach." Measured 2026-09-01: adding `DEAD_PROTECTION_OPACITY = 0.05`, read only by `unprotected_design_regions` (a `verify()` helper `analyze()` cannot reach), moved the fingerprint `a99c2880ae5d6975` -> `a27d82c48415731b` and discarded all **29 entries / 42 MB** of warm cache. The closure itself was proven identical: 34 functions, zero changed.
+
+This is the design's deliberate safe direction and must stay that way — a MISSED invalidation serves a pre-change answer to the gate meant to catch the change, which is far worse. But the docstring's word for the other direction is "cheap", and that was assumed rather than measured; here it cost a full cold pass on a merge that changed nothing `analyze()` can see.
+
+**Concrete next action:** consider hashing ambient statements that are actually REFERENCED from inside the closure, plus all imports and class definitions unconditionally, with any doubt (a star-import, a name resolved dynamically, an unparseable node) falling back to hashing all ambient statements. ⚠️ **Re-run the 28-commit historical measurement before believing any improvement** — that is the evidence base the current key was chosen on, and the claim to beat is 9 of 28 (32.1%) staying warm. A refinement that cannot show a gain on that same population is not worth the extra failure mode.
+
 ### `[P2 · S · Sonnet5-High]` `--recommend` says nothing about size, on a tool whose second half is size fitting *(filed 2026-09-01)*
 `--recommend` returns a format ranking and a flag command and never mentions `--target-kb`, `--min-width` or `--min-quality`, even though a stated byte cap is one of the three cases SKILL.md's own size gate enumerates. A real session with "192px wide, under 256 KB, q65-85" in the brief hand-rolled a quality loop, timed out a tool call, and shipped two of four assets at 128 px wide when one fit call reached **192x215 at q85 / 236.2 KB** and full resolution at **498x558 / 196.9 KB**. Cheap candidate: when `--recommend` is given `--target-kb`, have it emit the fit flags alongside the render flags; failing that, have it name the fit call in evidence the way it names the format ranking.
 
