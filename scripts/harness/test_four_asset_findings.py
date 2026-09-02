@@ -64,7 +64,10 @@ def test_min_quality():
     check('avif: filtering preserves the relative order of survivors',
           floored == [r for r in unfloored if r[2] >= 65])
 
-    # An unreachable floor must still deliver a rung rather than crash the run.
+    # An unreachable floor must still deliver a rung rather than crash the run. 999 is
+    # deliberately not reachable through the CLI -- `process()` refuses anything outside
+    # 0-100 -- but `build_target_rungs` stays tolerant on purpose, so this exercises the
+    # fallback directly rather than through a path that would have rejected the input.
     # The stride count is READ from the function's own default rather than written as a
     # literal, so adding a stride rung cannot fail this assertion and point the next reader
     # at the quality floor for a change on an unrelated axis.
@@ -151,8 +154,38 @@ def test_unprotect_hint():
           'per-frame connectivity' in txt)
 
 
+def test_min_quality_range():
+    """The CLI boundary refuses a floor no encoder rung could ever satisfy."""
+    print("--min-quality range validation")
+    import subprocess
+    src = pathlib.Path('/Users/harkirat/Downloads/Diors-builds Emojis/SmallDot.webp')
+    if not src.exists():
+        print("  SKIP  (fixture not present on this machine)")
+        return
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        def run(q):
+            return subprocess.run(
+                [sys.executable, str(_SCRIPT), str(src), f'{td}/o{q}.avif',
+                 '--avif-quality', '85', '--target-kb', '250', '--min-quality', str(q)],
+                capture_output=True, text=True)
+        # Positive: out of range is refused, and the message names the real bounds.
+        bad = run(150)
+        check('a floor above 100 is refused', bad.returncode != 0, f'rc={bad.returncode}')
+        check('the refusal names the real range, not the typed value',
+              '0-100' in bad.stderr and 'Raise --avif-quality to 150' not in bad.stderr,
+              bad.stderr[-200:])
+        neg = run(-5)
+        check('a negative floor is refused', neg.returncode != 0, f'rc={neg.returncode}')
+        # Negative half: an IN-range floor must still be accepted, or the check is too broad.
+        ok = run(65)
+        check('an in-range floor is still accepted', ok.returncode == 0,
+              ok.stderr[-200:])
+
+
 if __name__ == '__main__':
     test_min_quality()
+    test_min_quality_range()
     test_assume_remove()
     test_unprotect_hint()
     print()

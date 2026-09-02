@@ -6835,13 +6835,15 @@ def fit_to_target_bytes(rgb_frames, alpha_frames, durations, loop, output_path,
             f"{len(_FIT_SCALE_LADDER)} scale rungs are excluded by "
             f"{_describe_size_floor(args)} -- quality and frames are traded instead.")
     _minq = getattr(args, 'min_quality', None)
-    rungs = build_target_rungs(fmt, _scales,
-                               pixel_art=bool(getattr(args, 'pixel_art', False)),
-                               min_quality=_minq)
+    # ⚠️ ONE kwargs source for both calls. They were spelled out twice, and the second call
+    # exists ONLY to count what the floor removed -- so a future argument added to one and
+    # not the other would not fail, it would silently report the wrong number of excluded
+    # rungs while the fit itself walked a different ladder.
+    _rung_kw = dict(pixel_art=bool(getattr(args, 'pixel_art', False)))
+    rungs = build_target_rungs(fmt, _scales, min_quality=_minq, **_rung_kw)
     _q_floored = False
     if _minq is not None:
-        _all = build_target_rungs(fmt, _scales,
-                                  pixel_art=bool(getattr(args, 'pixel_art', False)))
+        _all = build_target_rungs(fmt, _scales, **_rung_kw)
         # Guarded the same way the resolution floor above is: a floor that removes NOTHING
         # (--min-quality 45 on AVIF, whose lowest rung is already 45) must not announce a
         # trade-off that never happened. An autonomous run reads these lines as fact.
@@ -8138,6 +8140,19 @@ def process(input_path, output_path, args, diagnostics=None):
     if not 0.0 <= getattr(args, 'translucent_alpha', 0.35) <= 1.0:
         raise SystemExit("--translucent-alpha must be between 0.0 and 1.0.")
     _minq = getattr(args, 'min_quality', None)
+    if _minq is not None and not 0 <= _minq <= 100:
+        # ⚠️ AN OUT-OF-RANGE FLOOR PRODUCED ADVICE NOBODY CAN TAKE. Before this check,
+        # `--min-quality 150` reached the refusal below and printed "Raise --avif-quality to
+        # 150 or above" -- a value no encoder accepts and this tool would itself reject, so
+        # the user was handed an impossible instruction in a confident voice. A negative or
+        # zero floor was the mirror failure: a silent no-op that looks like a floor was
+        # applied. Validated HERE, at the CLI boundary, and deliberately NOT inside
+        # build_target_rungs, which stays tolerant so its falsifier can still exercise the
+        # unreachable-floor fallback directly.
+        raise SystemExit(
+            f"--min-quality {_minq} is out of range. Quality runs 0-100, and a floor "
+            f"outside that cannot be met by any encoder rung -- 0 means no floor at all. "
+            f"Pass a value between 0 and 100 (the bottom of your stated quality range).")
     if _minq is not None:
         # ⚠️ A FLAG THE TOOL ACCEPTS AND DISCARDS is this project's most-repeated defect
         # shape (references/lessons.md SS44, eight instances of it). --min-quality is read
@@ -10264,7 +10279,8 @@ def main():
                          'and fails --min-dimension 128). Combine freely with --min-width / '
                          '--min-height; the tightest constraint wins.')
     p.add_argument('--min-quality', type=int, default=None, metavar='N',
-                    help='Never let --target-kb fit deliver an output below quality N. The '
+                    help='Never let --target-kb fit deliver an output below quality N '
+                         '(0-100; outside that is refused). The '
                          'quality-axis mirror of --min-width: a byte cap is a constraint, '
                          'and a stated quality range ("q65-85") is a REQUIREMENT -- '
                          'resolution and frames are traded instead. Applies to the '
