@@ -174,6 +174,18 @@ This is the design's deliberate safe direction and must stay that way — a MISS
 
 **Concrete next action:** consider hashing ambient statements that are actually REFERENCED from inside the closure, plus all imports and class definitions unconditionally, with any doubt (a star-import, a name resolved dynamically, an unparseable node) falling back to hashing all ambient statements. ⚠️ **Re-run the 28-commit historical measurement before believing any improvement** — that is the evidence base the current key was chosen on, and the claim to beat is 9 of 28 (32.1%) staying warm. A refinement that cannot show a gain on that same population is not worth the extra failure mode.
 
+### `[P2 · S · Opus5-Med]` `--auto` runs a full `verify()` and prints it as PROSE, so a caller has to run the identical pass again *(filed 2026-09-03, found while building the `dior gif` CLI wrapper)*
+
+`--auto`'s pass 3 calls `verify(input, output, tolerance=..., assume_remove_colors=...)` and prints five of its fields to stderr as English (`scripts/remove_gif_background.py:10026-10048`). Those are the RIGHT numbers — computed with the run's own `--assume-remove` context, which a caller re-deriving them can easily get wrong. But they are unaddressable: a wrapper that wants a verdict it can branch on has to run `--verify` again, which is a second full per-frame pass over the same pair.
+
+**Measured on a 144-frame 640x640 asset: `--auto` ~60s, then `--verify` ~30s on top — a 50% overhead on the whole job, for a computation that had already been done seconds earlier.** On a five-file batch that is two and a half minutes of pure duplication.
+
+**The fix is small and additive:** `--auto --verify-json <path>` (or a `verify` key in a machine-readable summary) writing pass 3's existing `_v` dict, which is already in hand and already correct. No new computation, no behaviour change to any existing flag, and nothing to decide — the object exists and is discarded.
+
+⚠️ **Why the wrapper does not simply parse the prose.** The printed lines are lossy in exactly the place that matters: `full verify -- worst protected-region coverage: 0.0` gives the number but not which region it belongs to, and `unprotected_design_regions` — the pre-filtered list that says which parts actually came out wrong — is never printed at all. Parsing prose to make a correctness claim is the kind of thing this repo has already recorded going wrong (a check that cannot fail is worse than no check), so the wrapper pays the 30s instead. That is the right call for the wrapper and the wrong steady state for the tool.
+
+**Consumer:** `~/.config/dior/scripts/gif_wizard.py` (`verify()` / `report_verify()`), in the dior-cli repo. It is not part of the skill package and the skill does not know it exists — this item is about `--auto` being unable to hand its own answer to ANY caller, not about that wrapper specifically.
+
 ### `[P2 · S · Sonnet5-High]` `--recommend` says nothing about size, on a tool whose second half is size fitting *(filed 2026-09-01)*
 `--recommend` returns a format ranking and a flag command and never mentions `--target-kb`, `--min-width` or `--min-quality`, even though a stated byte cap is one of the three cases SKILL.md's own size gate enumerates. A real session with "192px wide, under 256 KB, q65-85" in the brief hand-rolled a quality loop, timed out a tool call, and shipped two of four assets at 128 px wide when one fit call reached **192x215 at q85 / 236.2 KB** and full resolution at **498x558 / 196.9 KB**. Cheap candidate: when `--recommend` is given `--target-kb`, have it emit the fit flags alongside the render flags; failing that, have it name the fit call in evidence the way it names the format ranking.
 
