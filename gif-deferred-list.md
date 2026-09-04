@@ -174,6 +174,22 @@ This is the design's deliberate safe direction and must stay that way — a MISS
 
 **Concrete next action:** consider hashing ambient statements that are actually REFERENCED from inside the closure, plus all imports and class definitions unconditionally, with any doubt (a star-import, a name resolved dynamically, an unparseable node) falling back to hashing all ambient statements. ⚠️ **Re-run the 28-commit historical measurement before believing any improvement** — that is the evidence base the current key was chosen on, and the claim to beat is 9 of 28 (32.1%) staying warm. A refinement that cannot show a gain on that same population is not worth the extra failure mode.
 
+### `[P1 · XS · Sonnet5-Med]` No `build_parser()` factory, so the parser cannot be introspected from outside *(filed 2026-09-04, asked for by the Devoid app)*
+
+`ArgumentParser` is constructed inline inside the CLI entry function, so there is no zero-argument way to obtain it. Any external consumer that wants each option's type, choices, default and help text has to parse `--help` output, which is fragile, or hand-transcribe 63 flags, which drifts the moment one is added or renamed.
+
+**The change is additive and small:** extract the construction into `def build_parser() -> argparse.ArgumentParser:` and have the entry function call it. No behaviour change, no flag change, and `p.parse_args()` still runs exactly where it does now.
+
+**Who wants it:** `/Applications/Claude Code/Devoid` generates its option METADATA from argparse so a hand-authored control can never drift from the flag it drives, and a newly added flag surfaces as a warning that no panel covers it. ⚠️ It deliberately does NOT generate a control per flag — that would produce a 63-control passthrough form, which is the thing that app exists to avoid. See `docs/PLAN.md` stage 1.6 there.
+
+⚠️ **This was previously described in Devoid's `HANDOFF.md` as already filed here. It was not** — that claim pointed at the `--auto`/`--verify` entry below, which is unrelated. Filed properly now.
+
+### `[P3 · XS · Sonnet5-Low]` The hand-labelled corpus is cited as 714 judgements; the files hold 981 *(filed 2026-09-04)*
+
+`scripts/harness/populations.py:25` calls it "714 judgements, the most expensive artefact this project owns", and the figure appears in four places across the repo. Counted from `scripts/harness/labels/*.json` on 2026-09-04: **1,038 entries, of which 981 carry an `edge_hardness` classification** (`pixel_art` 552, `antialiased` 391, `unsuitable_no_edges` 31, `ambiguous` 7) and 57 are prose notes rather than classifications.
+
+Stale by 267 — 38%. Every recall and specificity figure this project quotes has that corpus as its denominator, so the number matters more than its size suggests. **Derive it rather than restating it**, per this repo's own rule about counted claims that rot.
+
 ### `[P2 · S · Opus5-Med]` `--auto` runs a full `verify()` and prints it as PROSE, so a caller has to run the identical pass again *(filed 2026-09-03, found while building the `dior gif` CLI wrapper)*
 
 `--auto`'s pass 3 calls `verify(input, output, tolerance=..., assume_remove_colors=...)` and prints five of its fields to stderr as English (`scripts/remove_gif_background.py:10026-10048`). Those are the RIGHT numbers — computed with the run's own `--assume-remove` context, which a caller re-deriving them can easily get wrong. But they are unaddressable: a wrapper that wants a verdict it can branch on has to run `--verify` again, which is a second full per-frame pass over the same pair.
