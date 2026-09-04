@@ -10071,7 +10071,15 @@ def _warn_if_overwriting_explicit_output(output_path):
               f"auto-versioned the way a default output name would be.", file=sys.stderr)
 
 
-def main():
+def build_parser():
+    """The CLI's ArgumentParser, built and returned without parsing anything.
+
+    Extracted from main() so a caller that is not a shell -- a GUI, a test, a
+    doc generator -- can INTROSPECT the flags (each option's type, choices,
+    default and help text) instead of hand-transcribing them and drifting the
+    day one is added. main() is the only behavioural caller and does exactly
+    what it did before: build, then parse_args().
+    """
     p = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('paths', nargs='*', default=[], metavar='PATH',
@@ -10698,6 +10706,11 @@ def main():
                         'SMALLEST erosion already at that asset\'s own floor, so it removes '
                         'the fringe without eating thin strokes. In-memory: costs one erosion '
                         'pass per candidate, not one render.')
+    return p
+
+
+def main():
+    p = build_parser()
     args = p.parse_args()
     refuse_repeated_region_flags(sys.argv[1:], p.error)
 
