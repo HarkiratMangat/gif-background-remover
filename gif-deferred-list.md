@@ -19,6 +19,14 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ## 🐞 Open — real TODOs with an available fix, not yet done
 
+### `[P2 · XS · Sonnet5-Med]` The unpackaged-pointer check cannot see an extensionless filename *(filed 2026-09-07 16:43 EDT)*
+
+`audit_docs.py`'s rule that a packaged file must never point at a repo file the `.skill` does not contain works on names **with an extension**. Falsified in both directions 2026-09-07 16:43 EDT: a `SKILL.md` pointer at `gif-deferred-list.md` fails the gate correctly, and a pointer at `COPYING` passes it **even with `COPYING` removed from the `packaged` set** — the matcher never considers the string a filename.
+
+Nothing is broken today: `COPYING` and `COPYING.LESSER` really are packaged. But the class is real, and it is the same shape as every other finding in this repo's history — **a gate that reports success on a case it cannot see.** Any future packaged pointer at `LICENSE`, `Makefile`, `Dockerfile` or a bare directory name would be waved through.
+
+**Concrete next action:** widen the matcher to catch backticked strings that name a real file at the repo root regardless of extension, then re-run the two falsifiers above and confirm the `COPYING` case now needs the `packaged` entry to pass.
+
 ### `[P1 · S · Opus5-High]` The conservation gate WARNS where two files say it FAILS *(filed 2026-09-07 14:17 EDT)*
 
 `gif-deferred-list.md` and `gif-resolved-list.md` both state the rule the same way: *"`python3 scripts/audit_docs.py --diff <base>` **fails** a branch that removes a substantive line from the active list without adding traceable text here."* It does not fail. Falsified 2026-09-07 14:17 EDT: an 11-line open item was deleted, archived nowhere, and committed; the gate printed `WARN: 5 of 12 line(s) removed ... could not be traced`, then `all doc gates pass (1 warning(s))` and **exited 0**.

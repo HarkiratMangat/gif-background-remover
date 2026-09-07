@@ -103,7 +103,16 @@ def main():
     # passed, and one again at v5.4.0 -- so it is gated rather than eyeballed.
     # `CLAUDE.md` is allowed: it appears only in the sandbox-boundary paragraphs
     # whose whole point is to name what a live session CANNOT reach.
-    packaged = {SK, SC} | {os.path.join('references', f)
+    # ⚠️ COPYING and COPYING.LESSER ARE PACKAGED. LGPLv3 requires its text to
+    # accompany the thing it licenses, and the .skill is what gets distributed --
+    # a package without them is a distribution without its licence.
+    # ⚠️ THIS LINE IS NOT WHAT LETS SKILL.md POINT AT THEM, and the first version of
+    # this comment claimed it was. Falsified 2026-09-07 16:43 EDT by reverting the set and
+    # re-running: the pointer check passed anyway. It matches names with an
+    # extension, so `gif-deferred-list.md` is caught and an extensionless `COPYING`
+    # is invisible to it either way. The set is corrected here because it should be
+    # true, not because anything currently reads it. Gap filed.
+    packaged = {SK, SC, 'COPYING', 'COPYING.LESSER'} | {os.path.join('references', f)
                            for f in os.listdir('references')}
     allowed_mentions = {'CLAUDE.md'}
     # ⚠️ A BARE FILENAME is just as unreachable as a path, and this check used to miss

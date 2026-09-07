@@ -297,3 +297,9 @@ python3 scripts/audit_docs.py    # must exit 0 before any release
 ```
 
 It gates the docs against the real CLI — every flag reachable from the instructional body rather than only from a changelog, every cross-reference resolving, and the skill description within the platform's 1024-character limit. **Each of those checks exists because that exact failure shipped once.**
+
+## Licence
+
+Copyright © 2026 Harkirat Mangat. **LGPL-3.0-or-later** — [`COPYING.LESSER`](COPYING.LESSER), which is a set of additional permissions on top of [`COPYING`](COPYING). Both files are packaged into the `.skill` as well, because a licence has to travel with the thing it licenses.
+
+The lesser licence is the point. **Anything may use this tool, including something proprietary and closed**, and only an improvement to the tool itself has to come back. [Devoid](https://github.com/HarkiratMangat/Devoid), the macOS front end built against it, is GPL-3.0-or-later for the opposite reason: it is an application rather than a component, so a distributed version of it stays open.
