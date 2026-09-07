@@ -149,6 +149,7 @@ Five modes replace "run it and hope":
 | `--analyze` | Scan only. Background, candidate regions, edge hardness, tumble risk, small-region histogram. |
 | `--recommend` | `--analyze`, then a ready-to-paste command **with the evidence behind each flag**. |
 | `--auto` | Recommend → apply (only where you left a default) → render → **re-verify the encoded file** → correct once. Two passes, not a loop. |
+| `--analysis-json <path>` | Carry ONE analysis between two runs. `--analyze`/`--recommend` WRITE it; `--auto` READS it and skips its own pass 1. Reused only while the input, this script and `--tolerance` are unchanged — on any mismatch it prints why and analyses normally. Nothing is cached. Measured **2.80s of a 10.15s render**. |
 | `--auto-erosion` | Picks erosion from *this asset's own* fringe curve, because the metric has no honest global threshold. |
 | `--assume-protect <hex,…>` · `--assume-remove <hex,…>` · `--assume-no-fade` | Pre-answer the question `--auto` now REFUSES to guess: whether a region whose outline encloses it on *some* frames is interior design or background showing through. Either may name a subset; every ambiguous colour must be answered or the run still stops. `--assume-no-fade` answers the other question `--auto` refuses to guess: whether a soft falloff it can NAME but not classify is artwork (`--recover-fade-alpha --fade-color <hex>`) or background. Measured refusal rate across 304 assets: **12.8%**. |
 | `--verify` | Leftover background, protected-region coverage, edge fringe, small-region inflation, timing. |

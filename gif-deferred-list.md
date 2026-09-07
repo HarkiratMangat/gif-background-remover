@@ -19,6 +19,39 @@ The project-local tracker for flagged findings, real TODOs, and reminders specif
 
 ## 🐞 Open — real TODOs with an available fix, not yet done
 
+### `[P1 · S · Opus5-High]` The conservation gate WARNS where two files say it FAILS *(filed 2026-09-07 14:17 EDT)*
+
+`gif-deferred-list.md` and `gif-resolved-list.md` both state the rule the same way: *"`python3 scripts/audit_docs.py --diff <base>` **fails** a branch that removes a substantive line from the active list without adding traceable text here."* It does not fail. Falsified 2026-09-07 14:17 EDT: an 11-line open item was deleted, archived nowhere, and committed; the gate printed `WARN: 5 of 12 line(s) removed ... could not be traced`, then `all doc gates pass (1 warning(s))` and **exited 0**.
+
+⚠️ **Two separate problems, and the second is worse than the first.** (1) A warning inside a passing run blocks nothing — this repo has already been bitten by exactly that shape in `reflow-prose.mjs`, whose own comment records `--check` exiting 0 on its only real finding while a hard-wrapped file sat under it. (2) The tracing is loose: of 12 removed lines it called **7 traceable** for an item that was never archived at all, so even the warning under-reports.
+
+**Concrete next action:** decide which the rule is — a gate or an advisory — and make one of the three files match the other two. If it is a gate, `--diff` exits 1 on any untraceable removal and the loose matcher is tightened (an exact-substring hit on a stripped-through line, not a fuzzy one). ⚠️ **The gate is blind to the working tree either way**: it diffs commits, so an uncommitted deletion is invisible. That is defensible for a pre-merge check and must be stated, because a session running it before committing gets a clean pass on a broken tree.
+
+⚠️ Unrelated, found in the same pass and not worth its own item: `docs/plans/2026-08-22-target-kb-constraints-and-format-ranking.md` fails the soft-wrap check on `main` (1573 → 1551 lines). One `--write` fixes it.
+
+
+### `[P1 · S · Opus5-High]` Two scorer tests fail on `main`, and the one that fails is the one that exists to catch the worst defect *(filed 2026-09-07 14:15 EDT)*
+
+`python3 -m pytest scripts/harness` on `main` exits 1 with two failures in `scripts/harness/test_score_outputs.py`:
+
+```
+test_worst_frame_not_mean                        bg_removed_worst 1.0000, expected < 0.98
+test_a_solid_background_wedge_is_caught_by_opacity  bg_not_opaque_worst 1.0000, expected < 0.99
+```
+
+Both score `growth.gif` against `agent-3-expert/growth_transparent.webp`, the asset whose docstring says it *"holds an opaque background wedge on 16 consecutive frames"*. **The scorer now reports that file as perfect on both measures.** ⚠️ Confirmed PRE-EXISTING, not a branch effect: reproduced with `main`'s `scripts/remove_gif_background.py` swapped into the branch checkout, same two assertions, same numbers.
+
+Two possibilities and they are not equally bad. Either the fixture under `local/` was regenerated and no longer holds the wedge — in which case the test lost its subject and must be repointed at an asset that still fails — or the scorer regressed and is certifying a known defect as fixed. **That second one is `docs/plans/2026-08-20-post-trial-defects.md` Task 1's exact failure mode**, the reason the scorer was rebuilt: a measure that returned 1.000 on all seven trial outputs *including the broken one*. It is filed P1 for that reason alone.
+
+**Concrete next action:** open the fixture and count its opaque background pixels per frame before touching the scorer. Which of the two it is, is a measurement, and the cheaper one comes first.
+
+### `[P2 · S · Sonnet5-High]` Nothing collects labels for the protection decision, and the harness README used to say something did *(filed 2026-09-07 14:15 EDT)*
+
+`scripts/harness/labels/` holds **981 `edge_hardness` judgements and zero protection judgements** — for the coin-flip `--auto` refuses on, which is **10.2%** of assets (31 of 304) on the enclosure question alone. Its README pointed at the Devoid app as the collector; that writer was removed on 2026-09-07 at that repo owner's instruction and the pointer is now corrected. ⚠️ **This repo believed for three days that the harder question was being labelled.**
+
+The consumer of these labels is this repo, so the collector is this repo's decision. **Concrete next action:** decide whether the enclosure verdict is worth labelling at all before building anything — `references/lessons.md` already carries the measured refusal rates, and a labelled corpus is only worth its collection cost if a mechanism would be tuned against it. If yes, the schema Devoid froze (`ts`, `asset_id`, `outline_color`, `enclosure_ratio`, `frames_enclosed`, `frames_checked`, `bbox_xyxy`, `verdict`) is a working starting point and is recorded in that repo's `docs/API-CONTRACT.md`.
+
+
 *Ordered by priority, P1 first. Every item here is genuinely open: if you find a `✅ CLOSED` marker in a body under this heading, that is the drift `audit_docs.py`'s tracker gate exists to catch — report it rather than trusting either half.*
 
 ### `[P0 · L (first slice: Task 9) · Opus5-Med]` v6.0.0 output defects — a 1px alpha fringe on every WebP/AVIF, plus nine more *(filed 2026-08-22, from the timeout trial + Harkirat's own claude.ai session + his review of the delivered files)*
@@ -87,22 +120,6 @@ Every downstream failure follows from that one merge, all measured 2026-09-01:
 **Interim mitigation shipped in v6.3.0:** the hint now says to seed the COMPONENT rather than the region box, and names the grouping as the reason. **The root fix is to split a candidate region by real per-frame connectivity**, which changes `analyze()` output for every asset and therefore needs a corpus re-measure — deliberately not attempted in the session that found it, per Harkirat's instruction to keep that session scoped to the four assets.
 
 ⚠️ **The correct answer for this asset today is one command, and it works** — `--recover-fade-alpha --fade-color 6964f8 --remove-region-track "rect:437,301,32,67"` gives 0 residual opaque px in the hole and 0 gaps in the stripe across all 171 frames with the fade intact. The gap is that nothing derives that seed for you.
-
-### `[P1 · S · Opus5-High]` `--auto` recomputes pass 1's analysis in pass 3 — 20-24%, but only on same-canvas runs *(filed 2026-09-01, REWRITTEN after three adversarial audits falsified the first version)*
-⚠️ **The first filing of this item claimed 32% of EVERY `--auto` run and a 61% analysis share. Both were wrong.** Corrected numbers below; the full audit trail is in `docs/investigations/2026-09-01-analysis-cost-and-the-missing-instrument.md` §0.
-
-`recommend()` analyses at `:2353` (AUTO pass 1) and `verify()` analyses the same file again at `:4817` (pass 3) — same path, same tolerance, byte-identical result.
-
-| run | `analyze()` calls |
-|---|---|
-| `--auto`, output keeps the source canvas | 2 |
-| `--auto --crop` / `--resize-max-dim` / a `--target-kb` fit that resizes | **1** |
-
-`verify()` returns at `:4783` when dimensions differ, before it would analyse. So the saving is **0% on cropped, resized or size-fitted output** — most delivered work, and 31 of the render gate's 62 records. Where it applies: analysis is 39-47% of a run and the second call alone is **20-24%** (`in-love.gif` 48f, `satellite.gif` 120f).
-
-**The fix is a parameter, not a cache.** `auto_run` already holds `rec['analysis']` at `:9760`; passing it to `verify()` is ~3 lines. A module-level memo was designed, then rejected: global state, ~1.1 GB retention in `run_populations`, a fingerprint-closure hazard, a `--batch` interaction. Ready-to-build steps: `docs/plans/2026-09-01-analysis-cost-and-observability.md` Task 1.
-
-⚠️ **`verify()` mutates the analysis ZERO times** — an earlier claim of 24 counted a different variable of the same name. A shared object gives byte-identical output; the `deepcopy` is 0.046 ms insurance against `recommend()`'s 6 real mutations, not a measured necessity.
 
 ### `[P1 · M · Opus5-High]` The test suite has a render cache that 29 of 30 files never use *(filed 2026-09-01)*
 `rendered()` at `scripts/harness/test_score_outputs.py:51` renders once and reuses — and **only `test_score_outputs.py` calls it.** Every one of the 15 slowest tests (~773s total) shells out raw via `subprocess.run`.

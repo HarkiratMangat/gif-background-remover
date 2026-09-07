@@ -11,6 +11,36 @@ Where entries from `gif-deferred-list.md` come to rest once they ship, get dropp
 - **Not for standing "decided-no" calls that could get re-raised** — those stay visible in `gif-deferred-list.md`'s own ✅ Considered-and-NOT-fixed section, precisely so nobody re-opens them.
 - **Conservation is gated, not trusted:** `python3 scripts/audit_docs.py --diff <base>` fails a branch that removes a substantive line from the active list without adding traceable text here. A sweep and a deletion look identical in a diff; the gate is what tells them apart.
 
+## ✅ `--auto` recomputed pass 1's analysis in pass 3 — CLOSED 2026-09-07 14:15 EDT (branch `feat/analysis-reuse-across-processes`)
+
+**What happened.** Closed together with a second duplicate nobody here had filed, because they are the same waste one process apart. `verify()` now takes `input_analysis=` and `auto_run` passes `rec['analysis']` into it — the ~3-line parameter this item specified, placed below the dimension-mismatch early return so the cropped/resized path still skips the work it always skipped, and deep-copied because `recommend()` stamps `recommended_format` onto that same object. **And `--analysis-json <path>` was added**, which is the same parameter carried ACROSS a process boundary: `--analyze`/`--recommend` write the analysis they computed, `--auto` reads it and skips pass 1's. A caller that already analysed a file — the desktop app does, to show its user the questions — was making `--auto` recompute the identical report seconds later.
+
+**Measured on `galaxy.gif` (743 KB, 8 frames), same-canvas output, in-process count of real `analyze()` calls:**
+
+| run | `analyze()` | wall |
+|---|---|---|
+| before | **2** | 9.84s |
+| with the parameter | **1** | 7.93s |
+| with the parameter and a supplied document | **0** | 4.28s |
+
+**Output bytes identical across all three** (sha `354fcb04b142`). That is **56%** of the render, against this item's predicted 20–24% for its own half — the second half was never this item's to claim.
+
+**Not a cache, deliberately.** `references/lessons.md` §24 forbids disk-cache behaviour in the shipped skill (ephemeral 1-core sandbox), and a module-level memo is on this repo's own rejected list. The caller supplies bytes it owns; the tool writes no cache and reads nothing it was not handed. The document carries the script's SHA, the input's path/mtime/size and the tolerance, and **any mismatch prints its specific reason on stderr and analyses normally** (§44 — a flag that cannot take effect must say so). Seven refusal paths, each proven to fire for its OWN reason: `scripts/harness/test_analysis_reuse.py`, 11 tests, all falsified against three injected defects.
+
+**Original entry, struck through:**
+
+> ~~### `[P1 · S · Opus5-High]` `--auto` recomputes pass 1's analysis in pass 3 — 20-24%, but only on same-canvas runs *(filed 2026-09-01, REWRITTEN after three adversarial audits falsified the first version)*~~ ~~⚠️ **The first filing of this item claimed 32% of EVERY `--auto` run and a 61% analysis share. Both were wrong.** Corrected numbers below; the full audit trail is in `docs/investigations/2026-09-01-analysis-cost-and-the-missing-instrument.md` §0.~~
+>
+> ~~`recommend()` analyses at `:2353` (AUTO pass 1) and `verify()` analyses the same file again at `:4817` (pass 3) — same path, same tolerance, byte-identical result.~~
+>
+> ~~| run | `analyze()` calls |~~ ~~|---|---|~~ ~~| `--auto`, output keeps the source canvas | 2 |~~ ~~| `--auto --crop` / `--resize-max-dim` / a `--target-kb` fit that resizes | **1** |~~
+>
+> ~~`verify()` returns at `:4783` when dimensions differ, before it would analyse. So the saving is **0% on cropped, resized or size-fitted output** — most delivered work, and 31 of the render gate's 62 records. Where it applies: analysis is 39-47% of a run and the second call alone is **20-24%** (`in-love.gif` 48f, `satellite.gif` 120f).~~
+>
+> ~~**The fix is a parameter, not a cache.** `auto_run` already holds `rec['analysis']` at `:9760`; passing it to `verify()` is ~3 lines. A module-level memo was designed, then rejected: global state, ~1.1 GB retention in `run_populations`, a fingerprint-closure hazard, a `--batch` interaction. Ready-to-build steps: `docs/plans/2026-09-01-analysis-cost-and-observability.md` Task 1.~~
+>
+> ~~⚠️ **`verify()` mutates the analysis ZERO times** — an earlier claim of 24 counted a different variable of the same name. A shared object gives byte-identical output; the `deepcopy` is 0.046 ms insurance against `recommend()`'s 6 real mutations, not a measured necessity.~~
+
 ## ✅ `recommend()` never suggested the combinable protect-outline-color + protect-region union — CLOSED 2026-08-25 (branch `fix/gate8-trial-findings`, commit `290fdb9`)
 
 **What happened.** Filed the same session as a deliberately-deferred design question (the code-review's 8th finding), then resolved same-night once the design decision was made: in the `partial_outline` branch — an outline verified but never fully enclosing on any single frame, the exact case the render pipeline's union was built for — also suggest `--protect-region` as a geometric backstop, but only when `circle_region_safe` is true, reusing the same gate the pre-existing not-outline-verified branch already used for the identical reason (a poorly-fitting circle/rect bleeds past the true edge). Verified with a real, captured `analyze()` report from `local/Diors-builds Emojis/others/Cut loop.gif` — the exact asset `references/lessons.md` §26 documents as the original `partial_outline` case — mutating only the one field under test (`circle_region_safe`) rather than hand-building a synthetic report. Three falsifiers in `scripts/harness/test_recommend_suggests_the_union.py`: the fixture's real captured value is confirmed `False` first (ground truth), the negative case with that real value suggests no region flag, and the positive case (flipped `True`) suggests both flags unioned with evidence text explaining why. Proven non-vacuous: the positive-case test was confirmed to FAIL against the pre-fix code before the fix, by stashing it and re-running. Corpus safety: Cut loop.gif's own `--recommend` output is byte-identical pre/post, since its real circularity (0.38) correctly does not clear the gate — zero regression on the one real asset available that exercises this path. Full `pytest scripts/harness` clean, `audit_docs.py` clean.

@@ -21,6 +21,9 @@
 
 ## Task 1: pass the analysis into `verify()` instead of recomputing it
 
+> ✅ **EXECUTED 2026-09-07 14:15 EDT**, branch `feat/analysis-reuse-across-processes`, together with the cross-process half this plan did not have: `--analysis-json`. Measured on `galaxy.gif` (743 KB, 8 frames, same-canvas): `analyze()` calls **2 → 1** with the parameter and **→ 0** with a supplied document; wall **9.84s → 7.93s → 4.28s**; output sha `354fcb04b142` identical across all three. The plan's own steps were followed except Step 0 — `scripts/harness/conftest.py` was NOT created, because the new suite needs one synthesised fixture rather than a shared one and a module-scoped fixture inside the test file is the smaller change. Tests: `scripts/harness/test_analysis_reuse.py`, 11 of them, each proven to fail against an injected defect.
+
+
 **The only task here that is ready to build.** Roughly three lines.
 
 **Files:**

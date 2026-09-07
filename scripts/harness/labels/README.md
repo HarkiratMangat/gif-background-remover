@@ -14,12 +14,13 @@ These files are the denominator of every recall and specificity figure this proj
 
 `--auto` refuses on **12.8%** of assets overall (39 of 304); the **enclosure question specifically** is **10.2%** (31 of 304) and the fade question 2.6%. ⚠️ Do not quote 10.2% alone as "the refusal rate" — `references/lessons.md` flags that exact figure as the original pooled measurement, stale in the unsafe direction because it predates the fade gate. That is a labelling problem, and this directory holds **zero** labels for it while holding 981 for `edge_hardness`.
 
-The **Devoid** app (`/Applications/Claude Code/Devoid`, `github.com/HarkiratMangat/Devoid`) asks that question visually and records every answer as a labelled row — one JSON line per region decision, carrying `ts`, `asset_id`, `outline_color`, `enclosure_ratio`, `frames_enclosed`, `frames_checked`, `bbox_xyxy`, `content_type` and `verdict` — at:
+⚠️ **THEY ARE NOT BEING COLLECTED, AND THIS FILE SAID THEY WERE (corrected 2026-09-07 14:15 EDT).**
 
-```
-Devoid/labels/protection.jsonl      (tracked in that repo)
-```
+The **Devoid** app (`/Applications/Claude Code/Devoid`) asks the enclosure question visually, and this README said it *"records every answer as a labelled row"* at `Devoid/labels/protection.jsonl`. **It does not.** The writer was built, shipped, and then removed on 2026-09-07 at Devoid's owner's instruction -- *"drop the labels from the app, it's just adding friction and the repo has its own corpus that i supply it anyway."* The file and its history stay in that repo (`Devoid/labels/README.md`); nothing appends to it.
 
-**That file now exists** — Devoid's `PLAN.md` stage 5.1 landed 2026-09-04, and the schema above is frozen in that repo's `docs/API-CONTRACT.md`. ⚠️ **An empty file is the honest answer, not a broken one**: it means no ambiguous asset has been answered yet, not that labels were collected and deleted. Read it with one `json.loads` per line and skip a malformed trailing line — the writer appends `O_APPEND` line-atomically, so a torn last line means a crash mid-append, never a corrupt file.
+So the count here is still **zero**, and there is currently **no collector** for the protection decision. That is the honest state, not a broken one:
 
-It is deliberately not written here: Devoid owns its own data. **This pointer exists because nothing else in this repo would tell you those labels exist**, and a session working on the autonomy goal would look here first. If that path moves, fix this line.
+* the answers a person gives in Devoid steer that render and are recorded in its `jobs.jsonl` alongside the rest of the run's settings -- as work, not as ground truth, and not in a schema anything here can score against;
+* building a collector again is a decision for this repo, since this repo is what would consume the labels. Filed as `[P2 · S]` in `gif-deferred-list.md`.
+
+**This pointer stays because nothing else here would tell you the gap exists** -- a session working on the autonomy goal would look in this directory first, find 981 `edge_hardness` judgements, and reasonably assume the harder question was covered too.
