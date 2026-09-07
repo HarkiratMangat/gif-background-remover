@@ -2341,7 +2341,103 @@ def _enclosure_verdict(rid, outline_hex, all_frames):
             f"\"verified\".")
 
 
-def recommend(input_path, tolerance=15, allow_changing_background=False):
+def _script_sha256():
+    """SHA of this whole script, as the coarse half of an analysis document's identity.
+
+    ⚠️ DELIBERATELY COARSE -- the whole file, so ANY edit invalidates. The development
+    repo keys its own analysis cache on a finer fingerprint of just the code `analyze()`
+    can reach, and that machinery is not part of this package by design. Over-invalidating
+    is the safe direction anyway: a false miss costs one analysis, while a missed
+    invalidation would answer a question about code that has since changed.
+
+    ⚠️ `hashlib` is imported HERE, not at module level, on purpose. Every module-level
+    statement that is not a function definition is hashed into the analysis cache's key,
+    so a new import at the top of this file discards every warm entry -- measured at 29
+    entries / 42 MB for one added constant. Nothing analyze() can reach changes here.
+    """
+    import hashlib
+    with open(os.path.abspath(__file__), 'rb') as fh:
+        return hashlib.sha256(fh.read()).hexdigest()[:16]
+
+
+def _analysis_doc_identity(input_path):
+    st = os.stat(input_path)
+    return {'path': os.path.abspath(input_path),
+            'mtime_ns': st.st_mtime_ns, 'size': st.st_size}
+
+
+def write_analysis_json(path, input_path, tolerance, report):
+    """Write the analysis this run just computed, so a LATER process need not recompute it."""
+    doc = {'schema': 'gif-background-remover/analysis@1',
+           'script_sha256': _script_sha256(),
+           'input': _analysis_doc_identity(input_path),
+           'tolerance': tolerance,
+           'analysis': report}
+    tmp = f'{path}.{os.getpid()}.tmp'
+    with open(tmp, 'w') as fh:
+        json.dump(doc, fh)
+    os.replace(tmp, path)   # atomic: a reader can never see a half-written document
+    print(f'--analysis-json written: {path}', file=sys.stderr)
+
+
+def load_supplied_analysis(path, input_path, tolerance):
+    """A caller's already-computed analyze() report for THIS input, or None to analyse.
+
+    ⚠️ WHY A FLAG AND NOT A CACHE. The duplicate this removes is across PROCESSES: a front
+    end runs --recommend to show the user the questions, then runs --auto to render, and
+    --auto's pass 1 recomputes the identical report a moment later. A parameter cannot
+    cross a process boundary, and a disk cache is refused by design -- the shipped skill
+    carries no cache behaviour, because the deployment sandbox is ephemeral and 1-core
+    (references/lessons.md SS24). This flag is that parameter, carried across the boundary
+    by the caller, who writes the bytes and owns them. This tool never writes a cache entry
+    and reads nothing it was not handed.
+
+    ⚠️ IT IS LOUD IN BOTH DIRECTIONS. A flag the tool accepts and quietly discards is
+    references/lessons.md SS44's whole shape, and a stale analysis is worse than a slow one:
+    it would answer a question about a file that has since changed. So every rejection
+    prints its specific reason and the run analyses normally, and an acceptance says so.
+    """
+    if not path:
+        return None
+
+    def refuse(why):
+        print(f'--analysis-json NOT USED ({why}). Analysing this run normally.',
+              file=sys.stderr)
+        return None
+
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except Exception as exc:                      # noqa: BLE001 -- every failure is one refusal
+        return refuse(f'unreadable: {type(exc).__name__}: {exc}')
+    if not isinstance(doc, dict) or doc.get('schema') != 'gif-background-remover/analysis@1':
+        return refuse('not a document this tool wrote -- produce one with '
+                      '--analyze/--recommend --analysis-json')
+    if doc.get('script_sha256') != _script_sha256():
+        return refuse('this script changed since it was written')
+    try:
+        want = _analysis_doc_identity(input_path)
+    except OSError as exc:
+        return refuse(f'cannot stat the input: {exc}')
+    got = doc.get('input') or {}
+    if got != want:
+        return refuse('the input file changed since it was written'
+                      if got.get('path') == want['path']
+                      else f"it was written for a different input ({got.get('path')})")
+    if doc.get('tolerance') != tolerance:
+        return refuse(f"it was written at --tolerance {doc.get('tolerance')}, "
+                      f'this run is {tolerance}')
+    report = doc.get('analysis')
+    if not isinstance(report, dict) or 'candidate_regions' not in report:
+        return refuse('its "analysis" key is missing or is not an analyze() report')
+    print(f'--analysis-json accepted: reusing the analysis of '
+          f'{os.path.basename(input_path)} that the caller already paid for.',
+          file=sys.stderr)
+    return report
+
+
+def recommend(input_path, tolerance=15, allow_changing_background=False,
+              analysis=None):
     """
     Run analyze() and translate its report into a suggested command line
     plus the evidence behind each flag, per the decision tree SKILL.md's
@@ -2350,7 +2446,12 @@ def recommend(input_path, tolerance=15, allow_changing_background=False):
     across them, pick flags" down to "read a recommendation, sanity-check
     it, confirm with the user."
     """
-    report = analyze(input_path, tolerance=tolerance)
+    # `analysis`, when a caller supplies one, is the SAME report analyze() would return --
+    # see load_supplied_analysis() for the identity check that decides whether it may be
+    # trusted, and for why a flag rather than a cache. Copied because the block below
+    # stamps recommended_format onto it and the caller keeps its own object.
+    report = (copy.deepcopy(analysis) if analysis is not None
+              else analyze(input_path, tolerance=tolerance))
     evidence = []
     region_notes = []
     _ambiguous = []
@@ -4722,7 +4823,8 @@ def unprotected_design_regions(protected_coverage, assume_remove_colors=()):
             and c.get('expected_outline_color') not in answered]
 
 
-def verify(input_path, output_path, tolerance=15, assume_remove_colors=()):
+def verify(input_path, output_path, tolerance=15, assume_remove_colors=(),
+           input_analysis=None):
     """
     Mechanical half of SKILL.md's "Verification" checklist: leftover
     background, protected-region coverage, edge fringe, small removed-
@@ -4814,7 +4916,19 @@ def verify(input_path, output_path, tolerance=15, assume_remove_colors=()):
     # protected interior" from "background-colored input pixel that's
     # really just background" -- see the docstring above for why this is
     # necessary, not optional polish.
-    input_analysis = analyze(input_path, tolerance=tolerance)
+    # ⚠️ REUSE, NOT RECOMPUTE. `auto_run` has already paid for this exact analysis in
+    # pass 1 -- same path, same tolerance, byte-identical result -- and it is 20-24% of
+    # an --auto run whose output keeps the source canvas. A PARAMETER rather than a memo
+    # or a cache, deliberately: no global state, no retention, no --batch interaction,
+    # and it stays inside analyze()'s own closure, so a code change cannot silently serve
+    # a stale answer. ⚠️ COPY IT: recommend() stamps report['recommended_format'] onto
+    # this same object and hands it back as rec['analysis']. verify() mutates it zero
+    # times (measured; a shared object gives byte-identical output), but the copy costs
+    # 0.046 ms on a 2.3 KB report and removes the question.
+    # ⚠️ THE CALL STAYS HERE, below the dimension-mismatch early return above. A
+    # caller-supplied analysis must not make that path start doing work it currently skips.
+    input_analysis = (copy.deepcopy(input_analysis) if input_analysis is not None
+                      else analyze(input_path, tolerance=tolerance))
     _out_fmt = format_from_path(output_path)
 
     protected_regions = [r for r in input_analysis['candidate_regions']
@@ -9757,8 +9871,11 @@ def auto_run(input_path, output_path, args, parser):
     deliberate choice -- it fills in the ones nobody expressed an opinion about.
     """
     print("=== AUTO 1/3: analysing source ===", file=sys.stderr)
+    _supplied = load_supplied_analysis(getattr(args, 'analysis_json', None),
+                                       input_path, args.tolerance)
     rec = recommend(input_path, tolerance=args.tolerance,
-                    allow_changing_background=getattr(args, 'allow_changing_background', False))
+                    allow_changing_background=getattr(args, 'allow_changing_background', False),
+                    analysis=_supplied)
     if rec.get('not_applicable_reason'):
         raise SystemExit("ERROR: --auto has nothing to do here, and doing it anyway would "
                          "destroy the image.\n  " + rec['not_applicable_reason'])
@@ -10024,7 +10141,8 @@ def auto_run(input_path, output_path, args, parser):
     # zero-coverage warning that exists to catch a wholly unprotected region.
     try:
         _v = verify(input_path, output_path, tolerance=args.tolerance,
-                    assume_remove_colors=_assumed_colors(args, 'assume_remove'))
+                    assume_remove_colors=_assumed_colors(args, 'assume_remove'),
+                    input_analysis=rec.get('analysis'))
         _lb = _v.get('leftover_background_opaque_px', {})
         _tm = _v.get('timing', {}) or {}
         print(f"  full verify -- leftover background (worst frame): "
@@ -10131,6 +10249,15 @@ def build_parser():
                          'If omitted, auto-detected from the corner pixels of frame 0.')
     p.add_argument('--tolerance', type=int, default=15,
                     help='Per-channel tolerance for matching bg-color (default 15)')
+    p.add_argument('--analysis-json', default=None, metavar='PATH',
+                    help='Carry ONE analysis between two runs instead of computing it '
+                         'twice. With --analyze or --recommend this WRITES the analysis '
+                         'just computed to PATH; with --auto it READS it, and pass 1 '
+                         'skips its own analysis. Reused only when the input file, this '
+                         'script and --tolerance are all unchanged since it was written; '
+                         'on any mismatch the run says exactly why on stderr and analyses '
+                         'normally. Nothing is cached and no file is read that you did '
+                         'not name. Measured: 2.80s of a 10.15s --auto render.')
     p.add_argument('--allow-changing-background', action='store_true', default=False,
                     help='Process an animation whose background CHANGES COLOUR partway '
                          'through, which is otherwise refused. --bg-color is a single value, '
@@ -10723,6 +10850,15 @@ def main():
 
     if sum([args.analyze, args.recommend, args.verify, args.auto]) > 1:
         p.error('Use only one of --analyze, --recommend, --verify, or --auto at a time')
+    # A flag that cannot take effect must say so before the run starts, not after it --
+    # references/lessons.md SS44 is eight instances of the opposite. --analysis-json has a
+    # direction in every mode that has one, and no meaning at all in the others.
+    if args.analysis_json and not (args.analyze or args.recommend or args.auto):
+        p.error('--analysis-json only means something with --analyze or --recommend '
+                '(which WRITE the analysis to it) or --auto (which READS it)')
+    if args.analysis_json and len(args.input_paths) > 1:
+        p.error('--analysis-json describes ONE input and its identity check is per-file; '
+                'pass a single path with it')
     if args.auto:
         if args.batch:
             p.error('--auto and --batch are different multi-file paths; pass the '
@@ -10748,6 +10884,9 @@ def main():
             print(_ANALYZE_RECOMMEND_NOTE, file=sys.stderr)
             return
         report = analyze(args.input_gif, tolerance=args.tolerance)
+        if args.analysis_json:
+            write_analysis_json(args.analysis_json, args.input_gif,
+                                args.tolerance, report)
         print(json.dumps(report, indent=2))
         print(_ANALYZE_RECOMMEND_NOTE, file=sys.stderr)
         return
@@ -10773,6 +10912,12 @@ def main():
         rec = recommend(args.input_gif, tolerance=args.tolerance,
                         allow_changing_background=getattr(
                             args, 'allow_changing_background', False))
+        # --recommend's JSON already embeds the analysis under its 'analysis' key, so
+        # this writes what is in hand -- it is the mode a front end actually runs to
+        # get its questions, and therefore the one that has the analysis to hand on.
+        if args.analysis_json:
+            write_analysis_json(args.analysis_json, args.input_gif,
+                                args.tolerance, rec.get('analysis'))
         print(json.dumps(rec, indent=2))
         return
 
