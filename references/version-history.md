@@ -2,6 +2,24 @@
 
 **A version is minted when a merge is approved, not per commit on a branch**; the working detail for a pending version lives in `SKILL.md`'s own version header until then.
 
+## v6.4.2 — full entry
+
+*Minor. The tool does not change; no packaged file changes except SKILL.md's version block and this entry.*
+
+Three claude.ai sessions did real image work on brand assets — a wordmark cutout plus grid fading, a nebula grid removal, and a banner edge fade — and wrote reports aimed at this skill. Only one of the three invoked the tool before its write-up. They were re-audited against v6.4.1 and compiled into a single spec in the development repo (not packaged, and not reachable from a live session).
+
+**What the audit produced:** four findings reproduced by running the tool or measuring real assets, one observed visually, five established by code read only, four open hypotheses each carrying the test that would settle it, and **four retracted claims** recorded so a later session does not re-derive them.
+
+**The two live defects, both reporting rather than rendering, and neither fixed here.**
+
+`--recommend` returns `recommended_format: gif-ok` on a source that is 73.6% partial alpha. Following its `suggested_command` flattens the fade entirely, while `a > 0` retention reads 100% and the run prints `durations preserved exactly` — every existing check is blind because the flattening moves pixels *within* the opaque set. The verdict is computed from `detect_fading_colors` over the art palette, which asks whether a palette colour unmixes as a fade toward the background. That is the right question for a GIF whose fade was flattened at authoring time and the wrong one for a source that already carries an alpha channel, because the palette scan never reads the alpha plane.
+
+Separately, `source_has_pre_existing_transparency` is derived from the palette-index transparency spelling, so an RGBA source with 315,504 fully transparent pixels reports `false` — while `background_color_stability` in the same JSON calls it "an already-background-removed source". `get_source_transparency_mask` was fixed for exactly this inverse-spelling failure in August; the report field was not.
+
+**Operational consequence while they are open:** on a source that already carries an alpha channel, do not take the format verdict at face value. Measure the partial-alpha fraction yourself and choose a container that can hold it.
+
+A third finding is recorded but unmeasured against real GIF assets: `detect_bg_color` samples four corner pixels and majority-votes. Over 101 real brand images, three had four corners that agree, and 38 landed further than `--tolerance` from the true modal background of a border ring.
+
 ## v6.3.0 — full entry
 
 **v6.3.0** was a *moderate* bump: a review of one real four-asset job that took three rounds of user-reported defects, reproduced end to end in the development repo. Nothing in it was a new capability — every fix closed a gap between a capability the tool already had and the chance of an agent reaching it. It added `--min-quality` (the quality-axis mirror of `--min-width`, with 0-100 validation and a refusal when the starting quality sits below the floor), stopped `--assume-remove` tripping the "region received NO protection" warning on the regions it was told to remove, and rewrote `recommend()`'s enclosure hint to offer a `--remove-region-track` seed and drop a false claim that `--unprotect-region` was the only region flag composing with `--recover-fade-alpha`. Seven documentation defects were corrected, each of which had routed a reader away from an answer that already existed. `references/lessons.md` §48.
