@@ -86,6 +86,14 @@ A third explains why the first two went unnoticed: **three multi-hour sessions o
 
 ## 3. Findings ledger
 
+**Two conventions, because a cold reader has been observed tripping on both.**
+
+*Line anchors.* Every `:NNNN` in this document points into `scripts/remove_gif_background.py` **as it stood at v6.4.1, commit `e19ac1a`'s parent tree**. They are navigation aids, not identifiers — the file is ~10k lines and any edit above a citation moves it. Locate by the function name given alongside; treat the number as a hint. None was independently re-verified while writing this.
+
+*The word "band".* Throughout this document it means **the alpha transition band** — the pixels between `--tolerance` and `--tolerance × --feather-band-multiplier`, where alpha ramps from 0 to 1. Its **start** is the tolerance end, its **endpoint** the multiplier end, and its **inner**/**outer** edges are toward the opaque core and toward the background respectively. R1's retraction turns on that inner/outer distinction, so it has to be one object.
+
+*The word "session".* A **source session** is one of the three claude.ai sessions this document audits. A **working session** is the future one that executes it.
+
 **`RUN`** reproduced by executing the tool or measuring real assets. **`LOOKED`** observed in a render, qualitative, not a measurement. **`READ`** established from source, never executed. **`OPEN`** reasoned, with a test not yet run. **Do not promote a class without doing the work.**
 
 ### D1 · RUN · the format verdict is blind to the source's alpha plane
@@ -233,7 +241,7 @@ Every count reports the largest connected component's area and bbox; every conse
 Four-corner sample retained as primary; the modal colour of a border ring computed alongside; their distance reported **in the analysis object**, not only on stderr.
 
 ### 4.8 Background as a field — after O1 and O2 report
-`bg` becomes a function of position, estimated along whichever axis it is invariant along: radial for a vignette, linear for a gradient. Session 2's v6 discipline is the build spec, because each of its failures maps to a way this ships broken:
+`bg` becomes a function of position, estimated along whichever axis it is invariant along: radial for a vignette, linear for a gradient. The discipline session 2 arrived at for its own v6 build is the build spec here, because each of its failures maps to a way this ships broken:
 
 | lesson | what it forces |
 |---|---|
@@ -344,7 +352,7 @@ Session 2 recorded the user being right on all 8 occasions a metric disagreed wi
 "Report the worst frame, not the mean" is five distinct failures, which is why this "one" lesson keeps being re-fixed: the centre hiding the tail; a membership count blind to transformation within the set; an aggregate over the wrong axis (channels); a spatial mean hiding a localised defect; a temporal mean hiding consecutive bad frames. **For every statistic reported, name which axis it aggregates over and what it therefore cannot see.** *(Channel axis is clean — no `.std()`/`.var()`/`np.ptp()` anywhere.)*
 
 ### 9.4 Model and effort
-**Opus 5, high.** From the two-axis grid, not the effort tier. Premise risk binds: this audit retracted four of its own claims, a three-agent review falsified its central acceptance condition, and two open hypotheses can invalidate work done downstream of them. Deliberation load is moderate — the tasks are individually small. **If phase 2 closes both branches and the work becomes mechanical instrumentation, step DOWN to Sonnet-high and say why.**
+**Opus 5, high.** From the priority-tier grid in the Diors-Builds memory folder (`reference_priority_tier_system.md`, "Model + reasoning effort") — effort buys breadth, model buys premise risk — not from the effort tier. Premise risk binds: this audit retracted four of its own claims, a three-agent review falsified its central acceptance condition, and two open hypotheses can invalidate work done downstream of them. Deliberation load is moderate — the tasks are individually small. **If phase 2 closes both branches and the work becomes mechanical instrumentation, step DOWN to Sonnet-high and say why.**
 
 Session title: `Opus5-high · Session-report findings phase 1 · 2026-09-09`
 
@@ -367,4 +375,4 @@ Session title: `Opus5-high · Session-report findings phase 1 · 2026-09-09`
 - **The tool was run twice.** Every other behavioural claim is a code read.
 - **No corpus re-score, no render diff, no falsifier suite** was run for anything proposed here.
 - **Release gate 8 is unrun**, three shipped versions deep. Several items here are exactly what it catches: advice confidently wrong while the render is correct is invisible to a corpus score, a code review and a render diff alike, because all three compare the product against itself or a label.
-- **`to-spec`'s publish step** was not run — no issue tracker is configured.
+- **The publish step of the `to-spec` skill this document's structure came from** was not run — it wants an issue tracker with a `ready-for-agent` label, and none is configured for this repo.
